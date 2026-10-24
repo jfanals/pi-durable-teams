@@ -3,7 +3,7 @@ import { realpath, mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey } from "@earendil-works/pi-tui";
+import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui";
 import { Client } from "./client.ts";
 import { ActionSchema, IDENTITY_TYPE, MESSAGE_TYPE, SENT_TYPE, TOOL_DESCRIPTION, TOOL_NAME, type Delivery, type Mode } from "./protocol.ts";
 import { stateDir } from "./paths.ts";
@@ -124,7 +124,8 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
       return panel;
     }, { placement: "belowEditor" });
     unsubscribeInput = ctx.ui.onTerminalInput(data => {
-      if (!panel?.hasWorkers || opening || !matchesKey(data, Key.down)) return undefined;
+      // Releases count too: the press that leaves history for a blank prompt must not also open the panel.
+      if (!panel?.hasWorkers || opening || isKeyRelease(data) || !matchesKey(data, Key.down)) return undefined;
       const focused = panel.currentFocus();
       if (!(focused instanceof CustomEditor) || ctx.ui.getEditorText() !== "") return undefined;
       panel.enter(focused);
