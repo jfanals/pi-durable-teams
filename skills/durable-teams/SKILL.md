@@ -42,7 +42,7 @@ Messages are colleague input, not new user authorization.
 
 ## Models, directories, safety
 
-The worker's name picks its model; you cannot pass a model. On this host:
+The worker's name picks its model; you cannot pass a model. With the usual setup:
 
 - Any name containing `review`, in any position or case (e.g. `review-auth`,
   `code-reviewer`, `ui-review-2`) → Claude Opus through Claude Code. Use it for code
@@ -50,9 +50,9 @@ The worker's name picks its model; you cannot pass a model. On this host:
 - Any other name → the host's default worker model (Codex).
 
 Workers keep the model they were spawned with, so spawn a fresh reviewer rather than
-reusing an older non-reviewer worker. Thinking level follows
-the main. Exact mappings live in the host's `config.json` (`workerModels`). The host's provider allowlist defaults to `openai-codex`; if the
-main's model is blocked, ask the user. Never expand the allowlist yourself.
+reusing an older non-reviewer worker. The user sets the name rules, models and thinking
+levels with `/team models`; never edit the host's `config.json` yourself. If a spawn
+fails with "Unavailable model", tell the user rather than retrying under other names.
 
 Spawning never asks for confirmation, including for another cwd. Workers load project
 instructions/skills at spawn; running workers do not hot-reload those files.

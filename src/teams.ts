@@ -9,6 +9,7 @@ import {
   type Storage, type TaskId, type Tx,
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { WorkerModel } from "./config.ts";
 import { ActionSchema, TOOL_DESCRIPTION, TOOL_NAME, type Action, type Actor, type Delivery, type Mode } from "./protocol.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -48,10 +49,8 @@ type ReporterResult = { answer?: EntryId; status: string };
 export type TeamsOptions = Omit<HarnessOptions, "registry"> & {
   registry?: ReturnType<typeof createRegistry>;
   validateModel?: (model: ModelRef) => void;
-  /** Host-wide worker model; when unset, workers use the main's current model. */
-  workerModel?: ModelRef;
-  /** Per-name worker models: key "review" matches any worker whose name contains it (case-insensitive). */
-  workerModels?: Record<string, ModelRef>;
+  /** Configured model for a new worker, read at each spawn; undefined uses the main's model and thinking level. */
+  workerModel?: (name: string) => Promise<WorkerModel | undefined>;
   workerAgent?: (cwd: string) => Promise<AgentChange>;
 };
 
@@ -191,8 +190,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const since = (messages.findLast(m => m.role === "user") as { timestamp?: number } | undefined)?.timestamp;
         // pi.agent holds the worker's configured model, thinking level and cwd.
         const agent = v.value.docs["pi.agent"] as { model?: ModelRef } | undefined;
-        let contextWindow: number | undefined;
-        try { contextWindow = agent?.model && options.models?.getModel(agent.model.provider, agent.model.modelId)?.contextWindow; } catch { /* provider not allowed or unknown */ }
+        const contextWindow = agent?.model && options.models?.getModel(agent.model.provider, agent.model.modelId)?.contextWindow;
         return { ...target, enabled: worker.enabled, agent, contextWindow, live: v.value.docs["pi.live"], usage: v.value.docs["pi.usage"], latest, since };
       } finally { v.dispose(); }
     }
@@ -245,11 +243,11 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       cwd = await realpath(args.cwd ?? team.main.cwd);
       if (!(await stat(cwd)).isDirectory()) throw new Error("cwd must be a directory");
       prepared = await options.workerAgent?.(cwd) ?? {};
-      // Model: per-name override, else the host's workerModel, else the main's; thinking level follows the main.
-      const byName = Object.entries(options.workerModels ?? {}).find(([key]) => args.name!.toLowerCase().includes(key.toLowerCase()))?.[1];
-      const model = byName ?? options.workerModel ?? team.main.model;
+      // Model: the configured one for this name, else the main's. Thinking: the configured level, else the main's.
+      const configured = await options.workerModel?.(args.name);
+      const model = configured ? { provider: configured.provider, modelId: configured.modelId } : team.main.model;
       options.validateModel?.(model);
-      prepared = { ...prepared, cwd, model, thinkingLevel: team.main.thinking };
+      prepared = { ...prepared, cwd, model, thinkingLevel: configured?.thinking ?? team.main.thinking };
     }
     const control = await root();
     return control.commit(async tx => {

@@ -11,6 +11,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { openTeams, type TeamsService } from "../src/teams.ts";
+import { readConfig, workerModelFor, writeWorkerModels } from "../src/config.ts";
 
 const ctx = BACKGROUND_CONTEXT;
 const model = { provider: "faux", modelId: "faux-1" };
@@ -113,22 +114,32 @@ test("worker model can invoke team; model policy and project configuration are p
     const inspection = await service.action(actor, { action: "inspect", request: String((spawned as any).taskId) }, "inspect") as any;
     assert.match(JSON.stringify(inspection.answer), /reader/);
   } finally { await service.close(); }
-  // A host workerModel replaces the main's model for new workers, under the same policy.
+  // config.json worker models replace the main's model, under the same policy, and are re-read on every spawn.
+  const state = await mkdtemp(join(tmpdir(), "teams-config-"));
+  await writeFile(join(state, "config.json"), JSON.stringify({ providerExtensions: [], note: "kept" }));
   const pinned = await openTeams(new MemoryStorage(), {
     models: fake.models, registry, env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd! }),
-    workerModel: { provider: "faux", modelId: "faux-1" },
-    // Per-name models win over workerModel: any name containing "review" gets it, other names don't.
-    workerModels: { review: { provider: "claude", modelId: "opus" } },
+    workerModel: async name => workerModelFor(await readConfig(state), name),
     validateModel: m => { if (m.provider !== "faux") throw new Error(`Provider ${m.provider} blocked`); },
   });
+  const agentOf = async (paidMain: any, name: string) =>
+    ((await pinned.action(paidMain, { action: "inspect", target: name }, `i-${name}`)) as any).agent;
   try {
-    const paidMain = await pinned.register({ sessionId: "paid2", secret: "q".repeat(36), name: "Paid", cwd: directory, model: { provider: "paid", modelId: "model" } });
-    const spawned = await pinned.action(paidMain, { action: "spawn", name: "pinned", message: "USE_TEAM_LIST" }, "pinned");
-    await settle(pinned, spawned);
+    const paidMain = await pinned.register({ sessionId: "paid2", secret: "q".repeat(36), name: "Paid", cwd: directory, model: { provider: "paid", modelId: "model" }, thinking: "medium" });
+    // No worker models yet: the main's (blocked) model.
+    await assert.rejects(pinned.action(paidMain, { action: "spawn", name: "early", message: "x" }, "r0"), /Provider paid blocked/);
+    // Edited while the host runs. Any name containing "review" gets its rule, other names the default.
+    await writeWorkerModels({ workerModel: { provider: "faux", modelId: "faux-1" }, workerModels: { review: { provider: "claude", modelId: "opus" } } }, state);
+    await settle(pinned, await pinned.action(paidMain, { action: "spawn", name: "pinned", message: "USE_TEAM_LIST" }, "pinned"));
+    assert.deepEqual(await agentOf(paidMain, "pinned").then(a => [a.model.modelId, a.thinkingLevel]), ["faux-1", "medium"]); // thinking follows the main
     await assert.rejects(pinned.action(paidMain, { action: "spawn", name: "review", message: "x" }, "r1"), /Provider claude blocked/);
     await assert.rejects(pinned.action(paidMain, { action: "spawn", name: "code-Reviewer", message: "x" }, "r2"), /Provider claude blocked/);
-    await settle(pinned, await pinned.action(paidMain, { action: "spawn", name: "reader", message: "USE_TEAM_LIST" }, "r3"));
-  } finally { await pinned.close(); await rm(directory, { recursive: true, force: true }); }
+    // A rule's thinking level wins over the main's; other config keys survive the write.
+    await writeWorkerModels({ workerModel: { provider: "faux", modelId: "faux-1" }, workerModels: { review: { provider: "faux", modelId: "faux-1", thinking: "high" } } }, state);
+    await settle(pinned, await pinned.action(paidMain, { action: "spawn", name: "ui-review", message: "USE_TEAM_LIST" }, "r3"));
+    assert.equal((await agentOf(paidMain, "ui-review")).thinkingLevel, "high");
+    assert.equal((await readConfig(state) as any).note, "kept");
+  } finally { await pinned.close(); await rm(directory, { recursive: true, force: true }); await rm(state, { recursive: true, force: true }); }
 });
 
 test("pending reports and request results survive reopening SQLite; no duplicate reports", async () => {

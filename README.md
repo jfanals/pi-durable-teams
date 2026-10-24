@@ -24,7 +24,7 @@ poll or send acknowledgement-only messages. Worker names stay reserved after sto
 Inspecting an agent returns its latest assistant message, which may be intermediate;
 inspecting a request returns that request's settled outcome/answer.
 
-Main commands: `/team` (pick a worker), `/team open <worker>`, `/team stop`,
+Main commands: `/team` (pick a worker), `/team open <worker>`, `/team models`, `/team stop`,
 `/team resume`, `/team reconnect`. A panel under the prompt shows each running worker
 on its own line (spinner, current activity, elapsed time, tokens) and counts idle and
 stopped ones. Pressing Down in an empty prompt (past the end of input history) moves
@@ -46,30 +46,35 @@ are only resolved inside a team. Mains cannot address another team's workers.
 Workers cannot create nested workers. Scope checks are workflow boundaries, not
 an OS sandbox against code running with the same user permissions.
 
-New workers use the main's selected model and thinking level (no per-worker
-choice) and its cwd unless `cwd` is given. The host reads Pi credentials/models through public ModelRuntime
-APIs. Its provider policy is `config.json` under its state directory:
+A worker runs in the main's cwd unless `cwd` is given. The model cannot choose a
+worker's model; `config.json` under the host's state directory does:
 
 ```json
 {
-  "allowedProviders": ["openai-codex", "claude-code"],
+  "providerExtensions": ["~/.pi/agent/git/github.com/earendil-works/pi-claude-code"],
   "workerModel": { "provider": "openai-codex", "modelId": "gpt-6.1-sol" },
-  "workerModels": { "review": { "provider": "claude-code", "modelId": "claude-opus-5-5" } },
-  "providerExtensions": ["~/.pi/agent/git/github.com/earendil-works/pi-claude-code"]
+  "workerModels": { "review": { "provider": "claude-code", "modelId": "claude-opus-5-5", "thinking": "high" } }
 }
 ```
 
-All but `allowedProviders` are optional. A new worker's model is, in order: its
-`workerModels` entry (key `review` matches any name containing it, case-insensitive,
-e.g. `review-auth` or `code-reviewer`; first matching key wins),
-then `workerModel`, then the main's model. Every choice is still subject to
-`allowedProviders`. `providerExtensions` lists Pi packages whose model providers the
-host loads (with Pi's loader); only their providers are used, not their commands or
-tools. Workers spawned before a change keep their model.
+A new worker uses the first `workerModels` rule whose key its name contains
+(case-insensitive, e.g. `review` matches `review-auth` and `code-reviewer`), else
+`workerModel`, else the main's model. `thinking` is optional; without it the worker
+follows the main's thinking level.
+`providerExtensions` lists Pi packages whose model providers the host loads (with Pi's
+loader); only their providers are used, not their commands or tools.
 
-Missing config defaults to Codex only; malformed config refuses startup. Restart
-the host explicitly after changes. Never expand the allowlist to bypass a blocked
-request. Main-selected providers registered only by an in-process extension must
+Edit worker models with `/team models`: pick the default or a name rule, then a model
+from Pi's scoped models (`/scoped-models`; all available models when none are scoped)
+(read live, so `/scoped-models` changes show up next time), then a thinking level. The host reads worker models
+on every spawn, so changes apply to the next worker without a restart. Running
+workers keep their model.
+
+A missing config means no worker models (workers use the main's model); a malformed
+config refuses startup or spawn. `providerExtensions` is read at host startup: restart
+the host explicitly after changing it. The host runs as its own process, so a model
+works for workers only if the host can reach it (credentials in Pi's `auth.json`, local
+servers running); otherwise the spawn fails with "Unavailable model". Main-selected providers registered only by an in-process extension must
 also be available to the standalone host through Pi's provider configuration.
 There is no silent model fallback. No custom private HTTP dispatcher imports.
 
@@ -181,8 +186,7 @@ or use SQLite-aware backup before copying its database.
 hook. It archives original global settings, legacy skills and launcher wrappers
 under `~/.pi/agent/retired-delegation/<timestamp>/`. It removes Fleet/pi-spawn/
 SwarmForge/session-control package configuration, installs this package, and replaces
-user `fleet` / `swarm` entry points with explanatory disabled stubs. It preserves
-the legacy provider allowlist. It does not stop any process or alter source repos,
+user `fleet` / `swarm` entry points with explanatory disabled stubs. It does not stop any process or alter source repos,
 transcripts, databases, launch records, worktrees, or leaf-repo SwarmForge files.
 Existing Pi processes retain loaded tools until reload/restart; old agents/daemon
 may still run until explicitly retired by their human owner.

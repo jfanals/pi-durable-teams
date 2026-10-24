@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { realpath, mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { CustomEditor, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
+import { CustomEditor, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui";
 import { Client } from "./client.ts";
 import { ActionSchema, IDENTITY_TYPE, MESSAGE_TYPE, SENT_TYPE, TOOL_DESCRIPTION, TOOL_NAME, type Delivery, type Mode } from "./protocol.ts";
 import { stateDir } from "./paths.ts";
+import { readConfig, writeWorkerModels, type WorkerModel } from "./config.ts";
 import { glyph, liveStatus, renderDelivery, renderSent, renderTeamCall, renderTeamResult, statusWord, TeamPanel, teamResultSummary, WorkerView, type ViewResult, type WorkerStatus } from "./ui.ts";
 
 export default function durableTeams(pi: ExtensionAPI, createClient = () => new Client()) {
@@ -243,10 +245,51 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
       workers = await roster(current);
     }
   }
+  // Worker models live in the host's config.json; the host reads them on every spawn, so edits apply to the next worker.
+  // Choices are Pi's scoped models, read live (all available models when none are scoped).
+  async function editModels(ctx: ExtensionCommandContext) {
+    const label = (m?: WorkerModel) => m ? `${m.provider}/${m.modelId} · ${m.thinking ?? "main's thinking"}` : "main session's model";
+    for (;;) {
+      const config = await readConfig();
+      const rules = Object.entries(config.workerModels ?? {});
+      const rows = [`default  ${label(config.workerModel)}`, ...rules.map(([key, m]) => `name contains "${key}"  ${label(m)}`), "+ add name rule"];
+      const picked = rows.indexOf(await ctx.ui.select("Team models · first matching name rule wins, else default", rows) ?? "");
+      if (picked < 0) return;
+      const save = (workerModel: WorkerModel | undefined, workerModels: Record<string, WorkerModel>) =>
+        writeWorkerModels({ workerModel, workerModels: Object.keys(workerModels).length ? workerModels : undefined });
+      if (picked === 0) {
+        const model = await chooseModel(ctx, "main session's model");
+        if (model !== null) await save(model, Object.fromEntries(rules));
+        continue;
+      }
+      const key = picked === rows.length - 1 ? (await ctx.ui.input("Name contains", "e.g. review, test, docs"))?.trim() : rules[picked - 1]![0];
+      if (!key) continue;
+      if (picked < rows.length - 1 && await ctx.ui.select(`Rule "${key}"`, ["Change model", "Remove rule"]) === "Remove rule") {
+        await save(config.workerModel, Object.fromEntries(rules.filter(([k]) => k !== key))); continue;
+      }
+      const model = await chooseModel(ctx);
+      if (model) await save(config.workerModel, { ...Object.fromEntries(rules), [key]: model });
+    }
+  }
+  /** A model and thinking level; undefined for the `unset` row, null when cancelled. */
+  async function chooseModel(ctx: ExtensionCommandContext, unset?: string): Promise<WorkerModel | undefined | null> {
+    const models = ctx.scopedModels.length ? ctx.scopedModels.map(s => s.model) : ctx.modelRegistry.getAvailable();
+    if (!models.length) { ctx.ui.notify("No models available; log in or configure models first", "error"); return null; }
+    const names = [...(unset ? [unset] : []), ...models.map(m => `${m.provider}/${m.id}`)];
+    const picked = names.indexOf(await ctx.ui.select("Worker model", names) ?? "");
+    if (picked < 0) return null;
+    if (unset && picked === 0) return undefined;
+    const model = models[picked - (unset ? 1 : 0)]!;
+    const levels = ["main's thinking", ...getSupportedThinkingLevels(model)];
+    const thinking = await ctx.ui.select(`Thinking · ${model.id}`, levels);
+    if (thinking === undefined) return null;
+    return { provider: model.provider, modelId: model.id, ...(thinking === levels[0] ? {} : { thinking: thinking as WorkerModel["thinking"] }) };
+  }
   pi.registerCommand("team", {
-    description: "Durable team: open the worker view, or open <worker> | stop | resume | reconnect",
-    getArgumentCompletions: prefix => ["open", "stop", "resume", "reconnect"].filter(c => c.startsWith(prefix)).map(c => ({ value: c, label: c })),
+    description: "Durable team: open the worker view, or open <worker> | models | stop | resume | reconnect",
+    getArgumentCompletions: prefix => ["open", "models", "stop", "resume", "reconnect"].filter(c => c.startsWith(prefix)).map(c => ({ value: c, label: c })),
     async handler(raw, ctx) {
+      if (raw.trim() === "models") return editModels(ctx);
       const current = active;
       if (!current) throw new Error("No active team session");
       current.ctx = ctx;
@@ -267,7 +310,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
         const result = await call(current, { action: "stop", team: true }, randomUUID());
         ctx.ui.notify(teamResultSummary({ action: "stop", team: true }, result), "info"); void refreshRoster(current); return;
       }
-      if (command && command !== "open") throw new Error("Use /team, /team open <worker>, /team stop, /team resume or /team reconnect");
+      if (command && command !== "open") throw new Error("Use /team, /team open <worker>, /team models, /team stop, /team resume or /team reconnect");
       if (ctx.mode !== "tui") {
         const workers = await roster(current);
         ctx.ui.notify(workers.map(w => `${glyph(w)} ${w.name} · ${statusWord(w)}`).join("\n") || "No workers in this session", "info"); return;

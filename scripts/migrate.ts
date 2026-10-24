@@ -11,10 +11,6 @@ export function migrate(home: string, packageRoot: string) {
   const original = readFileSync(settingsPath, "utf8");
   const settings = JSON.parse(original);
   if ((settings.packages ?? []).some((entry: unknown) => entry === packageRoot)) throw new Error("New package is already configured; no second migration was performed");
-  const oldConfig = join(agent, "claude-fleet", "config.json");
-  const newConfig = join(agent, "durable-teams", "config.json");
-  const allowedProviders = existsSync(oldConfig) ? JSON.parse(readFileSync(oldConfig, "utf8")).allowedProviders : ["openai-codex"];
-  if (!Array.isArray(allowedProviders) || !allowedProviders.every(x => typeof x === "string")) throw new Error("Invalid old provider policy; inspect before migration");
   const backup = join(agent, "retired-delegation", new Date().toISOString().replaceAll(":", "-"));
   mkdirSync(backup, { recursive: true, mode: 0o700 });
   writeFileSync(join(backup, "settings.json"), original, { mode: 0o600 });
@@ -42,11 +38,6 @@ export function migrate(home: string, packageRoot: string) {
     if (!existsSync(path!)) continue;
     archive(path!, relative!, "command");
     writeFileSync(path!, '#!/bin/sh\nprintf "%s\\n" "Legacy delegation is deactivated. Use Pi durable-teams (team tool or /team). Source and runtime history were preserved." >&2\nexit 1\n', { mode: 0o755 });
-  }
-  // Preserve the existing provider spending policy rather than silently opening providers.
-  if (!existsSync(newConfig)) {
-    mkdirSync(dirname(newConfig), { recursive: true, mode: 0o700 });
-    writeFileSync(newConfig, JSON.stringify({ allowedProviders }, null, 2) + "\n", { mode: 0o600 });
   }
   // Refuse to overwrite a settings edit made while the inventory was being written.
   if (readFileSync(settingsPath, "utf8") !== original) throw new Error(`Settings changed during migration. Restore moved files using ${backup}/manifest.json before retrying.`);
