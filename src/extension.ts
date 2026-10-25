@@ -92,6 +92,18 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
   let polling: ReturnType<typeof setTimeout> | undefined;
   let panel: TeamPanel | undefined;
   let rosterRun = 0; // only the newest refresh renders and schedules, so overlapping calls never fork polling chains
+  // Inside cmux, a pill on the workspace card shows how many workers are running; hidden when none are.
+  // One key per Pi tab; --pid lets cmux drop it if this process dies. Sent only when the text changes.
+  const pillKey = process.env.CMUX_WORKSPACE_ID && `durable-teams-${process.env.CMUX_SURFACE_ID ?? process.pid}`;
+  let pill = "";
+  function setPill(running: number) {
+    const text = running ? `${running} ${running === 1 ? "worker" : "workers"}` : "";
+    if (!pillKey || text === pill) return;
+    pill = text;
+    void pi.exec("cmux", text
+      ? ["set-status", pillKey, text, "--icon", "person.2.fill", "--color", "#0A84FF", "--priority", "70", "--pid", String(process.pid)]
+      : ["clear-status", pillKey], { timeout: 2000 }).catch(() => undefined);
+  }
   async function refreshRoster(current: Current) {
     if (polling) clearTimeout(polling);
     polling = undefined;
@@ -100,6 +112,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
       const workers = await roster(current);
       if (run !== rosterRun || active !== current || current.life.signal.aborted) return;
       panel?.setWorkers(workers);
+      setPill(workers.filter(worker => worker.running).length);
       if (workers.some(worker => worker.running)) polling = setTimeout(() => void refreshRoster(current), 2000);
     } catch {
       // Connection problems are reported by connect(); keep retrying so the panel recovers.
@@ -146,7 +159,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
     void connect(current);
   });
   pi.on("session_shutdown", () => {
-    active?.life.abort(); if (polling) clearTimeout(polling); active = undefined;
+    active?.life.abort(); if (polling) clearTimeout(polling); active = undefined; setPill(0);
     unsubscribeInput?.(); unsubscribeInput = undefined;
   });
   pi.on("message_end", async (event, ctx) => {

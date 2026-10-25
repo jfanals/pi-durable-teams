@@ -40,6 +40,9 @@ and does not inject tool-by-tool activity into model context.
 Incoming reports render as compact cards (sender, source, first lines); Ctrl+O
 expands the full Markdown and IDs. The model still receives the complete report.
 
+Inside [cmux](https://www.cmux.dev), the workspace card also shows a `2 workers` pill while
+workers run; it is hidden when none are.
+
 Every agent can discover/message/inspect teammates. Only mains can spawn/stop
 workers and discover/message other mains. Use IDs for cross-main messages; names
 are only resolved inside a team. Mains cannot address another team's workers.
