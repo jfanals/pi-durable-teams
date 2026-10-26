@@ -311,7 +311,7 @@ class (upstream export request). A single checked compatibility import loads the
 theme; the app uses public TUI keybindings, so your `keybindings.json` is not
 loaded yet.
 
-- List: **↑↓** select, **Enter/→** open, **n** create, **r** rename, **q** quit, **x** disable (confirm with **y**).
+- List: **↑↓** select, **Enter/→** open, **n** create, **r** rename, **o** show/hide offline Pi sessions (hidden by default), **q** quit, **x** disable (confirm with **y**).
 - New agent: enter a unique name, then pick an existing working directory.
   Folder picker: **↑↓** move, **→** enter folder, **←** parent, **Enter** choose,
   typing filters, **Backspace** edits, **Esc** back. Recent directories appear first;

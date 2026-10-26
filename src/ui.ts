@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 
 import { getMarkdownTheme, getSelectListTheme, keyText, type Theme } from "@earendil-works/pi-coding-agent";
 import {
-  Box, Editor, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, stripTerminalSequences, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi,
+  Box, Editor, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, stripTerminalSequences, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi,
   type Component, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import type { Action, Delivery, Mode } from "./protocol.ts";
@@ -141,6 +141,7 @@ export class TeamPanel implements Component, Focusable {
   private selected = 0;
   private frame = 0;
   private ticker?: ReturnType<typeof setInterval>;
+  private expiry?: ReturnType<typeof setTimeout>;
   private rows: (WorkerStatus | undefined)[] = [];
   private returnTo?: Component;
   private focus: (component: Component) => void;
@@ -159,8 +160,12 @@ export class TeamPanel implements Component, Focusable {
     const index = this.workers.findIndex(w => w.id === keep);
     this.selected = index >= 0 ? index : Math.min(this.selected, Math.max(0, this.workers.length - 1));
     if (!this.workers.length && this.focused) this.leave();
-    // Tick while something animates or a recent row still has to expire.
-    const running = this.workers.some(w => w.running || recent(w, Date.now()));
+    // Animate only running workers; recent idle rows need just one expiry render.
+    clearTimeout(this.expiry);
+    const now = Date.now();
+    const expires = this.workers.filter(w => recent(w, now)).map(w => w.finishedAt! + RECENT_MS - now);
+    if (expires.length && !this.compact) this.expiry = setTimeout(() => this.setWorkers(this.workers), Math.min(...expires));
+    const running = this.workers.some(w => w.running);
     if (running && !this.ticker) this.ticker = setInterval(() => { this.frame++; this.tui.requestRender(); }, 100);
     if (!running && this.ticker) { clearInterval(this.ticker); this.ticker = undefined; }
     this.tui.requestRender();
@@ -226,7 +231,7 @@ export class TeamPanel implements Component, Focusable {
     return { handled: true };
   }
   invalidate() {}
-  dispose() { if (this.ticker) clearInterval(this.ticker); this.ticker = undefined; }
+  dispose() { if (this.ticker) clearInterval(this.ticker); this.ticker = undefined; clearTimeout(this.expiry); }
 }
 
 /** Shows the first `max` rendered lines and how many are hidden. */
@@ -447,10 +452,13 @@ class Transcript implements Component {
   private timer?: ReturnType<typeof setTimeout>;
   private parent: AbortSignal;
   private onParentAbort = () => this.dispose();
+  private loader?: Loader;
+  private showWorking: boolean;
   private clockTimer?: ReturnType<typeof setInterval>; // ticks the "working" time while the worker runs
 
   tui: TUI; theme: Theme; name: string; source: WorkerSource;
-  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal) {
+  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, showWorking = false) {
+    this.showWorking = showWorking;
     this.tui = tui; this.theme = theme; this.name = name; this.source = source;
     this.parent = parent;
     parent.addEventListener("abort", this.onParentAbort, { once: true });
@@ -479,7 +487,8 @@ class Transcript implements Component {
           for (const entry of page.entries) this.entries.set(String(entry.id), entry);
           if (!this.olderLoaded) this.next = page.next;
           this.status = status; this.note = undefined; this.version++;
-          if (status.running && !this.clockTimer) this.clockTimer = setInterval(() => this.tui.requestRender(), 1000);
+          this.updateWorking();
+          if (status.running && !this.clockTimer) this.clockTimer = setInterval(() => { this.updateWorking(); this.tui.requestRender(); }, 1000);
           if (!status.running && this.clockTimer) { clearInterval(this.clockTimer); this.clockTimer = undefined; }
         } catch (error) {
           if (this.life.signal.aborted) return;
@@ -490,6 +499,13 @@ class Transcript implements Component {
     })().finally(() => { this.refreshing = undefined; });
     return this.refreshing;
   }
+  private updateWorking() {
+    const s = this.status;
+    if (!this.showWorking || !s?.running) { this.loader?.stop(); this.loader = undefined; return; }
+    this.loader ??= new Loader(this.tui, text => this.theme.fg("accent", text), text => this.theme.fg("muted", text));
+    this.loader.setMessage(`${s.activity || "Working…"} · ${formatDuration(s.since === undefined ? 0 : Date.now() - s.since)} (esc to stop)`);
+  }
+  workingLine(width: number) { return this.loader?.render(width) ?? []; }
   async older() {
     if (!this.next) { this.note = "start of transcript"; this.changed(); return; }
     try {
@@ -533,6 +549,7 @@ class Transcript implements Component {
   render(width: number) { return this.lines(width); }
   invalidate() { this.cache = undefined; }
   dispose() {
+    this.loader?.stop(); this.loader = undefined;
     this.life.abort(); if (this.timer) clearTimeout(this.timer);
     if (this.clockTimer) clearInterval(this.clockTimer); this.clockTimer = undefined;
     this.parent.removeEventListener("abort", this.onParentAbort);
@@ -604,7 +621,7 @@ export class ChatView implements Component, Focusable {
   readonly layout: VStack;
   constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }, branch: () => string = () => "") {
     this.actions = actions;
-    this.transcript = new Transcript(tui, theme, name, source, parent);
+    this.transcript = new Transcript(tui, theme, name, source, parent, true);
     this.editor = new Editor(tui, { borderColor: text => theme.fg("accent", text), selectList: getSelectListTheme() });
     this.editor.onSubmit = text => this.submit(text, "steer");
     if (children) this.panel = new TeamPanel(tui, theme, children.open, { compact: true, focus: component => {
@@ -629,7 +646,8 @@ export class ChatView implements Component, Focusable {
       const hints = `${s?.name ?? name} · ${s?.id ?? "…"} · ← back · esc stop · alt+enter follow-up`;
       return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
     }, invalidate() {} };
-    this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, this.editor, ...(this.panel ? [this.panel] : []), footer]);
+    const working = { render: (width: number) => this.transcript.workingLine(width), invalidate() {} };
+    this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, working, this.editor, ...(this.panel ? [this.panel] : []), footer]);
   }
   setChildren(workers: WorkerStatus[]) { this.panel?.setWorkers(workers); }
   focusChild(target: string) { this.panel?.enter(this.editor, target); }

@@ -31,6 +31,7 @@ export class AgentsApp implements Component, Focusable {
     });
   }
   private renaming?: { agent: AgentSummary; error?: string };
+  private showOffline = false;
   private selected = 0; private view?: ChatView;
   private note = "Connecting…"; private editor: Editor;
   private form?: { step: number; name: string; cwd: string; model?: WorkerModel; choices: ModelChoice[]; error?: string };
@@ -67,10 +68,10 @@ export class AgentsApp implements Component, Focusable {
       try {
         await this.source.roster(this.life.signal, rows => {
           // Rows reorder by recency: keep the selection on the same agent.
-          const selectedId = this.rows()[this.selected]?.agent.id;
+          const selectedId = this.listRows()[this.selected]?.agent.id;
           this.agents = rows;
           for (const { agent } of this.rows()) this.loadBranch(agent.cwd);
-          const index = this.rows().findIndex(row => row.agent.id === selectedId);
+          const index = this.listRows().findIndex(row => row.agent.id === selectedId);
           if (index >= 0) this.selected = index;
           this.view?.setChildren(this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent.children ?? []); this.note = ""; delay = 250;
           const running = this.rows().some(row => row.agent.running);
@@ -94,11 +95,21 @@ export class AgentsApp implements Component, Focusable {
     const root = this.form || this.confirming || this.renaming ? this : this.view?.layout ?? list;
     this.tui.setLayoutRoot(root);
   }
-  private rows() {
+  private rows(visible = false) {
     const out: { agent: AgentSummary; depth: number }[] = [];
-    const visit = (agents: AgentSummary[], depth: number) => { for (const agent of agents) { out.push({ agent, depth }); visit(agent.children, depth + 1); } };
+    const visit = (agents: AgentSummary[], depth: number) => {
+      for (const agent of agents) {
+        if (visible && !this.showOffline && this.offline(agent)) { visit(agent.children, depth); continue; }
+        out.push({ agent, depth }); visit(agent.children, depth + 1);
+      }
+    };
     visit(this.agents, 0); return out;
   }
+  private offline(agent: AgentSummary): boolean {
+    return !agent.hosted && !agent.connected && !this.hasRunning(agent);
+  }
+  private hasRunning(agent: AgentSummary): boolean { return !!agent.running || agent.children.some(child => this.hasRunning(child)); }
+  private listRows() { return this.rows(true); }
   private fail(error: unknown) { this.note = String(error); this.tui.requestRender(); }
   private open(agent: AgentSummary, push = true) {
     if (push) {
@@ -204,7 +215,7 @@ export class AgentsApp implements Component, Focusable {
     this.tui.requestRender();
   }
   private list(width: number): string[] {
-    const rows = this.rows(); this.selected = Math.max(0, Math.min(this.selected, rows.length - 1));
+    const rows = this.listRows(); this.selected = Math.max(0, Math.min(this.selected, rows.length - 1));
     const height = this.tui.terminal.rows;
     const hints = width >= 64 ? ["↑↓ select · enter/→ open · n new · r rename · x disable · q quit"]
       : ["↑↓ select · enter/→ open · n new", "r rename · x disable · q quit"];
@@ -217,10 +228,11 @@ export class AgentsApp implements Component, Focusable {
       lines.push(statusRow(display, width, index + start === this.selected, Date.now(), this.theme, nameWidth, this.frame, a.hosted ? undefined : `${a.connected ? "connected" : "offline"}`, 60));
     }
     while (lines.length < height - 2 - hints.length) lines.push("");
-    const total = formatCost(rows.reduce((sum, row) => sum + (row.agent.cost ?? 0), 0));
-    const offline = this.agents.filter(a => !a.hosted && !a.connected).length;
+    const all = this.rows();
+    const total = formatCost(all.reduce((sum, row) => sum + (row.agent.cost ?? 0), 0));
+    const offline = this.agents.filter(a => this.offline(a)).length;
     const running = this.agents.filter(a => a.running).length;
-    const summary = `${running} running · ${this.agents.length - running - offline} idle · ${offline} offline · total ${total || "$0.000"}${rows.some(row => row.agent.subscription) ? " (sub)" : ""}`;
+    const summary = `${running} running · ${this.agents.length - running - offline} idle · ${offline ? `${offline} offline${this.showOffline ? " (o hide)" : " hidden (o show)"} · ` : ""}total ${total || "$0.000"}${all.some(row => row.agent.subscription) ? " (sub)" : ""}`;
     lines.push(this.theme.fg("dim", summary), this.note, ...hints);
     return lines.map(line => truncateToWidth(line, width));
   }
@@ -253,15 +265,21 @@ export class AgentsApp implements Component, Focusable {
     else if (this.confirming) { const target = this.confirming; this.confirming = undefined; if (data === "y") void this.source.disable(target.id).catch(error => this.fail(error)); }
     else if (this.view) this.view.handleInput(data);
     else if (matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-    else if (matchesKey(data, Key.down)) this.selected = Math.min(this.rows().length - 1, this.selected + 1);
-    else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) { const row = this.rows()[this.selected]; if (row) this.open(row.agent); }
+    else if (matchesKey(data, Key.down)) this.selected = Math.min(this.listRows().length - 1, this.selected + 1);
+    else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) { const row = this.listRows()[this.selected]; if (row) this.open(row.agent); }
+    else if (data === "o") {
+      const id = this.listRows()[this.selected]?.agent.id;
+      this.showOffline = !this.showOffline;
+      const index = this.listRows().findIndex(row => row.agent.id === id);
+      if (index >= 0) this.selected = index;
+    }
     else if (data === "r") {
-      const agent = this.rows()[this.selected]?.agent;
+      const agent = this.listRows()[this.selected]?.agent;
       if (agent?.hosted) { this.renaming = { agent }; this.editor.setText(agent.name); }
       else this.note = "External Pi sessions cannot be renamed";
     }
     else if (data === "q") { this.dispose(); this.tui.stop(); this.exit(); return; }
-    else if (data === "x") this.confirming = this.rows()[this.selected]?.agent;
+    else if (data === "x") this.confirming = this.listRows()[this.selected]?.agent;
     else if (data === "n") { this.form = { step: 0, name: "", cwd: "", model: this.model, choices: [] }; this.note = ""; this.formStep(0); }
     this.setScreen();
     this.tui.requestRender();

@@ -44,7 +44,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     tui.addChild(app); tui.setFocus(app); tui.start();
     const list = await wait("beta"); assert.match(list, /alpha/); print?.("list", list);
     assert.ok(list.indexOf("beta") < list.indexOf("alpha"), "most recent agent first");
-    assert.match(list, /0 running · 2 idle · 0 offline · total \$/);
+    assert.match(list, /0 running · 2 idle · total \$/);
     assert.match(list, /r rename.*x disable.*q quit/);
     await key("\x1b[B"); await key("\r"); await wait(`alpha · ${alphaId}`); // alpha is second: beta is newer.
     await key("Hello"); await key("\r"); const chat = await wait("Hello from the faux agent."); print?.("chat", chat);
@@ -56,8 +56,14 @@ export async function appScenario(width: number, height: number, print?: (name: 
     assert.doesNotMatch(chat, /↓ to select/);
     await key("SLOW"); await key("\r");
     await until(async () => (await alpha())?.running === true);
+    const working = await wait("(esc to stop)"); print?.("working", working);
+    const workingIndex = working.split("\n").findIndex(line => line.includes("(esc to stop)"));
+    assert.match(working.split("\n")[workingIndex + 1]!, /─/, "working line immediately above editor border");
+    assert.match(working, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] .+ · \d+s \(esc to stop\)/);
     await key("\x1b");
     await until(async () => (await alpha())?.running === false);
+    await until(async () => !(await frame()).includes("(esc to stop)"));
+    print?.("idle after stop", await frame());
     assert.equal((await alpha())?.enabled, true);
     await key("SCROLL"); await key("\r"); await wait("Transcript line 80");
     const bottom = await frame();
@@ -114,8 +120,13 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await until(async () => (await alpha())!.children.length > 0);
     const identity = { sessionId: "external", secret: "s".repeat(36) };
     await source.client.call("register", { ...identity, name: "Pi main", cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
-    const roster = await wait("Pi main (Pi)"); assert.match(roster, /  reader/); assert.doesNotMatch(roster, /Pi · (connected|offline)/);
+    const hidden = await wait("1 offline hidden (o show)");
+    assert.doesNotMatch(hidden, /Pi main/); print?.("offline hidden", hidden);
+    await key("o");
+    const roster = await wait("Pi main (Pi)");
+    assert.match(roster, /1 offline \(o hide\)/); assert.match(roster, /  reader/); assert.doesNotMatch(roster, /Pi · (connected|offline)/);
     print?.("nested and Pi", roster);
+    await key("o"); await wait("1 offline hidden (o show)");
     await key("r"); await wait("Rename agent");
     await key("\x15"); await key("beta"); await key("\r"); await wait("Name already exists");
     assert.match(await frame(), /beta/);
@@ -128,6 +139,17 @@ export async function appScenario(width: number, height: number, print?: (name: 
     const renamed = await wait("renamed"); assert.equal((await alpha())!.name, "renamed"); print?.("renamed", renamed);
     await key("\r"); const collapsedTeam = await wait("1 idle");
     assert.match(collapsedTeam, /1 idle · 0 stopped · team \$0\.000 · ↓ to select/); print?.("team collapsed", collapsedTeam);
+    const readerId = (await alpha())!.children[0]!.id;
+    await source.send(readerId, "SLOW");
+    const spinner = (screen: string) => screen.split("\n").find(line => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*reader/.test(line))?.match(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)?.[0];
+    await until(async () => !!spinner(await frame()));
+    const teamRunning = await frame(); print?.("team running", teamRunning);
+    await until(async () => spinner(await frame()) !== spinner(teamRunning));
+    await key("\x1b[D"); await wait("n new");
+    const listRunning = await frame(); assert.ok(spinner(listRunning)); print?.("list running child", listRunning);
+    await until(async () => spinner(await frame()) !== spinner(listRunning));
+    await key("\r"); await wait("reader");
+    await source.stop(readerId); await wait("1 idle");
     await key("\x1b[B"); const panel = await wait("enter open"); print?.("sub-agent panel", panel);
     await key("\x1b[A"); assert.doesNotMatch(await frame(), /enter open/);
     await key("\x1b[B"); await key("\x1b"); assert.doesNotMatch(await frame(), /enter open/);
