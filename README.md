@@ -6,6 +6,24 @@ completion polling, or mirrored Durable main conversation.
 
 Node 24+, Pi 1.4.0. Dependencies are pinned; Durable is experimental.
 
+## Web tools in hosted agents
+
+Hosted agents and workers share one `pi-web-access-mcp` stdio server. The host
+registers its enabled tools (`web_search`, `fetch_content`, `get_search_content`,
+`source_check`) with their upstream schemas. It reads `~/.pi/agent/web-search.json`
+and provider environment variables; restart the host after changing configuration.
+Web reads are replay-safe. A disconnected server restarts on the next call; the
+failed call is returned as a tool error, not silently retried.
+
+MCP-mode limits (see [upstream](https://github.com/nicobailon/pi-web-access#use-from-other-agents-mcp)):
+
+- No curator or summaries; configured workflows are ignored.
+- No Kimi search or OpenAI search through ChatGPT sign-in/the current Pi model.
+- No `fetch_content` answer/extract modes, video prompts/frames, or direct image fetches.
+- `includeContent` waits for page fetching before returning search results.
+- `get_search_content` retains only the latest 50 results in server memory, shared
+  across agents. Server/host restarts lose those results; search again for a fresh ID.
+
 ## Use
 
 Install dependencies with `npm ci --ignore-scripts`, add this package's absolute

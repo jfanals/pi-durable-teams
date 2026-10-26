@@ -13,7 +13,9 @@
   },
   "dependencies": {
     "@earendil-works/chord": "1.4.0",
-    "@earendil-works/pi-durable": "1.4.0"
+    "@earendil-works/pi-durable": "1.4.0",
+    "@earendil-works/pi-mcp": "1.4.0",
+    "pi-web-access": "0.45.0"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
