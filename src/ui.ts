@@ -127,8 +127,10 @@ export class TeamPanel implements Component, Focusable {
   private ticker?: ReturnType<typeof setInterval>;
   private rows: (WorkerStatus | undefined)[] = [];
   private returnTo?: Component;
+  private focus: (component: Component) => void;
+  private compact: boolean;
   private tui: TUI; private theme: Theme; private onOpen: (worker: WorkerStatus) => void;
-  constructor(tui: TUI, theme: Theme, onOpen: (worker: WorkerStatus) => void) { this.tui = tui; this.theme = theme; this.onOpen = onOpen; }
+  constructor(tui: TUI, theme: Theme, onOpen: (worker: WorkerStatus) => void, options: { compact?: boolean; focus?: (component: Component) => void } = {}) { this.tui = tui; this.theme = theme; this.onOpen = onOpen; this.compact = options.compact ?? false; this.focus = options.focus ?? (component => tui.setFocus(component)); }
 
   get hasWorkers() { return this.workers.length > 0; }
   /** Focused component, so the caller can check the main prompt has focus. Not on Pi's public TUI type. */
@@ -147,11 +149,11 @@ export class TeamPanel implements Component, Focusable {
     if (!running && this.ticker) { clearInterval(this.ticker); this.ticker = undefined; }
     this.tui.requestRender();
   }
-  enter(editor: Component) { this.returnTo = editor; this.selected = 0; this.tui.setFocus(this); this.tui.requestRender(); }
+  enter(editor: Component, target?: string) { this.returnTo = editor; this.selected = Math.max(0, this.workers.findIndex(w => w.id === target)); this.focus(this); this.tui.requestRender(); }
   private leave(forward?: string) {
     const editor = this.returnTo;
     if (!editor) return;
-    this.tui.setFocus(editor);
+    this.focus(editor);
     if (forward) editor.handleInput?.(forward);
     this.tui.requestRender();
   }
@@ -173,6 +175,7 @@ export class TeamPanel implements Component, Focusable {
       push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · enter open · esc back`), width));
       return lines;
     }
+    if (this.compact) return [truncateToWidth(t.fg("dim", `  team · ${this.workers.filter(w => w.enabled && w.running).length} running · ${this.workers.filter(w => w.enabled && !w.running).length} idle · ${this.workers.filter(w => !w.enabled).length} stopped · ↓ to select`), width)];
     const running = this.workers.filter(w => w.running);
     const shown = [...running, ...this.workers.filter(w => recent(w, now))];
     for (const w of shown.slice(0, VISIBLE_RUNNING)) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
@@ -573,20 +576,27 @@ export class WorkerView implements Component {
 /** Standalone chat shell. The alternate-screen TUI owns layout and scrolling. */
 export class ChatView implements Component, Focusable {
   get focused() { return this.editor.focused; }
-  set focused(value: boolean) { this.editor.focused = value; }
+  set focused(value: boolean) { this.editor.focused = value && !this.panel?.focused; }
   private transcript: Transcript;
   private editor: Editor;
   private actions: ChatActions;
+  private panel?: TeamPanel;
   readonly layout: VStack;
-  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "") {
+  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }) {
     this.actions = actions;
     this.transcript = new Transcript(tui, theme, name, source, parent);
     this.editor = new Editor(tui, { borderColor: text => theme.fg("accent", text), selectList: getSelectListTheme() });
     this.editor.onSubmit = text => this.submit(text, "steer");
+    if (children) this.panel = new TeamPanel(tui, theme, children.open, { compact: true, focus: component => {
+      this.panel!.focused = component === this.panel;
+      this.editor.focused = component !== this.panel;
+    } });
     const scroll = new ScrollView(this.transcript, { follow: "end", primary: true });
     const footer = { render: (width: number) => [truncateToWidth(theme.fg("dim", [name, this.transcript.details(Date.now()), this.transcript.note, notice()].filter(Boolean).join(" · ")), width), truncateToWidth(theme.fg("dim", "enter send · alt+enter follow-up · esc stop · ← back"), width)], invalidate() {} };
-    this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, this.editor, footer]);
+    this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, this.editor, ...(this.panel ? [this.panel] : []), footer]);
   }
+  setChildren(workers: WorkerStatus[]) { this.panel?.setWorkers(workers); }
+  focusChild(target: string) { this.panel?.enter(this.editor, target); }
   private submit(text: string, mode: Mode) {
     if (!text.trim()) return;
     this.editor.setText("");
@@ -598,10 +608,12 @@ export class ChatView implements Component, Focusable {
   render(width: number) { return this.layout.render(width); }
   handleInput(data: string) {
     if (matchesKey(data, Key.left) && !this.editor.getText()) return this.actions.back();
+    if (this.panel?.focused) { this.panel.handleInput(data); return; }
+    if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasWorkers) { this.panel.enter(this.editor); return; }
     if (matchesKey(data, Key.escape)) { void this.actions.stop().catch(error => { this.transcript.note = String(error); this.transcript.changed(); }); return; }
     if (matchesKey(data, "alt+enter")) return this.submit(this.editor.getExpandedText(), "followUp");
     this.editor.handleInput(data);
   }
   invalidate() { this.transcript.invalidate(); this.editor.invalidate(); }
-  dispose() { this.transcript.dispose(); }
+  dispose() { this.transcript.dispose(); this.panel?.dispose(); }
 }

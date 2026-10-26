@@ -68,6 +68,8 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
     assert.ok((await bound.page()).entries.length > 0);
     await source.setModel(target, "faux", "faux-2", "high", { requestId: "create" });
     await until(() => roster[0]?.model === "faux-2" && roster[0]?.thinking === "high");
+    await source.rename(target, "renamed", { requestId: "rename" });
+    await until(() => roster[0]?.name === "renamed");
     await source.send(target, "Next request");
     await until(() => roster[0]?.running === true);
     assert.deepEqual((await source.stop(target)).aborted, [target]);
@@ -85,6 +87,7 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
     await until(() => roster.some(row => row.id === identity.sessionId && row.connected));
     assert.ok((await source.send(identity.sessionId, "Hello Pi")).delivery);
     await assert.rejects(source.page(identity.sessionId), /external/i);
+    await assert.rejects(source.rename(identity.sessionId, "no"), /cannot be renamed/);
     for (const route of ["agents/watch", "watch"]) {
       const response = await new Promise<{ status?: number; contentType?: string; body: { error: string } }>((resolve, reject) => {
         const req = request({ socketPath: socket, path: `/${route}?refresh=1`, method: "POST" }, res => {

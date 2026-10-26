@@ -44,6 +44,7 @@ test("hosted agents delegate, exchange reports, obey tree reach and persist acro
     assert.ok(!("thinking" in ActionSchema.properties));
     assert.equal(Value.Check(ActionSchema, { action: "newAgent" }), false);
     assert.equal(Value.Check(ActionSchema, { action: "model" }), false);
+    assert.equal(Value.Check(ActionSchema, { action: "rename", target: "1", name: "x" }), false);
     const concurrent = await Promise.allSettled(["a", "a-race"].map(request =>
       service.action(human, { action: "newAgent", name: "A", cwd: directory }, request)));
     assert.equal(concurrent.filter(result => result.status === "fulfilled").length, 1);
@@ -91,7 +92,15 @@ test("hosted agents delegate, exchange reports, obey tree reach and persist acro
     const configured = await service.action(human, { action: "inspect", target: reader.id }, "") as any;
     assert.deepEqual(configured.agent.model, alternate); assert.equal(configured.latest.model, "faux-2");
     assert.equal(configured.agent.thinkingLevel, "high");
+    await assert.rejects(service.action(a, { action: "rename", target: a.id, name: "renamed" }, "denied-rename"), /human/);
+    await assert.rejects(service.action(human, { action: "rename", target: a.id, name: "B" }, "duplicate-rename"), /Name already exists/);
+    await assert.rejects(service.action(human, { action: "rename", target: a.id, name: "main" }, "invalid-rename"), /unique/);
+    await service.action(human, { action: "rename", target: a.id, name: "renamed" }, "rename");
+    const renamed = await service.action(human, { action: "inspect", target: a.id }, "") as any;
+    assert.match(renamed.agent.instructions, /^You are agent renamed\./);
+    assert.match(renamed.agent.instructions, /Project instructions/);
     await service.close(); service = await open();
+    assert.equal((await roster(service)).find(agent => agent.id === a.id)!.name, "renamed");
     assert.equal((await roster(service)).length, 4);
     assert.match(JSON.stringify(await page(service, reader.id)), /Human follow-up/);
     await settle(service, await service.action(a, { action: "send", target: reader.id, message: "After restart" }, "restart"));

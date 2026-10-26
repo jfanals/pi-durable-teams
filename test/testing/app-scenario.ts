@@ -42,11 +42,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     const list = await wait("beta"); assert.match(list, /alpha/); print?.("list", list);
     await key("\r"); await wait("enter send");
     await key("Hello"); await key("\r"); const chat = await wait("Hello from the faux agent."); print?.("chat", chat);
-    if (width >= 120) {
-      assert.match(chat, /pi-agents/);
-      assert.ok(chat.split("\n").some(line => line.indexOf("alpha") < 62 && line.indexOf("alpha") >= 0 && line.includes("faux-1")));
-      assert.ok(chat.split("\n").find(line => line.includes("Hello from"))!.indexOf("Hello from") >= 64);
-    }
+    assert.doesNotMatch(chat, /pi-agents|beta/);
     await key("SLOW"); await key("\r");
     await until(async () => (await source.list())[0]?.running === true);
     await key("\x1b");
@@ -85,6 +81,19 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await source.client.call("register", { ...identity, name: "Pi main", cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
     const roster = await wait("Pi main (Pi)"); assert.match(roster, /  reader/); assert.doesNotMatch(roster, /Pi · (connected|offline)/);
     print?.("nested and Pi", roster);
+    await key("r"); await wait("Rename agent");
+    await key("\x15"); await key("beta"); await key("\r"); await wait("Name already exists");
+    await key("\x15"); await key("renamed"); await key("\r");
+    const renamed = await wait("renamed"); assert.equal((await source.list())[0]!.name, "renamed"); print?.("renamed", renamed);
+    await key("\r"); await wait("1 idle");
+    await key("\x1b[B"); const panel = await wait("enter open"); print?.("sub-agent panel", panel);
+    await key("\x1b[A"); assert.doesNotMatch(await frame(), /enter open/);
+    await key("\x1b[B"); await key("\x1b"); assert.doesNotMatch(await frame(), /enter open/);
+    await key("\x1b[B"); await key("draft"); assert.match(await frame(), /draft/); await key("\x15");
+    await key("\x1b[B"); await key("\r"); const childChat = await wait("reader ·");
+    assert.doesNotMatch(childChat, /pi-agents|↓ to select/); print?.("sub-agent chat", childChat);
+    await key("\x1b[D"); const parentChat = await wait("enter open"); assert.match(parentChat, /renamed/); print?.("back to parent panel", parentChat);
+    await key("\x1b[D"); await wait("n new");
     await key("x"); await wait("Disable"); await key("y");
     for (let i = 0; i < 100 && (await source.list())[0]?.enabled; i++) await delay(10);
     assert.equal((await source.list())[0]?.enabled, false);

@@ -55,7 +55,7 @@ export function reach(agents: Record<string, Agent>, actor: Actor, verb: string,
   if (actor.id === human.id) return true;
   const own = agents[actor.id];
   if (!own) return false;
-  if (verb === "model" || verb === "newAgent") return false;
+  if (verb === "model" || verb === "rename" || verb === "newAgent") return false;
   if (verb === "spawn") return !own.parent;
   if (!target) return false;
   if (["stop", "abort"].includes(verb)) return target.parent === own.id;
@@ -219,8 +219,8 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         && (args.scope === "mains" ? !agent.parent : actor.id === human.id || agent.id === actor.id || Boolean(agent.parent) || agent.id === own?.parent))
         .map(agent => ({ ...actorOf(agent), hosted: agent.where.kind === "hosted", enabled: agent.enabled, paused: agent.paused }));
     }
-    if ((args.action === "model" || args.action === "newAgent") && !reach(state.agents, actor, args.action)) {
-      throw new Error("Only the human can create top-level agents or change models");
+    if ((args.action === "model" || args.action === "rename" || args.action === "newAgent") && !reach(state.agents, actor, args.action)) {
+      throw new Error("Only the human can create top-level agents, rename agents or change models");
     }
     if (args.action === "spawn" && !reach(state.agents, actor, "spawn")) throw new Error("Sub-agents cannot spawn: maximum depth is 2");
     const creating = args.action === "spawn" || args.action === "newAgent";
@@ -292,6 +292,24 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         : { stopped: targets.map(agent => agent.id), paused: Boolean(teamStop) };
       await harness.commit(async tx => { (await tx.doc(Teams)).requests[requestKey] = result; }, context);
       return result;
+    }
+    if (args.action === "rename") {
+      const error = agentNameError(args.name ?? ""); if (error) throw new Error(error);
+      if (target!.where.kind !== "hosted") throw new Error("External Pi sessions cannot be renamed");
+      return harness.commit(async tx => {
+        const doc = await tx.doc(Teams);
+        if (doc.requests[requestKey]) return { ...doc.requests[requestKey]! };
+        const agent = doc.agents[target!.id]!;
+        if (Object.values(doc.agents).some(sibling => sibling.id !== agent.id && sibling.where.kind === "hosted" && sibling.parent === agent.parent && sibling.name === args.name)) throw new Error("Name already exists; reuse the agent or choose a distinct name");
+        if (agent.where.kind !== "hosted") throw new Error("External Pi sessions cannot be renamed");
+        const stored = await tx.doc(AgentDoc, agent.where.conversationId);
+        const prefix = `You are agent ${agent.name}.`;
+        if (stored.instructions?.startsWith(prefix)) await configure(tx, agent.where.conversationId, { instructions: `You are agent ${args.name}.` + stored.instructions.slice(prefix.length) });
+        // Sub-agent identity (including Parent) is rendered from Teams on each model request,
+        // not stored in the child's instructions; see resources.ts.
+        agent.name = args.name!;
+        return doc.requests[requestKey] = { id: agent.id };
+      }, context);
     }
     if (args.action === "model") {
       if (!args.model) throw new Error("Choose a model");

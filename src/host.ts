@@ -12,7 +12,7 @@ import { human, openTeams, type TeamsOptions } from "./teams.ts";
 
 const HumanActionSchema = Type.Object({
   ...ActionSchema.properties,
-  action: StringEnum(["newAgent", "send", "abort", "stop", "model", "inspect"]),
+  action: StringEnum(["newAgent", "send", "abort", "stop", "model", "rename", "inspect"]),
   model: Type.Optional(Type.Object({ provider: Type.String(), modelId: Type.String() })),
   thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"])),
 });
@@ -98,7 +98,7 @@ export async function startHost(directory: string, socket: string, options: Team
         return;
       }
       if (pathname.startsWith("/agents/") && pathname !== "/agents/watch") {
-        const verbs: Record<string, Action["action"]> = { new: "newAgent", send: "send", stop: "abort", disable: "stop", model: "model", page: "inspect" };
+        const verbs: Record<string, Action["action"]> = { new: "newAgent", send: "send", stop: "abort", disable: "stop", model: "model", rename: "rename", page: "inspect" };
         const route = pathname.slice("/agents/".length);
         const verb = verbs[route];
         if (!verb) return reply(res, 404, { error: "Unknown operation" });

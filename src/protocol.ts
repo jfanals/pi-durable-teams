@@ -16,7 +16,7 @@ export const ActionSchema = Type.Object({
 });
 export type ToolAction = Static<typeof ActionSchema>;
 export type Action = Omit<ToolAction, "action"> & {
-  action: ToolAction["action"] | "newAgent" | "model";
+  action: ToolAction["action"] | "newAgent" | "model" | "rename";
   model?: { provider: string; modelId: string };
   thinking?: ModelThinkingLevel;
 };
