@@ -271,20 +271,25 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
         const percent = model && contextLimit(settings, model);
         return percent ? ` · compacts at ${percent}%` : "";
       };
-      const label = (m?: WorkerModel) => m ? `${m.provider}/${m.modelId} · ${m.thinking ?? "main's thinking"}${limit(m)}` : "main session's model";
+      const label = (m?: WorkerModel) => m ? `${m.provider}/${m.modelId} · ${m.thinking ?? "parent's thinking"}${limit(m)}` : "parent's model";
       const config = await readConfig();
       const rules = Object.entries(config.workerModels ?? {});
-      const rows = [`default  ${label(config.workerModel)}`, ...rules.map(([key, m]) => `name contains "${key}"  ${label(m)}`), "+ add name rule"];
+      const rows = [`top-level agents  ${config.agentModel ? label(config.agentModel) : "choose when creating an agent"}`, `default  ${label(config.workerModel)}`, ...rules.map(([key, m]) => `name contains "${key}"  ${label(m)}`), "+ add name rule"];
       const picked = rows.indexOf(await ctx.ui.select("Team models · first matching name rule wins, else default", rows) ?? "");
       if (picked < 0) return;
       const save = (workerModel: WorkerModel | undefined, workerModels: Record<string, WorkerModel>) =>
         writeWorkerModels({ workerModel, workerModels: Object.keys(workerModels).length ? workerModels : undefined });
       if (picked === 0) {
-        const model = await chooseModel(ctx, settings, "main session's model");
+        const model = await chooseModel(ctx, settings, "choose when creating an agent");
+        if (model !== null) await writeWorkerModels({ agentModel: model, workerModel: config.workerModel, workerModels: config.workerModels });
+        continue;
+      }
+      if (picked === 1) {
+        const model = await chooseModel(ctx, settings, "parent's model");
         if (model !== null) await save(model, Object.fromEntries(rules));
         continue;
       }
-      const key = picked === rows.length - 1 ? (await ctx.ui.input("Name contains", "e.g. review, test, docs"))?.trim() : rules[picked - 1]![0];
+      const key = picked === rows.length - 1 ? (await ctx.ui.input("Name contains", "e.g. review, test, docs"))?.trim() : rules[picked - 2]![0];
       if (!key) continue;
       if (picked < rows.length - 1 && await ctx.ui.select(`Rule "${key}"`, ["Change model", "Remove rule"]) === "Remove rule") {
         await save(config.workerModel, Object.fromEntries(rules.filter(([k]) => k !== key))); continue;
@@ -302,7 +307,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
     if (picked < 0) return null;
     if (unset && picked === 0) return undefined;
     const model = models[picked - (unset ? 1 : 0)]!;
-    const levels = ["main's thinking", ...getSupportedThinkingLevels(model)];
+    const levels = ["parent's thinking", ...getSupportedThinkingLevels(model)];
     const thinking = await ctx.ui.select(`Thinking · ${model.id}`, levels);
     if (thinking === undefined) return null;
     if (model.contextWindow > 0) {

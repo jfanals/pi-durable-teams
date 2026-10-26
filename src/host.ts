@@ -50,7 +50,7 @@ export async function startHost(directory: string, socket: string, options: Team
           if (!Value.Check(ActionSchema, body.args)) throw new Error("Invalid team action arguments");
           const result = await service.action(actor, body.args, body.requestId);
           return reply(res, 200, body.args.action === "list" && Array.isArray(result)
-            ? result.map(agent => agent.role === "main" ? { ...agent, connected: streams.has(agent.id) } : agent)
+            ? result.map(agent => agent.role === "main" && !agent.hosted ? { ...agent, connected: streams.has(agent.id) } : agent)
             : result);
         }
         case "/ack": await service.ack(actor, body.id); return reply(res, 200, { acknowledged: body.id });

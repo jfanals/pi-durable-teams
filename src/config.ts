@@ -5,12 +5,14 @@ import { join } from "node:path";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { stateDir } from "./paths.ts";
 
-/** A worker model; `thinking` unset follows the main session's thinking level. */
+/** A worker model; `thinking` unset follows the parent's thinking level. */
 export type WorkerModel = { provider: string; modelId: string; thinking?: ModelThinkingLevel };
 export type Config = {
   /** Pi packages whose model providers the host loads. Read at host startup. */
   providerExtensions?: string[];
-  /** Model for new workers; unset uses the main's model. */
+  /** Default for hosted top-level agents; unset requires an explicit choice. */
+  agentModel?: WorkerModel;
+  /** Model for new sub-agents; unset uses the parent model. */
   workerModel?: WorkerModel;
   /** Name rules: a worker whose name contains the key (case-insensitive) uses its model. First match wins. */
   workerModels?: Record<string, WorkerModel>;
@@ -28,6 +30,7 @@ export async function readConfig(dir = stateDir): Promise<Config> {
     throw error;
   }
   if (config.providerExtensions !== undefined && !isStrings(config.providerExtensions)) throw new Error("providerExtensions must be an array of Pi package paths");
+  if (config.agentModel !== undefined && !isModel(config.agentModel)) throw new Error("agentModel must be { provider, modelId, thinking? }");
   if (config.workerModel !== undefined && !isModel(config.workerModel)) throw new Error("workerModel must be { provider, modelId, thinking? }");
   if (config.workerModels !== undefined && (typeof config.workerModels !== "object" || !Object.values(config.workerModels).every(isModel))) {
     throw new Error("workerModels must map name keywords to { provider, modelId, thinking? }");
@@ -35,9 +38,9 @@ export async function readConfig(dir = stateDir): Promise<Config> {
   return config;
 }
 
-/** Replaces the worker model settings and keeps everything else in the file. Atomic. */
-export async function writeWorkerModels(change: Pick<Config, "workerModel" | "workerModels">, dir = stateDir) {
-  const config = { ...await readConfig(dir), workerModel: change.workerModel, workerModels: change.workerModels };
+/** Replaces worker settings; updates agentModel only when supplied. Keeps other keys. Atomic. */
+export async function writeWorkerModels(change: Pick<Config, "workerModel" | "workerModels" | "agentModel">, dir = stateDir) {
+  const config = { ...await readConfig(dir), ...(Object.hasOwn(change, "agentModel") ? { agentModel: change.agentModel } : {}), workerModel: change.workerModel, workerModels: change.workerModels };
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const temporary = `${path(dir)}.${process.pid}.tmp`;
   await writeFile(temporary, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });

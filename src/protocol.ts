@@ -1,7 +1,7 @@
-import { Type, StringEnum, type Static } from "@earendil-works/pi-ai";
+import { Type, StringEnum, type Static, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 export const ActionSchema = Type.Object({
-  action: StringEnum(["spawn", "list", "send", "inspect", "stop"] as const),
+  action: StringEnum(["spawn", "list", "send", "inspect", "stop", "abort"] as const),
   target: Type.Optional(Type.String({ description: "Agent ID, teammate name, or main" })),
   name: Type.Optional(Type.String()),
   message: Type.Optional(Type.String()),
@@ -9,16 +9,21 @@ export const ActionSchema = Type.Object({
   scope: Type.Optional(Type.Union([Type.Literal("team"), Type.Literal("mains")])),
   cwd: Type.Optional(Type.String()),
   request: Type.Optional(Type.String({ description: "Request task ID returned by spawn/send" })),
-  transcript: Type.Optional(Type.Boolean({ description: "Inspect a page of the worker's complete persisted transcript" })),
+  transcript: Type.Optional(Type.Boolean({ description: "Inspect a page of the agent's complete persisted transcript" })),
   cursor: Type.Optional(Type.String({ description: "Opaque next cursor from a transcript page" })),
-  team: Type.Optional(Type.Boolean({ description: "Stop the whole team (main only)" })),
+  team: Type.Optional(Type.Boolean({ description: "Stop the whole team (Pi session only)" })),
 });
-export type Action = Static<typeof ActionSchema>;
+export type ToolAction = Static<typeof ActionSchema>;
+export type Action = Omit<ToolAction, "action"> & {
+  action: ToolAction["action"] | "newAgent" | "model";
+  model?: { provider: string; modelId: string };
+  thinking?: ModelThinkingLevel;
+};
 export type Mode = "steer" | "followUp";
 export type Actor = { id: string; teamId: string; role: "main" | "worker"; name: string };
 export type Delivery = { id: string; from: Actor; text: string; mode: Mode; request?: string };
 export const TOOL_NAME = "team";
-export const TOOL_DESCRIPTION = "Manage persistent Durable teammates: spawn, list, send, inspect latest messages or request results, stop. Workers can list/message/inspect teammates; mains can also list/message other mains. Reports arrive asynchronously. Read the durable-teams skill for workflow and limits.";
+export const TOOL_DESCRIPTION = "Manage durable agents: spawn children, list reachable agents, send, inspect transcripts/results, stop or abort children. Reports arrive asynchronously. Read the durable-teams skill for workflow and limits.";
 export const MESSAGE_TYPE = "durable-team-message";
 export const IDENTITY_TYPE = "durable-team-identity";
 export const SENT_TYPE = "durable-team-sent";

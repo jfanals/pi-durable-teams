@@ -1,10 +1,10 @@
 # Pi Durable teams
 
-One `team` tool for persistent coding workers and communication between ordinary
-interactive Pi mains. No role engine, workflow scheduler, worktree automation,
+One `team` tool for persistent hosted agents, sub-agents and communication with ordinary
+interactive Pi sessions. No role engine, workflow scheduler, worktree automation,
 completion polling, or mirrored Durable main conversation.
 
-Node 24+, Pi 1.3.0. Dependencies are pinned; Durable is experimental.
+Node 24+, Pi 1.4.0. Dependencies are pinned; Durable is experimental.
 
 ## Use
 
@@ -44,18 +44,21 @@ expands the full Markdown and IDs. The model still receives the complete report.
 Inside [cmux](https://www.cmux.dev), the workspace card also shows a `2 workers` pill while
 workers run; it is hidden when none are.
 
-Every agent can discover/message/inspect teammates. Only mains can spawn/stop
-workers and discover/message other mains. Use IDs for cross-main messages; names
-are only resolved inside a team. Mains cannot address another team's workers.
-Workers cannot create nested workers. Scope checks are workflow boundaries, not
-an OS sandbox against code running with the same user permissions.
+Agents can send/inspect their parent, children and siblings. Top-level hosted agents
+and Pi sessions can spawn and control their own children; sub-agents cannot spawn.
+No agent can address another top-level agent's children. The human can reach every
+agent. Default `list` shows your parent, children and teammates, excluding other
+top-level agents. Use `scope: "mains"` to discover reachable top-level peers.
+External Pi sessions are addressed by ID, not display name. Hosted name lookup
+checks children, parent, then siblings; ambiguous matches return the matching IDs.
+Scope checks are workflow boundaries, not an OS sandbox against code running with the same user permissions.
 
-A worker runs in the main's cwd unless `cwd` is given. The model cannot choose a
-worker's model; `config.json` under the host's state directory does:
+A sub-agent runs in its parent's cwd unless `cwd` is given. Spawn uses configured models rather than a model parameter; `config.json` under the host's state directory does:
 
 ```json
 {
   "providerExtensions": ["~/.pi/agent/git/github.com/earendil-works/pi-claude-code"],
+  "agentModel": { "provider": "claude-code", "modelId": "claude-opus-5-5" },
   "workerModel": { "provider": "openai-codex", "modelId": "gpt-6.1-sol" },
   "workerModels": { "review": { "provider": "claude-code", "modelId": "claude-opus-5-5", "thinking": "high" } }
 }
@@ -63,12 +66,12 @@ worker's model; `config.json` under the host's state directory does:
 
 A new worker uses the first `workerModels` rule whose key its name contains
 (case-insensitive, e.g. `review` matches `review-auth` and `code-reviewer`), else
-`workerModel`, else the main's model. `thinking` is optional; without it the worker
-follows the main's thinking level.
+`workerModel`, else the parent's model. `thinking` is optional; without it the worker
+follows the parent's thinking level.
 `providerExtensions` lists Pi packages whose model providers the host loads (with Pi's
 loader); only their providers are used, not their commands or tools.
 
-Edit worker models with `/team models`: pick the default or a name rule, then a model
+Edit models with `/team models`: pick the top-level default, worker default or a name rule, then a model
 from Pi's scoped models (`/scoped-models`; all available models when none are scoped)
 (read live, so `/scoped-models` changes show up next time), then a thinking level,
 then where that model compacts: a preset share of its context window (50–90%) or
@@ -77,9 +80,15 @@ Pi's default. That limit is Pi's own per-model setting
 so the main session and workers on that model compact at the same point; `/reload`
 applies it to an open session. The host reads worker models
 on every spawn, so changes apply to the next worker without a restart. Running
-workers keep their model.
+workers keep their model unless the human changes it through the service's
+`action(human, { action: "model", target, model: { provider, modelId }, thinking? }, requestId)`.
+Like Pi's interactive `/model`, this uses `configure()` directly: the next model
+request uses the new choice, including a continuation after tools in an active run.
+Model selection and top-level creation are not exposed to agent tools.
+`abort` cancels current work without disabling the agent; `stop`
+disables it.
 
-A missing config means no worker models (workers use the main's model); a malformed
+A missing config means no worker models (sub-agents use the parent's model); a malformed
 config refuses startup or spawn. `providerExtensions` is read at host startup: restart
 the host explicitly after changing it. The host runs as its own process, so a model
 works for workers only if the host can reach it (credentials in Pi's `auth.json`, local
@@ -93,6 +102,24 @@ AGENTS.md/CLAUDE.md and global/project skills. Spawning never asks for confirmat
 for any cwd. Already-running workers keep their initial resource snapshot. No private
 Pi prompt-builder imports or permanent per-directory resource cache.
 
+## Hosted top-level agents (service API)
+
+Phase 1 exposes `openTeams().action(human, args, requestId)` for local service callers;
+there are no human-client HTTP routes or standalone app yet. `human` is exported
+from `src/teams.ts`. Create with `{ action: "newAgent", name, cwd, model?, thinking? }`,
+then send/inspect/control with the same actions as the team tool. Only the human
+can create a top-level agent or change an agent's model. `newAgent` returns `{ id }`.
+Hosted names are unique among hosted siblings; external Pi display names may
+duplicate each other or hosted names and do not prevent reconnection.
+
+Top-level models default to `agentModel`; without it, creation requires an explicit
+model. No paid default is silently selected. The example above selects Claude Opus.
+Sub-agent models retain the name-rule/default/parent fallback. Prompts include the
+cwd's project instructions and skills, with a short identity/authorization preamble.
+Reports to hosted senders are `teams.report` conversation inputs; reports to Pi
+sessions enter their persisted inbox; nothing is posted back to the human, who
+reads transcripts. External Pi sessions still select their own models in Pi.
+
 ## Architecture and persistence
 
 - `extension.ts`: ordinary Pi lifecycle, tools, messages, and receipt handling.
@@ -104,7 +131,9 @@ Pi prompt-builder imports or permanent per-directory resource cache.
 
 The Durable root is **non-model control state only**. It owns background tasks;
 we never feed it main transcripts or run a second main model.
-Each ordinary Pi session is a team and owns its worker conversations through
+Registry v2 stores one flat `agents` tree: the human is the implicit root, hosted
+top-level agents and Pi sessions are its children, and sub-agents are grandchildren.
+A team is a subtree, not a separate record. Hosted conversations are owned through
 upstream's background anchors. Mains retain their real Pi session files; workers
 retain their real Durable transcripts. Membership/request receipts live in a
 Durable document, not a second mailbox database.
@@ -131,7 +160,8 @@ or reboot the next connected Pi client starts the host. Reconnection may resume
 previously authorized work and incur model usage.
 
 Stopping a worker aborts its current work, queued inputs and associated reporters;
-its name/context remains inspectable. `/team stop` additionally pauses new
+its name/context remains inspectable. Aborting a run instead leaves the agent enabled
+and reports the unanswered submission to its sender. `/team stop` additionally pauses new
 delegation, withdraws pending worker reports, and leaves other teams alone.
 `/team resume` permits new workers, not resurrection of stopped ones. Main Esc does
 not stop background workers. Generic tool side effects, daemonized external
@@ -152,7 +182,7 @@ Reference revision: `earendil-works/pi@73f8de80bc87021375f8b525292ac07492253002`
 - Coding-agent's **subagent extension**: ordinary Pi tools/messages and expandable
   rendering; not its separate subprocess delegation engine.
 
-The reference main revision and npm 1.3.0 differ: released IDs are numeric branded
+The reference main revision and npm 1.4.0 differ: released IDs are numeric branded
 IDs and session documents do not declare `history`. We adapt to the pinned package
 API, not unpublished API shapes. Domain IDs are strings at the external boundary.
 
@@ -225,4 +255,4 @@ and a disposable migration. All fixture processes and data are cleaned up.
 
 Not verified by offline tests: live Codex/provider authentication/streaming, real
 model delegation quality, and visual TUI appearance. A paid/real-model smoke run
-requires separate approval. This package does not migrate old running teams.
+requires separate approval. The registry and in-flight reporter tasks migrate from v1 automatically on open.

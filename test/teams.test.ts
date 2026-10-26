@@ -53,7 +53,7 @@ test("two teams: discovery, attribution, persistent follow-ups, latest vs reques
     const peers = await service.action(a, { action: "list", scope: "mains" }, "mains") as any[];
     assert.equal(peers.length, 2);
     const worker = roster.find(w => w.name === "one");
-    await assert.rejects(service.action(worker, { action: "list", scope: "mains" }, "bad"), /Only mains/);
+    assert.equal((await service.action(worker, { action: "list", scope: "mains" }, "bad") as any[]).length, 1);
     await assert.rejects(service.action(worker, { action: "spawn", name: "nested", message: "no" }, "bad"), /cannot spawn/);
     await assert.rejects(service.action(worker, { action: "send", target: "main-b", message: "no" }, "bad"), /accessible/);
     const peer = await service.action(worker, { action: "send", target: "two", message: "question for sibling" }, "peer");
@@ -116,7 +116,7 @@ test("worker model can invoke team; model policy and project configuration are p
   } finally { await service.close(); }
   // config.json worker models replace the main's model, under the same policy, and are re-read on every spawn.
   const state = await mkdtemp(join(tmpdir(), "teams-config-"));
-  await writeFile(join(state, "config.json"), JSON.stringify({ providerExtensions: [], note: "kept" }));
+  await writeFile(join(state, "config.json"), JSON.stringify({ providerExtensions: [], agentModel: { provider: "faux", modelId: "faux-1" }, note: "kept" }));
   const pinned = await openTeams(new MemoryStorage(), {
     models: fake.models, registry, env: ({ cwd }) => new NodeExecutionEnv({ cwd: cwd! }),
     workerModel: async name => workerModelFor(await readConfig(state), name),
@@ -139,6 +139,7 @@ test("worker model can invoke team; model policy and project configuration are p
     await settle(pinned, await pinned.action(paidMain, { action: "spawn", name: "ui-review", message: "USE_TEAM_LIST" }, "r3"));
     assert.equal((await agentOf(paidMain, "ui-review")).thinkingLevel, "high");
     assert.equal((await readConfig(state) as any).note, "kept");
+    assert.deepEqual((await readConfig(state)).agentModel, model);
   } finally { await pinned.close(); await rm(directory, { recursive: true, force: true }); await rm(state, { recursive: true, force: true }); }
 });
 

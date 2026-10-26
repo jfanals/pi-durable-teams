@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { startHost } from "../src/host.ts";
+import { human } from "../src/teams.ts";
 import { Client } from "../src/client.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/host.ts", import.meta.url));
@@ -83,6 +84,10 @@ test("main transport queues until persisted acknowledgement; duplicate main clie
   const lives: AbortController[] = [];
   try {
     for (const identity of [a, b]) await client.call("register", { ...identity, name: identity.sessionId, cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
+    const hosted = await host.service.action(human, { action: "newAgent", name: "hosted", cwd: directory, model: { provider: "faux", modelId: "faux-1" } }, "hosted") as any;
+    const listed = await client.call("action", { ...a, args: { action: "list", scope: "mains" } }) as any[];
+    assert.ok(listed.filter(agent => !agent.hosted).every(agent => typeof agent.connected === "boolean"));
+    assert.ok(!Object.hasOwn(listed.find(agent => agent.id === hosted.id)!, "connected"));
     const message = "hello " + "large-report ".repeat(20000);
     await client.call("action", { ...a, args: { action: "send", target: "b", message }, requestId: "hello" });
     const life = new AbortController(); lives.push(life);
