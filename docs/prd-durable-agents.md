@@ -95,8 +95,17 @@ Top-level names are unique among top-level agents; sub-agent names are unique am
   mains; nobody reaches another agent's sub-agents except the human);
 - spawn: creates a child of the caller; maximum depth 2 (the human creates top-level agents,
   top-level agents create sub-agents, sub-agents cannot spawn);
-- stop (disable), abort the current run, change model: own children only;
+- stop (disable) and abort the current run: own children only;
+- change model: the human only (never from a model's tool call); `newAgent` and `model` are not
+  in the agent tool's schema;
 - the human may do everything to every agent.
+
+Names: hosted agents are unique among hosted siblings. Pi-session mains are addressed by ID and
+may share names (the live registry has duplicates). A name resolves to own children first, then
+the parent, then siblings; a name that is still ambiguous is an error listing the IDs.
+
+`list` without a scope returns parent, children and teammates; top-level peers appear only with
+`scope: "mains"`, so a Pi session's default list stays its own team.
 
 **Mailbox: one delivery path.** Every message is `post(recipient, message)`: a hosted agent
 receives it as conversation input; a Pi session receives it in its inbox (today's
@@ -106,6 +115,9 @@ sender. When the sender is the human nothing is posted back; the human reads the
 **Consequences.**
 - One `action(actor, args)` for every caller: the team tool, the Pi extension's `/action`, and
   the client routes (with the human as actor). New verbs: `abort` and `model`, allowed per Reach.
+- A model change calls `configure()` and applies from the agent's next model request, as Pi's
+  interactive `/model` does. Abort lets the aborted input settle, so a waiting sender still gets
+  an "unanswered" report.
 - Models (`config.json`): top-level agents use `agentModel` (default Claude Opus); sub-agents use
   today's `workerModels` rules then `workerModel` (Codex; `review` → Opus). Missing config: a
   top-level agent requires a choice in the app; a sub-agent falls back to its parent's model.
@@ -133,7 +145,7 @@ authentication for local clients; a token is added with the phone client later.
 | `POST /agents/send` | `{ target, message, mode }` from the human; `target` may be any agent or sub-agent |
 | `POST /agents/stop` | `{ target }`: abort the current run (not disable) |
 | `POST /agents/disable` | `{ target }`: as `stop` does today for workers |
-| `POST /agents/model` | `{ target, provider, modelId, thinking? }`, applied to the next run |
+| `POST /agents/model` | `{ target, provider, modelId, thinking? }`, applied from the next model request |
 | `POST /agents/page` | `{ target, cursor? }`: one transcript page (today's `inspect transcript`) |
 | `POST /agents/watch` | NDJSON frame per committed change of one agent (today's worker `watch`) |
 | `POST /agents/roster` | NDJSON frame whenever any agent's status changes, for the list |
