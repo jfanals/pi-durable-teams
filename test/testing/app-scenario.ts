@@ -98,7 +98,8 @@ export async function appScenario(width: number, height: number, print?: (name: 
     for (let i = 0; i < 100 && (await source.list())[0]?.enabled; i++) await delay(10);
     assert.equal((await source.list())[0]?.enabled, false);
     // Raw Ctrl+C is global, including the editor and modal confirmation screens.
-    for (const screen of ["list", "chat", "form", "confirm"]) {
+    // Legacy \x03, Kitty keyboard protocol ctrl+c (Ghostty, cmux), and q on the list all exit.
+    for (const [screen, exitKey] of [["list", "\x03"], ["chat", "\x03"], ["form", "\x03"], ["confirm", "\x03"], ["list", "\x1b[99;5u"], ["chat", "\x1b[99;5u"], ["list", "q"]] as const) {
       const term = new VirtualTerminal(width, height); const screenTui = new TuiAltScreen(term);
       let didExit = false;
       const screenApp = new AgentsApp(source, screenTui, theme, { exit: () => { didExit = true; } });
@@ -106,8 +107,8 @@ export async function appScenario(width: number, height: number, print?: (name: 
         screenTui.addChild(screenApp); screenTui.setFocus(screenApp); screenTui.start();
         await delay(100);
         if (screen !== "list") term.sendInput(screen === "chat" ? "\r" : screen === "form" ? "n" : "x");
-        await delay(50); term.sendInput("\x03"); await delay(20);
-        assert.equal(didExit, true, screen);
+        await delay(50); term.sendInput(exitKey); await delay(20);
+        assert.equal(didExit, true, `${screen} ${JSON.stringify(exitKey)}`);
       } finally { screenApp.dispose(); screenTui.stop(); }
     }
     await key("\x03"); assert.equal(exited, true);

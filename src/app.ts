@@ -45,7 +45,8 @@ export class AgentsApp implements Component, Focusable {
     };
     this.model = options.agentModel; this.exit = options.exit ?? (() => {});
     this.removeInput = tui.addInputListener(data => {
-      if (data !== "\x03") return;
+      // Kitty's keyboard protocol (on in Ghostty/cmux) sends ctrl+c as an escape sequence, not \x03.
+      if (!matchesKey(data, Key.ctrl("c"))) return;
       this.dispose(); tui.stop(); this.exit(); return { consume: true };
     });
     this.setScreen();
@@ -190,7 +191,7 @@ export class AgentsApp implements Component, Focusable {
     }
     while (lines.length < height - 3) lines.push("");
     const total = formatCost(rows.reduce((sum, row) => sum + (row.agent.cost ?? 0), 0));
-    lines.push(total ? `Total ${total}${rows.some(row => row.agent.subscription) ? " (sub)" : ""}` : "", this.note, "↑↓ select · enter/→ open · n new · r rename · x disable");
+    lines.push(total ? `Total ${total}${rows.some(row => row.agent.subscription) ? " (sub)" : ""}` : "", this.note, "↑↓ select · enter/→ open · n new · r rename · x disable · q quit");
     return lines.map(line => truncateToWidth(line, width));
   }
   render(width: number): string[] {
@@ -229,6 +230,7 @@ export class AgentsApp implements Component, Focusable {
       if (agent?.hosted) { this.renaming = { agent }; this.editor.setText(agent.name); }
       else this.note = "External Pi sessions cannot be renamed";
     }
+    else if (data === "q") { this.dispose(); this.tui.stop(); this.exit(); return; }
     else if (data === "x") this.confirming = this.rows()[this.selected]?.agent;
     else if (data === "n") { this.form = { step: 0, name: "", cwd: process.cwd(), model: this.model, choices: [] }; this.note = ""; this.formStep(0); }
     this.setScreen();
