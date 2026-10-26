@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,6 +17,7 @@ import { VirtualTerminal } from "./virtual-terminal.ts";
 
 export async function appScenario(width: number, height: number, print?: (name: string, frame: string) => void) {
   const directory = await mkdtemp(join(tmpdir(), "agents-app-"));
+  execFileSync("git", ["init", "-b", "footer-test", directory], { stdio: "ignore" });
   const fake = fauxProvider({ models: [{ id: "faux-1", reasoning: true }, { id: "faux-opus-2", name: "Middle Fancy Model", reasoning: true }], tokensPerSecond: 1000 });
   fake.setResponses(Array.from({ length: 100 }, () => request => {
     const last = request.messages.findLast(message => message.role !== "system");
@@ -32,7 +34,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
   initTheme("dark", false); const { theme } = await piPresentation();
   let exited = false;
   const app = new AgentsApp(source, tui, theme, { agentModel: { provider: "faux", modelId: "faux-1" }, exit: () => { exited = true; } });
-  async function frame() { await terminal.waitForRender(); const lines = await terminal.flushAndGetViewport(); assert.ok(app.render(width).every(line => visibleWidth(line) <= width)); return lines.join("\n"); }
+  async function frame() { await terminal.waitForRender(); const lines = await terminal.flushAndGetViewport(); for (const columns of [40, width]) assert.ok(app.render(columns).every(line => visibleWidth(line) <= columns)); return lines.join("\n"); }
   async function wait(text: string) { for (let i = 0; i < 300; i++) { const screen = await frame(); if (screen.includes(text)) return screen; await delay(10); } throw new Error(`Missing ${text}\n${await frame()}`); }
   async function until(predicate: () => Promise<boolean>) { for (let i = 0; i < 300; i++) { if (await predicate()) return; await delay(10); } assert.fail("Timed out waiting for host state"); }
   async function key(data: string) { terminal.sendInput(data); await delay(50); }
@@ -42,10 +44,16 @@ export async function appScenario(width: number, height: number, print?: (name: 
     tui.addChild(app); tui.setFocus(app); tui.start();
     const list = await wait("beta"); assert.match(list, /alpha/); print?.("list", list);
     assert.ok(list.indexOf("beta") < list.indexOf("alpha"), "most recent agent first");
+    assert.match(list, /0 running · 2 idle · 0 offline · total \$/);
     assert.match(list, /r rename.*x disable.*q quit/);
-    await key("\x1b[B"); await key("\r"); await wait("enter send"); // alpha is second: beta is newer.
+    await key("\x1b[B"); await key("\r"); await wait(`alpha · ${alphaId}`); // alpha is second: beta is newer.
     await key("Hello"); await key("\r"); const chat = await wait("Hello from the faux agent."); print?.("chat", chat);
     assert.doesNotMatch(chat, /pi-agents|beta/);
+    assert.match(chat, /↑.*↓/);
+    assert.match(chat, /faux-1/);
+    assert.match(chat, /\(footer-test\) • alpha/);
+    assert.match(chat, new RegExp(`alpha · ${alphaId} · ← back`));
+    assert.doesNotMatch(chat, /↓ to select/);
     await key("SLOW"); await key("\r");
     await until(async () => (await alpha())?.running === true);
     await key("\x1b");
@@ -118,13 +126,14 @@ export async function appScenario(width: number, height: number, print?: (name: 
     source.rename = renameAgent;
     await key("\r");
     const renamed = await wait("renamed"); assert.equal((await alpha())!.name, "renamed"); print?.("renamed", renamed);
-    await key("\r"); await wait("1 idle");
+    await key("\r"); const collapsedTeam = await wait("1 idle");
+    assert.match(collapsedTeam, /1 idle · 0 stopped · team \$0\.000 · ↓ to select/); print?.("team collapsed", collapsedTeam);
     await key("\x1b[B"); const panel = await wait("enter open"); print?.("sub-agent panel", panel);
     await key("\x1b[A"); assert.doesNotMatch(await frame(), /enter open/);
     await key("\x1b[B"); await key("\x1b"); assert.doesNotMatch(await frame(), /enter open/);
     await key("\x1b[B"); await key("draft"); assert.match(await frame(), /draft/); await key("\x15");
     await key("\x1b[B"); await key("\r"); const childChat = await wait("reader ·");
-    assert.doesNotMatch(childChat, /pi-agents|↓ to select/); print?.("sub-agent chat", childChat);
+    assert.doesNotMatch(childChat, /pi-agents|↓ to select|team \$/); print?.("sub-agent chat", childChat);
     await key("\x1b[D"); const parentChat = await wait("enter open"); assert.match(parentChat, /renamed/); print?.("back to parent panel", parentChat);
     await key("\x1b[D"); await wait("n new");
     await key("x"); await wait("Disable"); await key("y");

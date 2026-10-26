@@ -17,7 +17,9 @@ export type WorkerStatus = {
   /** List-price cost so far; subscription when its provider bills by subscription, not by this price. */
   cost?: number; subscription?: boolean;
   /** Short model label and thinking level, e.g. "opus-5-5" and "medium". */
-  model?: string; thinking?: string;
+  model?: string; modelId?: string; provider?: string; thinking?: string;
+  tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+  cacheHit?: number;
   /** Prompt size of the latest reply and the model's window; working directory. */
   context?: number; contextWindow?: number; cwd?: string;
 };
@@ -26,6 +28,11 @@ export type ViewResult = { type: "back" } | { type: "send"; mode: Mode } | { typ
 
 const COLLAPSED_LINES = 4;
 const clean = (text: unknown) => stripTerminalSequences(String(text ?? ""));
+// Same small formatter as Pi's footer (not exported by its public package index).
+const formatCwd = (cwd: string) => {
+  const home = homedir();
+  return cwd === home || cwd.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd;
+};
 const firstLine = (text: unknown) => clean(text).split("\n").find(line => line.trim())?.trim() ?? "";
 const expandKey = () => { try { return keyText("app.tools.expand") || "ctrl+o"; } catch { return "ctrl+o"; } };
 const textOf = (message: any) => typeof message?.content === "string" ? message.content
@@ -61,12 +68,21 @@ const shortModel = (id: unknown) => typeof id === "string" && id ? clean(id).spl
 const replyTokens = (u: any) => (u?.input ?? 0) + (u?.output ?? 0) + (u?.cacheWrite ?? 0);
 export function liveStatus(worker: { id: string; name: string; enabled?: boolean; agent?: any; live?: any; usage?: any; latest?: any; since?: unknown; contextWindow?: unknown; subscription?: unknown }): WorkerStatus {
   const running = Boolean(worker.live?.run);
+  const buckets = Object.values(worker.usage?.models ?? {}) as any[];
+  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (const bucket of buckets) for (const key of Object.keys(tokens) as (keyof typeof tokens)[]) tokens[key] += bucket?.[key] ?? 0;
+  const modelId = worker.agent?.model?.modelId ?? worker.latest?.model;
+  const prompt = worker.latest?.usage;
+  const promptTokens = (prompt?.input ?? 0) + (prompt?.cacheRead ?? 0) + (prompt?.cacheWrite ?? 0);
   const thinking = worker.agent?.thinkingLevel ?? worker.latest?.providerThinkingLevel;
   return {
     id: worker.id, name: worker.name, enabled: worker.enabled !== false, running,
     activity: running ? describe(worker.live, worker.latest) : undefined,
     since: typeof worker.since === "number" ? worker.since : undefined,
     finishedAt: typeof worker.latest?.timestamp === "number" ? worker.latest.timestamp : undefined,
+    tokens, modelId: typeof modelId === "string" ? clean(modelId) : undefined,
+    provider: worker.agent?.model?.provider ?? worker.latest?.provider,
+    cacheHit: promptTokens ? 100 * (prompt.cacheRead ?? 0) / promptTokens : undefined,
     cost: costOf(worker.usage), subscription: worker.subscription === true,
     model: shortModel(worker.agent?.model?.modelId ?? worker.latest?.model ?? Object.keys(worker.usage?.models ?? {})[0]),
     thinking: typeof thinking === "string" && thinking !== "off" ? clean(thinking) : undefined,
@@ -171,19 +187,22 @@ export class TeamPanel implements Component, Focusable {
       const visible = Math.max(1, Math.min(VISIBLE_FOCUSED, (this.tui.terminal?.rows ?? 24) - 12));
       const start = Math.max(0, Math.min(this.selected - Math.floor(visible / 2), this.workers.length - visible));
       for (const [i, w] of this.workers.slice(start, start + visible).entries()) push(statusRow(w, width, start + i === this.selected, now, t, nameWidth, this.frame), w);
-      const more = this.workers.length > visible ? `${this.selected + 1}/${this.workers.length} · ` : "";
+      const more = this.compact || this.workers.length > visible ? `${this.selected + 1}/${this.workers.length} · ` : "";
       push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · enter open · esc back`), width));
       return lines;
     }
-    if (this.compact) return [truncateToWidth(t.fg("dim", `  team · ${this.workers.filter(w => w.enabled && w.running).length} running · ${this.workers.filter(w => w.enabled && !w.running).length} idle · ${this.workers.filter(w => !w.enabled).length} stopped · ↓ to select`), width)];
     const running = this.workers.filter(w => w.running);
-    const shown = [...running, ...this.workers.filter(w => recent(w, now))];
-    for (const w of shown.slice(0, VISIBLE_RUNNING)) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
+    const shown = this.compact ? running : [...running, ...this.workers.filter(w => recent(w, now))];
+    for (const w of this.compact ? shown : shown.slice(0, VISIBLE_RUNNING)) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
     if (this.ticker && !shown.length) { clearInterval(this.ticker); this.ticker = undefined; } // last recent row expired
     const idle = this.workers.filter(w => w.enabled && !w.running && !shown.includes(w)).length;
     const stopped = this.workers.filter(w => !w.enabled).length;
     // Every worker's cost, listed or not; "(sub)" as in Pi's footer when any of it is subscription-billed.
     const total = formatCost(this.workers.reduce((sum, w) => sum + (w.cost ?? 0), 0));
+    if (this.compact) {
+      push(truncateToWidth(t.fg("dim", `  ${idle} idle · ${stopped} stopped · team ${total || "$0.000"}${this.workers.some(w => w.subscription) ? " (sub)" : ""} · ↓ to select`), width));
+      return lines;
+    }
     const summary = [shown.length > VISIBLE_RUNNING && `+${shown.length - VISIBLE_RUNNING} more`,
       idle && `${idle} idle`, stopped && `${stopped} stopped`,
       total && `team ${total}${this.workers.some(w => w.subscription) ? " (sub)" : ""}`].filter(Boolean).join(" · ");
@@ -507,8 +526,7 @@ class Transcript implements Component {
     const time = s.running && s.since ? `working ${formatDuration(now - s.since)}`
       : [s.since && s.finishedAt && s.finishedAt >= s.since && `last request ${formatDuration(s.finishedAt - s.since)}`,
         s.enabled && s.finishedAt && `idle ${formatDuration(now - s.finishedAt)}`].filter(Boolean).join(" · ");
-    const home = homedir();
-    const cwd = s.cwd ? (s.cwd === home || s.cwd.startsWith(`${home}/`) ? `~${s.cwd.slice(home.length)}` : s.cwd) : "";
+    const cwd = s.cwd ? formatCwd(s.cwd) : "";
     return [s.model && `${s.model}${s.thinking ? ` ${s.thinking}` : ""}`, time, formatContext(s), formatCost(s.cost), cwd].filter(Boolean).join(" · ");
   }
 
@@ -584,7 +602,7 @@ export class ChatView implements Component, Focusable {
   private actions: ChatActions;
   private panel?: TeamPanel;
   readonly layout: VStack;
-  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }) {
+  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }, branch: () => string = () => "") {
     this.actions = actions;
     this.transcript = new Transcript(tui, theme, name, source, parent);
     this.editor = new Editor(tui, { borderColor: text => theme.fg("accent", text), selectList: getSelectListTheme() });
@@ -594,7 +612,23 @@ export class ChatView implements Component, Focusable {
       this.editor.focused = component !== this.panel;
     } });
     const scroll = new ScrollView(this.transcript, { follow: "end", primary: true });
-    const footer = { render: (width: number) => [truncateToWidth(theme.fg("dim", [name, this.transcript.details(Date.now()), this.transcript.note, notice()].filter(Boolean).join(" · ")), width), truncateToWidth(theme.fg("dim", "enter send · alt+enter follow-up · esc stop · ← back"), width)], invalidate() {} };
+    const footer = { render: (width: number) => {
+      const s = this.transcript.status;
+      const cwd = s?.cwd ? formatCwd(s.cwd) : "";
+      const time = s?.running ? `working${s.since ? ` ${formatDuration(Date.now() - s.since)}` : ""}` : s && !s.enabled ? "stopped" : "idle";
+      const suffix = `${branch() ? ` (${branch()})` : ""} • ${s?.name ?? name} · ${time}`;
+      const location = truncateToWidth(cwd, Math.max(0, width - visibleWidth(suffix))) + suffix;
+      const u = s?.tokens;
+      const stats = `↑${formatTokens(u?.input ?? 0)} ↓${formatTokens(u?.output ?? 0)} R${formatTokens(u?.cacheRead ?? 0)} W${formatTokens(u?.cacheWrite ?? 0)} CH${(s?.cacheHit ?? 0).toFixed(1)}% $${(s?.cost ?? 0).toFixed(3)}${s?.subscription ? " (sub)" : ""} ${s?.contextWindow ? `${(100 * (s.context ?? 0) / s.contextWindow).toFixed(1)}%/${formatTokens(s.contextWindow)}` : s?.context ? `${formatTokens(s.context)} ctx` : ""}`.trimEnd();
+      const model = s?.modelId ?? s?.model;
+      const right = model ? `${s?.provider ? `(${s.provider}) ` : ""}${model}${s?.thinking ? ` • ${s.thinking}` : ""}` : "";
+      // Keep a useful stats prefix; omit the model rather than showing a fragment of its ID.
+      const room = width - visibleWidth(right) - 2;
+      const left = truncateToWidth(stats, right && room >= 24 ? room : width);
+      const statsLine = right && room >= 24 ? left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right : left;
+      const hints = `${s?.name ?? name} · ${s?.id ?? "…"} · ← back · esc stop · alt+enter follow-up`;
+      return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
+    }, invalidate() {} };
     this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, this.editor, ...(this.panel ? [this.panel] : []), footer]);
   }
   setChildren(workers: WorkerStatus[]) { this.panel?.setWorkers(workers); }

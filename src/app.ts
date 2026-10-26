@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { DirPicker } from "./dir-picker.ts";
 import { agentNameError } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
@@ -20,6 +21,15 @@ export class AgentsApp implements Component, Focusable {
   private source: HostSource; private tui: TuiAltScreen; private theme: Theme;
   private life = new AbortController(); private agents: AgentSummary[] = [];
   private stack: string[] = [];
+  private branches = new Map<string, string>();
+  private loadBranch(cwd?: string) {
+    if (!cwd || this.branches.has(cwd)) return;
+    this.branches.set(cwd, "");
+    execFile("git", ["-C", cwd, "branch", "--show-current"], { timeout: 5000 }, (error, stdout) => {
+      if (!error) this.branches.set(cwd, stdout.trim());
+      if (!this.life.signal.aborted) this.tui.requestRender();
+    });
+  }
   private renaming?: { agent: AgentSummary; error?: string };
   private selected = 0; private view?: ChatView;
   private note = "Connecting…"; private editor: Editor;
@@ -59,6 +69,7 @@ export class AgentsApp implements Component, Focusable {
           // Rows reorder by recency: keep the selection on the same agent.
           const selectedId = this.rows()[this.selected]?.agent.id;
           this.agents = rows;
+          for (const { agent } of this.rows()) this.loadBranch(agent.cwd);
           const index = this.rows().findIndex(row => row.agent.id === selectedId);
           if (index >= 0) this.selected = index;
           this.view?.setChildren(this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent.children ?? []); this.note = ""; delay = 250;
@@ -98,6 +109,7 @@ export class AgentsApp implements Component, Focusable {
       this.stack.push(agent.id);
     }
     this.view?.dispose();
+    this.loadBranch(agent.cwd);
     const bound = agent.hosted ? workerSource(this.source, agent.id) : {
       page: async () => ({ entries: [{ id: 1, kind: "pi.assistant", model: [{ content: [{ type: "text", text: this.rows().find(row => row.agent.id === agent.id)?.agent.latest ?? "No published message. This Pi session has no hosted transcript." }] }] }] }),
       status: async () => this.rows().find(row => row.agent.id === agent.id)?.agent ?? agent,
@@ -112,10 +124,10 @@ export class AgentsApp implements Component, Focusable {
         else { this.stack = []; this.view?.dispose(); this.view = undefined; this.setScreen(); }
         this.tui.requestRender();
       },
-    }, () => this.note, { open: worker => {
+    }, () => this.note, !this.rows().some(row => row.agent.children.some(child => child.id === agent.id)) ? { open: worker => {
       const child = this.rows().find(row => row.agent.id === worker.id)?.agent;
       if (child) this.open(child);
-    } }); this.view.setChildren(agent.children); this.setScreen(); this.tui.requestRender();
+    } } : undefined, () => this.branches.get(agent.cwd ?? "") ?? ""); this.view.setChildren(agent.children); this.setScreen(); this.tui.requestRender();
   }
   private nameError(name: string, target?: AgentSummary) {
     const siblings = target ? this.rows().find(row => row.agent.children.some(child => child.id === target.id))?.agent.children ?? this.agents : this.agents;
@@ -206,7 +218,10 @@ export class AgentsApp implements Component, Focusable {
     }
     while (lines.length < height - 2 - hints.length) lines.push("");
     const total = formatCost(rows.reduce((sum, row) => sum + (row.agent.cost ?? 0), 0));
-    lines.push(total ? `Total ${total}${rows.some(row => row.agent.subscription) ? " (sub)" : ""}` : "", this.note, ...hints);
+    const offline = this.agents.filter(a => !a.hosted && !a.connected).length;
+    const running = this.agents.filter(a => a.running).length;
+    const summary = `${running} running · ${this.agents.length - running - offline} idle · ${offline} offline · total ${total || "$0.000"}${rows.some(row => row.agent.subscription) ? " (sub)" : ""}`;
+    lines.push(this.theme.fg("dim", summary), this.note, ...hints);
     return lines.map(line => truncateToWidth(line, width));
   }
   render(width: number): string[] {

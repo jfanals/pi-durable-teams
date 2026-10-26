@@ -58,6 +58,13 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     latest: { content: [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "src/ui.ts" } }] },
     usage: { models: { "x/y": { input: 40_000, output: 8_200, cacheRead: 99_999, cacheWrite: 0, cost: { total: 9.8121 } } } }, since: now - 134_000,
     agent: { model: { provider: "claude-code", modelId: "claude-opus-5-5" }, thinkingLevel: "medium" }, contextWindow: 1_000_000, subscription: true });
+  assert.deepEqual(reviewer.tokens, { input: 40_000, output: 8_200, cacheRead: 99_999, cacheWrite: 0 });
+  assert.equal(reviewer.provider, "claude-code"); assert.equal(reviewer.modelId, "claude-opus-5-5");
+  const totals = liveStatus({ id: "sum", name: "sum", usage: { models: {
+    "a/b": { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 },
+    "c/d": { input: 10, output: 20, cacheRead: 30, cacheWrite: 40 },
+  } } });
+  assert.deepEqual(totals.tokens, { input: 11, output: 22, cacheRead: 33, cacheWrite: 44 });
   reviewer.context = 188_364;
   panel.setWorkers([{ id: "2", name: "scout", enabled: true, since: now - 90_000, finishedAt: now - 30_000 }, reviewer, { id: "3", name: "old", enabled: false, cost: 1.5 }]);
   const summary = plain(panel.render(80));
