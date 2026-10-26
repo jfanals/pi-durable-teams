@@ -91,3 +91,22 @@ export const formatCost = (cost?: number) => cost ? `$${cost.toFixed(3)}` : "";
 
 export const textOf = (message: any): string => typeof message?.content === "string" ? message.content
   : (message?.content ?? []).flatMap((part: any) => part.type === "text" ? [part.text] : []).join("\n");
+
+/** Shared roster predicates; descendants keep an offline parent visible. */
+type RosterStatus = { running?: boolean; hosted: boolean; connected?: boolean; children: RosterStatus[] };
+export const hasRunning = (a: RosterStatus): boolean => !!a.running || a.children.some(hasRunning);
+export const isOffline = (a: RosterStatus): boolean => !a.hosted && !a.connected && !hasRunning(a);
+
+/** The terminal and phone show the same usage line. */
+export function formatUsage(w?: WorkerStatus): string {
+  const u = w?.tokens;
+  const context = w?.contextWindow
+    ? `${(100 * (w.context ?? 0) / w.contextWindow).toFixed(1)}%/${formatTokens(w.contextWindow)}`
+    : w?.context ? `${formatTokens(w.context)} ctx` : "";
+  return [
+    `↑${formatTokens(u?.input ?? 0)} ↓${formatTokens(u?.output ?? 0)}`,
+    `R${formatTokens(u?.cacheRead ?? 0)} W${formatTokens(u?.cacheWrite ?? 0)}`,
+    `CH${(w?.cacheHit ?? 0).toFixed(1)}% $${(w?.cost ?? 0).toFixed(3)}${w?.subscription ? " (sub)" : ""}`,
+    context,
+  ].filter(Boolean).join(" ");
+}

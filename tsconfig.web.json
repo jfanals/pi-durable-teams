@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ES2023", "module": "ESNext", "moduleResolution": "Bundler",
+    "strict": true, "noUnusedLocals": true, "noUnusedParameters": true,
+    "erasableSyntaxOnly": true, "noEmit": true, "allowImportingTsExtensions": true,
+    "skipLibCheck": true, "lib": ["ES2023", "DOM", "DOM.Iterable"], "types": []
+  },
+  "include": ["src/web/**/*.ts", "src/status.ts", "src/chat.ts"]
+}

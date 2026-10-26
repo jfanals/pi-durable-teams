@@ -167,6 +167,15 @@ test("chat items are plain JSON with clean text, tool subjects, notices and comp
   assert.ok(Math.abs(answer.turn!.cost - 0.3) < 1e-10);
   assert.deepEqual(items.slice(4).map(item => item.kind === "notice" && item.text), ["— context compacted —", "— context reset —", "[other.event]"]);
   assert.doesNotMatch(JSON.stringify(items), /private|\\u001b|\\u0000|\\u0007/);
+  const inputs = chatItems([
+    { id: 20, kind: "teams.report", data: { message: "**Report**" }, model: [{ content: "[Reader]: wrong" }] },
+    { id: 21, kind: "teams.report", model: [{ content: "[Reader]: old report" }] },
+    { id: 22, kind: "teams.message", model: [{ content: "[Lead]: old message" }] },
+    { id: 23, kind: "pi.user", model: [{ content: "[Human]: keep prefix" }] },
+  ]);
+  assert.deepEqual(inputs.map(item => item.kind === "input" && item.text),
+    ["**Report**", "old report", "old message", "[Human]: keep prefix"]);
+
 });
 
 

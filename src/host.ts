@@ -1,6 +1,8 @@
+import { pairing } from "./web/pair.ts";
 import { readConfig } from "./config.ts";
 import { remoteToken, remoteAllowed, tokenMatches, tokenCache } from "./remote.ts";
 import { chatItems } from "./chat.ts";
+import { shellFile, shellCsp, shellPath } from "./web-shell.ts";
 import { listDirectories } from "./directories.ts";
 import { randomUUID } from "node:crypto";
 import { Type, StringEnum } from "@earendil-works/pi-ai";
@@ -55,16 +57,34 @@ export async function startHost(directory: string, socket: string, options: Team
     try {
       const url = new URL(req.url ?? "/", "http://localhost");
       const pathname = url.pathname;
+      if (pathname !== (req.url ?? "/").split("?")[0]) return reply(res, 404, { error: "Unknown operation" });
+      if (shellPath(pathname)) res.setHeader("content-security-policy", shellCsp);
       if (remote) {
         const allowed = remoteAllowed(pathname);
         if (!allowed) return reply(res, 404, { error: "Unknown operation" });
         const { token, error } = credentials.get();
         if (error) return reply(res, 503, { error: `remote disabled: ${error}` });
         const supplied = req.headers.authorization?.match(/^Bearer (.+)$/i)?.[1]
-          ?? (allowed === "shell" && req.method === "GET" ? url.searchParams.get("token") : null) ?? "";
-        if (!tokenMatches(token, supplied)) return reply(res, 401, { error: "Unauthorized: Bearer token required for API requests" });
+          ?? (allowed === "shell" && req.method === "GET" ? url.searchParams.get("token") ?? req.headers.cookie?.match(/(?:^|; )pi_shell=([a-zA-Z0-9_-]+)/)?.[1] : null) ?? "";
+        if (!tokenMatches(token, supplied)) {
+          if (allowed === "shell") {
+            res.writeHead(401, { "content-type": "text/html", "cache-control": "no-store" });
+            res.end(`<!doctype html><html><head><meta name="viewport" content="width=device-width"><title>Pi Agents</title></head><body>${pairing}</body></html>`); return;
+          }
+          return reply(res, 401, { error: "Unauthorized: Bearer token required for API requests" });
+        }
+        // Shell subresources cannot attach Authorization headers. This HttpOnly cookie
+        // authenticates GET shell files only; API requests still require Bearer auth.
+        if (allowed === "shell" && req.method === "GET" && url.searchParams.has("token")) res.setHeader("set-cookie", `pi_shell=${supplied}; HttpOnly; SameSite=Strict; Max-Age=31536000; Path=/${(req.headers["x-forwarded-proto"] === "https" || /\.ts\.net(?::\d+)?$/i.test(req.headers.host ?? "")) ? "; Secure" : ""}`);
         remoteStreams.add(res);
         res.once("close", () => remoteStreams.delete(res));
+      }
+      if (req.method === "GET") {
+        const file = await shellFile(pathname);
+        if (file) {
+          res.writeHead(200, { "content-type": file.type, "cache-control": "no-store", "referrer-policy": "no-referrer", "service-worker-allowed": "/", "x-content-type-options": "nosniff" });
+          res.end(file.body); return;
+        }
       }
       if (pathname === "/health") return reply(res, 200, { pid: process.pid, ready: Boolean(service) });
       if (!service) return reply(res, 503, { error: "Host starting" });

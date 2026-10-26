@@ -346,4 +346,8 @@ API routes require a Bearer header; query tokens are reserved for GET web-shell 
 Folder listings require absolute paths; macOS privacy restrictions may return EPERM.
 
 Treat the pairing URL as a secret: the API requires its token even on your tailnet.
-The phone UI is a later phase; pairing currently enables the `/agents` API only.
+Open the pairing URL on your phone in Chrome to use the web app. In Chrome's menu,
+choose **Add to Home screen** to install Pi Agents. The app keeps the token on that
+phone and removes it from the address bar. You can read chats, send or steer messages,
+stop agents, and create agents with a folder, model and thinking level.
+The shell is available offline; agent data and actions always require the host.

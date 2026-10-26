@@ -18,7 +18,8 @@ export function chatItems(entries: TranscriptEntry[], prefix: TranscriptEntry[] 
       case "teams.message": case "teams.report": case "pi.user":
         if (at !== undefined && start === undefined) { start = at; tokens = 0; cost = 0; }
         items.push({ id, kind: "input", from: clean(entry.data?.from?.name ?? "input"),
-          text: clean(entry.kind === "teams.message" ? entry.data?.message ?? textOf(message) : textOf(message)),
+          text: clean(entry.kind === "pi.user" ? textOf(message)
+            : entry.data?.message ?? textOf(message).replace(/^\[[^\]\n]*\]: /, "")),
           ...(entry.kind === "teams.report" ? { report: true } : {}), at });
         break;
       case "pi.assistant": {

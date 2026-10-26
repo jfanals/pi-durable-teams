@@ -1,3 +1,4 @@
+import { shellPath } from "./web-shell.ts";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { link, mkdir, readFile, rename, writeFile, unlink, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -28,7 +29,7 @@ export async function remoteToken(directory: string, rotate = false): Promise<st
 
 /** The single remote allowlist. M2 adds exact static shell paths here. */
 export function remoteAllowed(path: string): "api" | "shell" | undefined {
-  if (path === "/") return "shell";
+  if (shellPath(path)) return "shell";
   if (path === "/health" || path === "/agents" || path.startsWith("/agents/")) return "api";
 }
 export function tokenMatches(expected: string, supplied: string) {

@@ -1,3 +1,4 @@
+import { isOffline } from "./status.ts";
 import { formatCost } from "./status.ts";
 import { execFile } from "node:child_process";
 import { DirPicker } from "./dir-picker.ts";
@@ -107,9 +108,8 @@ export class AgentsApp implements Component, Focusable {
     visit(this.agents, 0); return out;
   }
   private offline(agent: AgentSummary): boolean {
-    return !agent.hosted && !agent.connected && !this.hasRunning(agent);
+    return isOffline(agent);
   }
-  private hasRunning(agent: AgentSummary): boolean { return !!agent.running || agent.children.some(child => this.hasRunning(child)); }
   private listRows() { return this.rows(true); }
   private fail(error: unknown) { this.note = String(error); this.tui.requestRender(); }
   private open(agent: AgentSummary, push = true) {

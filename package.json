@@ -4,18 +4,30 @@
   "private": true,
   "type": "module",
   "description": "Persistent Pi teams based on the upstream Durable examples",
-  "keywords": ["pi-package"],
-  "engines": { "node": ">=24" },
-  "pi": { "extensions": ["./src/extension.ts"], "skills": ["./skills"] },
+  "keywords": [
+    "pi-package"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "pi": {
+    "extensions": [
+      "./src/extension.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
   "scripts": {
     "test": "node --test --test-concurrency=1 test/*.test.ts",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && tsc -p tsconfig.web.json",
     "screen": "node scripts/screen.ts"
   },
   "dependencies": {
     "@earendil-works/chord": "1.4.0",
     "@earendil-works/pi-durable": "1.4.0",
     "@earendil-works/pi-mcp": "1.4.0",
+    "marked": "18.0.11",
     "pi-web-access": "0.45.0"
   },
   "peerDependencies": {

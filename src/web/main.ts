@@ -1,0 +1,522 @@
+import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
+import { escape as e, info, footerInfo, transcript } from "./render.ts";
+import { isOffline, formatCost, formatDuration, statusWord } from "../status.ts";
+import { agentNameError } from "../agent-name.ts";
+import type { ChatItem } from "../chat.ts";
+
+const root = document.querySelector<HTMLElement>("#app")!;
+let agents: Agent[] = [];
+let stack: string[] = [];
+let offline = false;
+let items: ChatItem[] = [];
+let next: string | undefined;
+let screen = "list";
+let rosterLife = new AbortController();
+let watchLife = new AbortController();
+let refreshing = false;
+let dirty = false;
+let generation = 0;
+const reconnecting = new Set<string>();
+const all = (): Agent[] => agents.flatMap((a) => [a, ...a.children]);
+const current = () => all().find((a) => a.id === stack.at(-1));
+const button = (label: string, action: string, extra = "") =>
+  `<button data-action="${action}" ${extra}>${label}</button>`;
+function banner(key: string, retrying: boolean) {
+  if (retrying) reconnecting.add(key);
+  else reconnecting.delete(key);
+  const el = document.querySelector<HTMLElement>("#connection");
+  if (el) {
+    el.hidden = !reconnecting.size;
+    el.textContent = "Host disconnected — reconnecting…";
+  }
+}
+function fail(error: unknown) {
+  const el = document.querySelector<HTMLElement>("#error");
+  if (el) el.textContent = error instanceof Error ? error.message : String(error);
+}
+function base(content: string) {
+  root.innerHTML = `<div id="connection" role="status" ${reconnecting.size ? "" : "hidden"}>
+Host disconnected — reconnecting…</div>${content}<div id="error" role="alert"></div>`;
+}
+function list() {
+  const scroll = document.querySelector(".list")?.scrollTop ?? 0;
+  const focus = (document.activeElement as HTMLElement)?.dataset.open;
+  const offlineFocus = document.activeElement?.id === "offline";
+  screen = "list";
+  const row = (a: Agent, child = false): string =>
+    `${
+      !offline && isOffline(a)
+        ? ""
+        : `<button class="agent ${child ? "child" : ""}" data-open="${e(a.id)}">
+<div class="row">
+<strong>${e(a.name)}${a.hosted ? "" : " (Pi)"}</strong>
+<span>${a.running ? '<i class="spinner"></i>' : ""}${e(!a.hosted ? (a.connected ? "connected" : "offline") : statusWord(a))}</span>
+</div>
+<small data-time="${e(a.id)}">${e(info(a))}</small>
+</button>`
+    }${a.children.map((c) => row(c, true)).join("")}`;
+  const running = agents.filter((a) => a.running).length;
+  const hidden = agents.filter(isOffline).length;
+  const totalCost = formatCost(all().reduce((n, a) => n + (a.cost ?? 0), 0)) || "$0.000";
+  const subscription = all().some((a) => a.subscription) ? " (sub)" : "";
+  base(
+    `<header>
+<h1>Pi Agents</h1>${button("+", "new", 'aria-label="New agent"')}</header>
+<main class="list">${agents.map((a) => row(a)).join("") || '<p class="notice">No agents yet. Tap + to create one.</p>'}</main>
+<footer>
+<label>
+<input type="checkbox" id="offline" ${offline ? "checked" : ""}> Show offline Pi sessions (${hidden})</label>
+<small>${running} running · ${agents.length - running - hidden} idle · ${hidden} offline · total ${totalCost}${subscription}</small>
+</footer>`,
+  );
+  document.querySelector(".list")!.scrollTop = scroll;
+  const focused = [...root.querySelectorAll<HTMLElement>("[data-open]")].find(
+    (el) => el.dataset.open === focus,
+  );
+  if (offlineFocus) document.querySelector<HTMLElement>("#offline")?.focus({ preventScroll: true });
+  else focused?.focus({ preventScroll: true });
+}
+function status(clockOnly = false) {
+  const a = current();
+  if (!a || screen !== "chat" || !document.querySelector("#title")) return;
+  if (!clockOnly) {
+    document.querySelector("#title")!.textContent = a.name;
+    document.querySelector("#status")!.textContent = statusWord(a);
+    document.querySelector("#info")!.textContent = footerInfo(a);
+  }
+  document.querySelector("#working")!.textContent = a.running
+    ? `${a.activity ?? "working"} · ${a.since ? formatDuration(Date.now() - a.since) : ""}`
+    : "";
+  if (clockOnly) return;
+  (document.querySelector("#stop") as HTMLButtonElement).hidden = !a.running;
+  document.querySelector("#children")!.innerHTML = a.children
+    .map((c) => `<button data-open="${e(c.id)}">${c.running ? "◌ " : ""}${e(c.name)}</button>`)
+    .join("");
+}
+async function open(id: string, push = true) {
+  if (push) {
+    stack.push(id);
+    history.pushState({ stack: [...stack], screen: "chat" }, "");
+  }
+  screen = "chat";
+  items = [];
+  next = undefined;
+  generation++;
+  watchLife.abort();
+  base(
+    `<header>${button("←", "back", 'aria-label="Back"')}<div class="heading">
+<h1 id="title">
+</h1>
+<small id="status">
+</small>
+</div>${button("⋮", "menu", 'aria-label="Agent menu"')}</header>
+<section id="messages" aria-label="Transcript">
+<div id="history">
+</div>
+</section>
+<div id="children" class="chips">
+</div>
+<footer class="composer-footer">
+<button id="new-messages" hidden data-action="bottom">New messages ↓</button>
+<div id="working" role="status">
+</div>
+<small id="info">
+</small>
+<form id="composer">
+<textarea id="message" rows="2" placeholder="Message agent…" aria-label="Message">
+</textarea>
+<div class="row">
+<label>
+<input id="steer" type="checkbox"> Steer</label>
+<div>${button("Stop", "stop", 'id="stop" type="button" hidden')}<button type="submit">Send</button>
+</div>
+</div>
+</form>
+</footer>`,
+  );
+  document.querySelector("#messages")!.addEventListener("scroll", () => {
+    const view = document.querySelector("#messages")!;
+    if (view.scrollHeight - view.scrollTop - view.clientHeight < 70)
+      (document.querySelector("#new-messages") as HTMLElement).hidden = true;
+  });
+  status();
+  await refresh();
+  startWatch();
+}
+function drawChat(older = false) {
+  const view = document.querySelector<HTMLElement>("#messages");
+  if (!view) return;
+  const bottom = view.scrollHeight - view.scrollTop - view.clientHeight < 70;
+  const height = view.scrollHeight;
+  const top = view.scrollTop;
+  const expanded = [...view.querySelectorAll<HTMLDetailsElement>("details[open]")].map(
+    (el) => el.dataset.thinking,
+  );
+  document.querySelector("#history")!.innerHTML =
+    `${next ? button("Load older", "older") : ""}${transcript(items) || '<p class="notice">Send a message to get started.</p>'}`;
+  view.querySelectorAll<HTMLDetailsElement>("details").forEach((el) => {
+    el.open = expanded.includes(el.dataset.thinking);
+  });
+  if (older) view.scrollTop = top + view.scrollHeight - height;
+  else if (bottom) view.scrollTop = view.scrollHeight;
+  else (document.querySelector("#new-messages") as HTMLElement).hidden = false;
+}
+async function refresh() {
+  if (refreshing) {
+    dirty = true;
+    return;
+  }
+  refreshing = true;
+  try {
+    do {
+      dirty = false;
+      const id = stack.at(-1);
+      const version = generation;
+      const page = await api<Page>("/page", { target: id });
+      if (version !== generation || screen !== "chat") continue;
+      const overlaps = page.items.some((item) => items.some((old) => old.id === item.id));
+      if (!overlaps) {
+        items = [];
+        next = page.next;
+      }
+      const merged = new Map(items.map((item) => [item.id, item]));
+      for (const item of page.items) merged.set(item.id, item);
+      // Preserve loaded history and its cursor while refreshing the newest page.
+      if (!items.length) next = page.next;
+      const updated = [...merged.values()].sort((a, b) => Number(a.id) - Number(b.id));
+      const changed = JSON.stringify(updated) !== JSON.stringify(items);
+      items = updated;
+      if (changed || !document.querySelector("#history")?.children.length) drawChat();
+    } while (dirty);
+  } catch (error) {
+    fail(error);
+  } finally {
+    refreshing = false;
+  }
+}
+function startWatch() {
+  watchLife.abort();
+  watchLife = new AbortController();
+  reconnecting.delete("chat");
+  if (!document.hidden && screen === "chat")
+    void stream(
+      "/watch",
+      { target: stack.at(-1) },
+      watchLife.signal,
+      () => void refresh(),
+      (retry) => banner("chat", retry),
+    );
+}
+function startRoster() {
+  rosterLife.abort();
+  rosterLife = new AbortController();
+  if (!document.hidden)
+    void stream(
+      "/roster",
+      {},
+      rosterLife.signal,
+      (rows) => {
+        agents = rows;
+        if (screen === "list") list();
+        else status();
+      },
+      (retry) => banner("roster", retry),
+    );
+}
+async function modelFields(agent?: Agent) {
+  const models = await api<Model[]>("/models");
+  if (!models.length) throw new Error("No models available; configure models first");
+  const index = Math.max(
+    0,
+    models.findIndex((m) => m.provider === agent?.provider && m.modelId === agent?.modelId),
+  );
+  return { models, index };
+}
+function showDialog(title: string, fields: string, save?: (form: FormData) => Promise<void>) {
+  document.querySelector("dialog")?.remove();
+  const dialog = document.createElement("dialog");
+  dialog.innerHTML = `<form>
+<h2>${e(title)}</h2>${fields}<p class="dialog-error" role="alert">
+</p>
+<div class="row">
+<button type="button" data-cancel>Cancel</button>${save ? "<button>Save</button>" : ""}</div>
+</form>`;
+  document.body.append(dialog);
+  dialog.showModal();
+  dialog.querySelector("[data-cancel]")!.addEventListener("click", () => dialog.remove());
+  dialog.querySelector("form")!.onsubmit = async (event) => {
+    event.preventDefault();
+    if (!save) return;
+    const submit = dialog.querySelector<HTMLButtonElement>('button:not([type="button"])')!;
+    submit.disabled = true;
+    try {
+      await save!(new FormData(dialog.querySelector("form")!));
+      dialog.remove();
+    } catch (error) {
+      dialog.querySelector(".dialog-error")!.textContent =
+        error instanceof Error ? error.message : String(error);
+    } finally {
+      submit.disabled = false;
+    }
+  };
+  return dialog;
+}
+function selectors(models: Model[], index: number) {
+  const options = models
+    .map(
+      (m, i) =>
+        `<option value="${i}" ${i === index ? "selected" : ""}>${e(m.provider)}/${e(m.modelId)}</option>`,
+    )
+    .join("");
+  return `<label>Model<select name="model" id="model">${options}</select></label>
+<label>Thinking<select name="thinking" id="thinking"></select></label>`;
+}
+function thinking(container: HTMLElement, models: Model[], preferred?: string) {
+  const model = container.querySelector<HTMLSelectElement>("#model")!;
+  const update = () => {
+    const levels = models[Number(model.value)]!.thinkingLevels;
+    const value =
+      preferred && levels.includes(preferred) ? preferred : levels.includes("medium") ? "medium" : levels[0];
+    container.querySelector("#thinking")!.innerHTML = levels
+      .map((level) => `<option ${level === value ? "selected" : ""}>${e(level)}</option>`)
+      .join("");
+  };
+  model.onchange = update;
+  update();
+}
+let folder = "";
+let folderRequest = 0;
+async function browse(path?: string) {
+  const request = ++folderRequest;
+  const listing = await api<{
+    path: string;
+    parent?: string;
+    dirs: { name: string; markers: string }[];
+    error?: string;
+  }>("/dirs", { path });
+  if (screen !== "new" || request !== folderRequest) return;
+  folder = listing.path;
+  const el = document.querySelector("#folders")!;
+  const error = listing.error ? `<p class="error">${e(listing.error)}</p>` : "";
+  const parent = listing.parent
+    ? `<button type="button" data-dir="${e(listing.parent)}">↑ Parent folder</button>`
+    : "";
+  const dirs = listing.dirs
+    .map((dir) => {
+      const path = `${folder.replace(/\/$/, "")}/${dir.name}`;
+      return `<button type="button" data-dir="${e(path)}">📁 ${e(dir.name)}
+<small>${e(dir.markers)}</small></button>`;
+    })
+    .join("");
+  el.innerHTML = `<label>Working directory<input id="folder" value="${e(folder)}"></label>
+${button("Go", "folder-go", 'type="button"')}<div class="directory">${error}${parent}${dirs}</div>`;
+}
+async function newAgent() {
+  const { models, index } = await modelFields();
+  screen = "new";
+  history.pushState({ screen: "new", stack: [] }, "");
+  generation++;
+  watchLife.abort();
+  stack = [];
+  const recent = [...new Set(all().flatMap((a) => (a.cwd ? [a.cwd] : [])))]
+    .map((path) => `<option>${e(path)}</option>`)
+    .join("");
+  base(
+    `<header>${button("←", "back", 'aria-label="Back"')}<h1>New agent</h1>
+</header>
+<main class="new">
+<form id="new-form">
+<label>Name<input name="name" required maxlength="64" autocomplete="off" placeholder="my-agent">
+</label>
+<label>Recent folders<select id="recent">
+<option value="">Choose recent folder…</option>${recent}</select>
+</label>
+<section id="folders">
+</section>${selectors(models, index)}<button>Create agent</button>
+</form>
+</main>`,
+  );
+  thinking(root, models);
+  await browse(all().find((a) => a.cwd)?.cwd);
+  document.querySelector<HTMLSelectElement>("#recent")!.onchange = (event) => {
+    const value = (event.target as HTMLSelectElement).value;
+    if (value) void browse(value).catch(fail);
+  };
+  document.querySelector<HTMLFormElement>("#new-form")!.onsubmit = async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget as HTMLFormElement);
+    const name = String(form.get("name")).trim();
+    try {
+      const error = agentNameError(name);
+      if (error) throw new Error(error);
+      if (agents.some((a) => a.hosted && a.name === name)) throw new Error("Name already exists");
+      const model = models[Number(form.get("model"))]!;
+      const result = await mutate("/new", {
+        name,
+        cwd: (document.querySelector("#folder") as HTMLInputElement).value,
+        model: { provider: model.provider, modelId: model.modelId },
+        thinking: form.get("thinking"),
+      });
+      agents = await api<Agent[]>("");
+      await open(String(result.id));
+    } catch (error) {
+      fail(error);
+    }
+  };
+}
+root.addEventListener("click", async (event) => {
+  const el = (event.target as HTMLElement).closest<HTMLElement>("button");
+  if (!el) return;
+  try {
+    if (el.dataset.open) {
+      await open(el.dataset.open);
+      return;
+    }
+    if (el.dataset.dir) {
+      await browse(el.dataset.dir);
+      return;
+    }
+    const a = current();
+    switch (el.dataset.action) {
+      case "new":
+        await newAgent();
+        break;
+      case "back":
+        history.back();
+        break;
+      case "bottom": {
+        const view = document.querySelector("#messages")!;
+        view.scrollTop = view.scrollHeight;
+        el.hidden = true;
+        break;
+      }
+      case "stop":
+        await mutate("/stop", { target: a?.id });
+        break;
+      case "folder-go":
+        await browse((document.querySelector("#folder") as HTMLInputElement).value);
+        break;
+      case "older": {
+        const version = generation;
+        const page = await api<Page>("/page", { target: a?.id, cursor: next });
+        if (version !== generation) break;
+        const merged = new Map([...page.items, ...items].map((item) => [item.id, item]));
+        items = [...merged.values()];
+        next = page.next;
+        drawChat(true);
+        break;
+      }
+      case "menu": {
+        if (!a) break;
+        const dialog = showDialog(
+          a.name,
+          `<button type="button" data-menu="rename" ${a.hosted ? "" : "disabled"}>Rename</button>
+<button type="button" data-menu="model">Model & thinking</button>
+<button type="button" data-menu="disable">Disable agent</button>`,
+        );
+        dialog.querySelectorAll<HTMLElement>("[data-menu]").forEach(
+          (item) =>
+            (item.onclick = async () => {
+              dialog.remove();
+              try {
+                if (item.dataset.menu === "rename")
+                  showDialog(
+                    "Rename agent",
+                    `<label>Name<input name="name" value="${e(a.name)}" required></label>`,
+                    async (form) => {
+                      const name = String(form.get("name")).trim();
+                      const error = agentNameError(name);
+                      if (error) throw new Error(error);
+                      await mutate("/rename", { target: a.id, name });
+                    },
+                  );
+                if (item.dataset.menu === "model") {
+                  const { models, index } = await modelFields(a);
+                  const d = showDialog("Model & thinking", selectors(models, index), async (form) => {
+                    const m = models[Number(form.get("model"))]!;
+                    await mutate("/model", {
+                      target: a.id,
+                      provider: m.provider,
+                      modelId: m.modelId,
+                      thinking: form.get("thinking"),
+                    });
+                  });
+                  thinking(d, models, a.thinking);
+                }
+                if (item.dataset.menu === "disable" && confirm(`Disable ${a.name}?`))
+                  await mutate("/disable", { target: a.id });
+              } catch (error) {
+                fail(error);
+              }
+            }),
+        );
+        break;
+      }
+    }
+  } catch (error) {
+    fail(error);
+  }
+});
+root.addEventListener("change", (event) => {
+  if ((event.target as HTMLElement).id === "offline") {
+    offline = (event.target as HTMLInputElement).checked;
+    list();
+  }
+});
+root.addEventListener("submit", async (event) => {
+  if ((event.target as HTMLElement).id !== "composer") return;
+  event.preventDefault();
+  const input = document.querySelector<HTMLTextAreaElement>("#message")!;
+  const message = input.value.trim();
+  if (!message) return;
+  const submit = document.querySelector<HTMLButtonElement>('#composer button[type="submit"]')!;
+  submit.disabled = true;
+  try {
+    await mutate("/send", {
+      target: stack.at(-1),
+      message,
+      mode: (document.querySelector("#steer") as HTMLInputElement).checked ? "steer" : "followUp",
+    });
+    input.value = "";
+    const view = document.querySelector("#messages")!;
+    view.scrollTop = view.scrollHeight;
+    await refresh();
+    view.scrollTop = view.scrollHeight;
+    (document.querySelector("#new-messages") as HTMLElement).hidden = true;
+  } catch (error) {
+    fail(error);
+  } finally {
+    submit.disabled = false;
+  }
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    rosterLife.abort();
+    watchLife.abort();
+  } else {
+    startRoster();
+    startWatch();
+  }
+});
+history.replaceState({ screen: "list", stack: [] }, "");
+window.addEventListener("popstate", (event) => {
+  generation++;
+  watchLife.abort();
+  stack = event.state?.stack ?? [];
+  if (stack.length) void open(stack.at(-1)!, false);
+  else list();
+});
+setInterval(() => {
+  if (screen === "list") {
+    root.querySelectorAll<HTMLElement>("[data-time]").forEach((el) => {
+      const a = all().find((a) => a.id === el.dataset.time);
+      if (a) el.textContent = info(a);
+    });
+  } else status(true);
+}, 1000);
+if (token()) {
+  list();
+  startRoster();
+  if ("serviceWorker" in navigator)
+    void navigator.serviceWorker.register("/web/sw.js", { scope: "/" }).catch(() => {});
+} else unpair();

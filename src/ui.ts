@@ -6,7 +6,7 @@ import {
   Box, Editor, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi,
   type Component, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import { clean, firstLine, textOf, liveStatus, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, type WorkerStatus } from "./status.ts";
+import { clean, firstLine, textOf, liveStatus, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, type WorkerStatus } from "./status.ts";
 import type { ChatItem } from "./chat.ts";
 import type { Action, Delivery, Mode } from "./protocol.ts";
 
@@ -521,8 +521,7 @@ export class ChatView implements Component, Focusable {
       const time = s?.running ? `working${s.since ? ` ${formatDuration(Date.now() - s.since)}` : ""}` : s && !s.enabled ? "stopped" : "idle";
       const suffix = `${branch() ? ` (${branch()})` : ""} • ${s?.name ?? name} · ${time}`;
       const location = truncateToWidth(cwd, Math.max(0, width - visibleWidth(suffix))) + suffix;
-      const u = s?.tokens;
-      const stats = `↑${formatTokens(u?.input ?? 0)} ↓${formatTokens(u?.output ?? 0)} R${formatTokens(u?.cacheRead ?? 0)} W${formatTokens(u?.cacheWrite ?? 0)} CH${(s?.cacheHit ?? 0).toFixed(1)}% $${(s?.cost ?? 0).toFixed(3)}${s?.subscription ? " (sub)" : ""} ${s?.contextWindow ? `${(100 * (s.context ?? 0) / s.contextWindow).toFixed(1)}%/${formatTokens(s.contextWindow)}` : s?.context ? `${formatTokens(s.context)} ctx` : ""}`.trimEnd();
+      const stats = formatUsage(s);
       const model = s?.modelId ?? s?.model;
       const right = model ? `${s?.provider ? `(${s.provider}) ` : ""}${model}${s?.thinking ? ` • ${s.thinking}` : ""}` : "";
       // Keep a useful stats prefix; omit the model rather than showing a fragment of its ID.
