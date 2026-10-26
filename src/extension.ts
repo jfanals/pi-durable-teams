@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { realpath, mkdir, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
-import { CustomEditor, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, SettingsManager, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, Key, matchesKey } from "@earendil-works/pi-tui";
 import { Client } from "./client.ts";
 import { ActionSchema, IDENTITY_TYPE, MESSAGE_TYPE, SENT_TYPE, TOOL_DESCRIPTION, TOOL_NAME, type Delivery, type Mode } from "./protocol.ts";
-import { stateDir } from "./paths.ts";
+import { agentDir, stateDir } from "./paths.ts";
+import { contextLimit, LIMIT_PRESETS, writeContextLimit } from "./limits.ts";
 import { readConfig, writeWorkerModels, type WorkerModel } from "./config.ts";
 import { glyph, liveStatus, renderDelivery, renderSent, renderTeamCall, renderTeamResult, statusWord, TeamPanel, teamResultSummary, WorkerView, type ViewResult, type WorkerStatus } from "./ui.ts";
 
@@ -260,9 +262,16 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
   }
   // Worker models live in the host's config.json; the host reads them on every spawn, so edits apply to the next worker.
   // Choices are Pi's scoped models, read live (all available models when none are scoped).
+  // A model's context limit is Pi's per-model compaction setting, shared by every session on that model.
   async function editModels(ctx: ExtensionCommandContext) {
-    const label = (m?: WorkerModel) => m ? `${m.provider}/${m.modelId} · ${m.thinking ?? "main's thinking"}` : "main session's model";
     for (;;) {
+      const settings = SettingsManager.create(homedir(), agentDir); // the global settings the host reads
+      const limit = (m: { provider: string; modelId: string }) => {
+        const model = ctx.modelRegistry.find(m.provider, m.modelId);
+        const percent = model && contextLimit(settings, model);
+        return percent ? ` · compacts at ${percent}%` : "";
+      };
+      const label = (m?: WorkerModel) => m ? `${m.provider}/${m.modelId} · ${m.thinking ?? "main's thinking"}${limit(m)}` : "main session's model";
       const config = await readConfig();
       const rules = Object.entries(config.workerModels ?? {});
       const rows = [`default  ${label(config.workerModel)}`, ...rules.map(([key, m]) => `name contains "${key}"  ${label(m)}`), "+ add name rule"];
@@ -271,7 +280,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
       const save = (workerModel: WorkerModel | undefined, workerModels: Record<string, WorkerModel>) =>
         writeWorkerModels({ workerModel, workerModels: Object.keys(workerModels).length ? workerModels : undefined });
       if (picked === 0) {
-        const model = await chooseModel(ctx, "main session's model");
+        const model = await chooseModel(ctx, settings, "main session's model");
         if (model !== null) await save(model, Object.fromEntries(rules));
         continue;
       }
@@ -280,12 +289,12 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
       if (picked < rows.length - 1 && await ctx.ui.select(`Rule "${key}"`, ["Change model", "Remove rule"]) === "Remove rule") {
         await save(config.workerModel, Object.fromEntries(rules.filter(([k]) => k !== key))); continue;
       }
-      const model = await chooseModel(ctx);
+      const model = await chooseModel(ctx, settings);
       if (model) await save(config.workerModel, { ...Object.fromEntries(rules), [key]: model });
     }
   }
-  /** A model and thinking level; undefined for the `unset` row, null when cancelled. */
-  async function chooseModel(ctx: ExtensionCommandContext, unset?: string): Promise<WorkerModel | undefined | null> {
+  /** A model, thinking level and context limit; undefined for the `unset` row, null when cancelled. */
+  async function chooseModel(ctx: ExtensionCommandContext, settings: SettingsManager, unset?: string): Promise<WorkerModel | undefined | null> {
     const models = ctx.scopedModels.length ? ctx.scopedModels.map(s => s.model) : ctx.modelRegistry.getAvailable();
     if (!models.length) { ctx.ui.notify("No models available; log in or configure models first", "error"); return null; }
     const names = [...(unset ? [unset] : []), ...models.map(m => `${m.provider}/${m.id}`)];
@@ -296,6 +305,17 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
     const levels = ["main's thinking", ...getSupportedThinkingLevels(model)];
     const thinking = await ctx.ui.select(`Thinking · ${model.id}`, levels);
     if (thinking === undefined) return null;
+    if (model.contextWindow > 0) {
+      const current = contextLimit(settings, model);
+      const fallback = Math.round(100 * (model.contextWindow - settings.getCompactionReserveTokens()) / model.contextWindow);
+      const options = [`keep ${current}%`, ...LIMIT_PRESETS.map(p => `${p}%`), ...(current === fallback ? [] : [`Pi default (${fallback}%)`])];
+      const picked = await ctx.ui.select(`Compact at · % of ${model.id}'s ${Math.round(model.contextWindow / 1000)}k window, for every session on this model`, options);
+      if (picked === undefined) return null;
+      if (picked !== options[0]) {
+        await writeContextLimit(model, picked.startsWith("Pi default") ? undefined : parseInt(picked));
+        ctx.ui.notify("Context limit saved to Pi settings: new workers use it now; /reload applies it to this session", "info");
+      }
+    }
     return { provider: model.provider, modelId: model.id, ...(thinking === levels[0] ? {} : { thinking: thinking as WorkerModel["thinking"] }) };
   }
   pi.registerCommand("team", {

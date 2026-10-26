@@ -48,7 +48,7 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     { args: { action: "send" }, isError: true }).render(80)).join("\n");
   assert.match(failed, /Worker stopped/);
 
-  // Team panel: running workers one per line with activity, time and tokens; others only counted.
+  // Team panel: running workers one per line with activity, time, context and cost; others only counted, with the team's cost.
   const focus: unknown[] = []; const opened: WorkerStatus[] = [];
   const panelTui = { setFocus: (c: unknown) => focus.push(c), requestRender() {} } as unknown as TUI;
   const panel = new TeamPanel(panelTui, theme, w => opened.push(w));
@@ -56,15 +56,17 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   const now = Date.now();
   const reviewer = liveStatus({ id: "1", name: "reviewer", live: { run: {}, tools: [{ callId: "c1", name: "read", status: "running" }] },
     latest: { content: [{ type: "toolCall", id: "c1", name: "read", arguments: { path: "src/ui.ts" } }] },
-    usage: { models: { "x/y": { input: 40_000, output: 8_200, cacheRead: 99_999, cacheWrite: 0 } } }, since: now - 134_000,
-    agent: { model: { provider: "claude-code", modelId: "claude-opus-5-5" }, thinkingLevel: "medium" } });
-  panel.setWorkers([{ id: "2", name: "scout", enabled: true, since: now - 90_000, finishedAt: now - 30_000 }, reviewer, { id: "3", name: "old", enabled: false }]);
+    usage: { models: { "x/y": { input: 40_000, output: 8_200, cacheRead: 99_999, cacheWrite: 0, cost: { total: 9.8121 } } } }, since: now - 134_000,
+    agent: { model: { provider: "claude-code", modelId: "claude-opus-5-5" }, thinkingLevel: "medium" }, contextWindow: 1_000_000, subscription: true });
+  reviewer.context = 188_364;
+  panel.setWorkers([{ id: "2", name: "scout", enabled: true, since: now - 90_000, finishedAt: now - 30_000 }, reviewer, { id: "3", name: "old", enabled: false, cost: 1.5 }]);
   const summary = plain(panel.render(80));
   assert.equal(summary.length, 3, summary.join("\n"));
-  assert.match(summary[0]!, /reviewer +reading src\/ui\.ts +opus-5-5 medium · 2m 1[45]s · 48\.2k tok$/);
-  assert.doesNotMatch(plain(panel.render(70))[0]!, /opus/); // model drops first on narrow terminals
+  assert.match(summary[0]!, /reviewer +reading src\/ui\.ts +opus-5-5 medium · 2m 1[45]s · 18\.8%\/1\.0M · \$9\.812$/);
+  assert.doesNotMatch(plain(panel.render(70))[0]!, /opus/); // model drops first on narrow terminals, then the cost
+  assert.doesNotMatch(plain(panel.render(69))[0]!, /\$/);
   assert.match(summary[1]!, /scout +idle · last reply just now +1m 00s$/); // finished 30 s ago: still listed
-  assert.match(summary[2]!, /^ +1 stopped · ↓ to select/);
+  assert.match(summary[2]!, /^ +1 stopped · team \$11\.312 \(sub\) · ↓ to select/); // stopped workers' cost counts too
   assert.ok(panel.render(30).every(line => visibleWidth(line) <= 30));
   // Down focuses it: every worker listed, running first; Up from the top returns to the prompt.
   const editor = { handleInput: (d: string) => focus.push(`typed ${d}`), render: () => [], invalidate() {} };
@@ -79,7 +81,7 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   // A minute after its last reply an idle worker leaves the list and is only counted.
   panel.focused = false;
   panel.setWorkers([reviewer, { id: "2", name: "scout", enabled: true, since: now - 150_000, finishedAt: now - 61_000 }]);
-  assert.match(plain(panel.render(80)).at(-1)!, /1 idle · ↓ to select/);
+  assert.match(plain(panel.render(80)).at(-1)!, /1 idle · team \$9\.812 \(sub\) · ↓ to select/);
   panel.setWorkers([]); panel.dispose();
 
   // Real Durable transcript: input attribution, paired tool call/error, assistant Markdown, no system noise.
@@ -107,7 +109,7 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     cleanup(() => life.abort()); // stops the view's clock even when an assertion fails
     const view = new WorkerView(tui, theme, "reader", {
       page: async () => ({ entries }),
-      status: async () => ({ id: "1", name: "reader", enabled: true, running: true, since: Date.now() - 75_000, tokens: 12_300,
+      status: async () => ({ id: "1", name: "reader", enabled: true, running: true, since: Date.now() - 75_000, cost: 0.31,
         model: "opus-5-5", thinking: "medium", context: 50_000, contextWindow: 200_000, cwd: "/srv/app" }),
       watch: signal => new Promise(resolve => signal.addEventListener("abort", () => resolve())),
     }, value => { result = value; }, life.signal);
@@ -116,7 +118,7 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     assert.equal(screen.length, rows);
     assert.ok(view.render(50).every(line => visibleWidth(line) <= 50));
     assert.match(screen[0]!, /reader · running · live/);
-    assert.match(plain(view.render(100))[1]!, /^opus-5-5 medium · working 1m 1[56]s · 12\.3k tok · context 25% · \/srv\/app$/);
+    assert.match(plain(view.render(100))[1]!, /^opus-5-5 medium · working 1m 1[56]s · 25\.0%\/200k · \$0\.310 · \/srv\/app$/);
     assert.match(screen.join("\n"), /The file is missing\./); // follows the end
     view.handleInput("k"); view.handleInput("k");
     const before = plain(view.render(50)).slice(3, -2);

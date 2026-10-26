@@ -52,6 +52,8 @@ export type TeamsOptions = Omit<HarnessOptions, "registry"> & {
   /** Configured model for a new worker, read at each spawn; undefined uses the main's model and thinking level. */
   workerModel?: (name: string) => Promise<WorkerModel | undefined>;
   workerAgent?: (cwd: string) => Promise<AgentChange>;
+  /** A model's real context window, and whether its provider bills by subscription. */
+  modelInfo?: (model: ModelRef) => { window: number; subscription: boolean } | undefined;
 };
 
 export async function openTeams(storage: Storage, options: TeamsOptions) {
@@ -190,8 +192,8 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const since = (messages.findLast(m => m.role === "user") as { timestamp?: number } | undefined)?.timestamp;
         // pi.agent holds the worker's configured model, thinking level and cwd.
         const agent = v.value.docs["pi.agent"] as { model?: ModelRef } | undefined;
-        const contextWindow = agent?.model && options.models?.getModel(agent.model.provider, agent.model.modelId)?.contextWindow;
-        return { ...target, enabled: worker.enabled, agent, contextWindow, live: v.value.docs["pi.live"], usage: v.value.docs["pi.usage"], latest, since };
+        const info = agent?.model && options.modelInfo?.(agent.model);
+        return { ...target, enabled: worker.enabled, agent, contextWindow: info?.window, subscription: info?.subscription, live: v.value.docs["pi.live"], usage: v.value.docs["pi.usage"], latest, since };
       } finally { v.dispose(); }
     }
     if (actor.role === "worker" && args.action !== "send") throw new Error("Workers cannot spawn or stop agents");

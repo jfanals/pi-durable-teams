@@ -26,7 +26,8 @@ inspecting a request returns that request's settled outcome/answer.
 
 Main commands: `/team` (pick a worker), `/team open <worker>`, `/team models`, `/team stop`,
 `/team resume`, `/team reconnect`. A panel under the prompt shows each running worker
-on its own line (spinner, current activity, elapsed time, tokens) and counts idle and
+on its own line (spinner, current activity, elapsed time, context use as in Pi's footer,
+e.g. `18.8%/1.0M`, and list-price cost) and counts idle and
 stopped ones. Pressing Down in an empty prompt (past the end of input history) moves
 into the panel, where every worker is listed: ↑↓ select, Enter opens, Esc/Up or typing
 returns to the prompt. All of it comes from committed host state. `/team` lists only this
@@ -69,7 +70,12 @@ loader); only their providers are used, not their commands or tools.
 
 Edit worker models with `/team models`: pick the default or a name rule, then a model
 from Pi's scoped models (`/scoped-models`; all available models when none are scoped)
-(read live, so `/scoped-models` changes show up next time), then a thinking level. The host reads worker models
+(read live, so `/scoped-models` changes show up next time), then a thinking level,
+then where that model compacts: a preset share of its context window (50–90%) or
+Pi's default. That limit is Pi's own per-model setting
+(`compaction.modelOverrides["provider/id"].reserveTokens` in `~/.pi/agent/settings.json`),
+so the main session and workers on that model compact at the same point; `/reload`
+applies it to an open session. The host reads worker models
 on every spawn, so changes apply to the next worker without a restart. Running
 workers keep their model.
 

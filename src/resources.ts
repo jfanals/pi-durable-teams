@@ -7,6 +7,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { DefaultResourceLoader, discoverAndLoadExtensions, formatSkillsForPrompt, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { Teams, type TeamsOptions } from "./teams.ts";
 import { readConfig, workerModelFor } from "./config.ts";
+import { withContextLimits } from "./limits.ts";
 import { agentDir, stateDir } from "./paths.ts";
 export { socketPath, stateDir } from "./paths.ts";
 
@@ -58,8 +59,13 @@ export async function productionOptions(): Promise<TeamsOptions> {
   registry.install(CodingTools);
   registry.install(coding);
   return {
-    models: runtime, registry,
-    workerModel: async name => workerModelFor(await readConfig(), name),
+    // Pi's per-model compaction settings apply to workers too; re-read on every spawn like worker models.
+    models: withContextLimits(runtime, settings), registry,
+    workerModel: async name => { await settings.reload(); return workerModelFor(await readConfig(), name); },
+    modelInfo(ref) {
+      const model = runtime.getModel(ref.provider, ref.modelId);
+      return model && { window: model.contextWindow, subscription: runtime.isUsingSubscription(ref.provider) };
+    },
     settings: {
       get retry() { return settings.getRetrySettings(); },
       get compaction() { return settings.getCompactionSettings(); },

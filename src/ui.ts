@@ -11,8 +11,10 @@ export type WorkerStatus = {
   id: string; name: string; enabled: boolean; running?: boolean;
   /** Plain-words current activity while running: "reading src/ui.ts", "thinking", … */
   activity?: string;
-  /** Start of the current or last request; end of the last answer; tokens excluding cache reads. */
-  since?: number; finishedAt?: number; tokens?: number;
+  /** Start of the current or last request; end of the last answer. */
+  since?: number; finishedAt?: number;
+  /** List-price cost so far; subscription when its provider bills by subscription, not by this price. */
+  cost?: number; subscription?: boolean;
   /** Short model label and thinking level, e.g. "opus-5-5" and "medium". */
   model?: string; thinking?: string;
   /** Prompt size of the latest reply and the model's window; working directory. */
@@ -48,15 +50,15 @@ function describe(live: any, latest: any): string {
   if (parts.some((part: any) => part.type === "text" && part.text)) return "writing";
   return "thinking";
 }
-const tokensOf = (usage: any) => {
+const costOf = (usage: any) => {
   const buckets = Object.values(usage?.models ?? {}) as any[];
-  return buckets.length ? buckets.reduce((sum, u) => sum + replyTokens(u), 0) : undefined;
+  return buckets.length ? buckets.reduce((sum, u) => sum + (u?.cost?.total ?? 0), 0) : undefined;
 };
 /** Model ID without provider or "claude-" prefix: "claude-opus-5-5" → "opus-5-5". */
 const shortModel = (id: unknown) => typeof id === "string" && id ? clean(id).split("/").pop()!.replace(/^claude-/, "") : undefined;
-/** Tokens a reply counts toward totals: everything except cache reads. */
+/** Tokens a request processed, for transcript stamps: everything except cache reads. */
 const replyTokens = (u: any) => (u?.input ?? 0) + (u?.output ?? 0) + (u?.cacheWrite ?? 0);
-export function liveStatus(worker: { id: string; name: string; enabled?: boolean; agent?: any; live?: any; usage?: any; latest?: any; since?: unknown; contextWindow?: unknown }): WorkerStatus {
+export function liveStatus(worker: { id: string; name: string; enabled?: boolean; agent?: any; live?: any; usage?: any; latest?: any; since?: unknown; contextWindow?: unknown; subscription?: unknown }): WorkerStatus {
   const running = Boolean(worker.live?.run);
   const thinking = worker.agent?.thinkingLevel ?? worker.latest?.providerThinkingLevel;
   return {
@@ -64,7 +66,7 @@ export function liveStatus(worker: { id: string; name: string; enabled?: boolean
     activity: running ? describe(worker.live, worker.latest) : undefined,
     since: typeof worker.since === "number" ? worker.since : undefined,
     finishedAt: typeof worker.latest?.timestamp === "number" ? worker.latest.timestamp : undefined,
-    tokens: tokensOf(worker.usage),
+    cost: costOf(worker.usage), subscription: worker.subscription === true,
     model: shortModel(worker.agent?.model?.modelId ?? worker.latest?.model ?? Object.keys(worker.usage?.models ?? {})[0]),
     thinking: typeof thinking === "string" && thinking !== "off" ? clean(thinking) : undefined,
     context: worker.latest?.usage ? replyTokens(worker.latest.usage) + (worker.latest.usage.cacheRead ?? 0) : undefined,
@@ -79,7 +81,12 @@ export const formatDuration = (ms: number) => {
   return `${Math.floor(s / 3600)}h ${String(Math.floor(s / 60) % 60).padStart(2, "0")}m`;
 };
 const formatAgo = (ms: number) => ms < 60_000 ? "just now" : ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m ago` : `${Math.floor(ms / 3_600_000)}h ago`;
-export const formatTokens = (n: number) => n < 1000 ? `${n} tok` : n < 1_000_000 ? `${(n / 1000).toFixed(1)}k tok` : `${(n / 1_000_000).toFixed(1)}M tok`;
+// Pi footer formats: tokens "950", "4.2k", "188k", "1.0M"; context "18.8%/1M"; cost "$9.812".
+export const formatTokens = (n: number) => n < 1000 ? `${n}` : n < 10_000 ? `${(n / 1000).toFixed(1)}k` : n < 1_000_000 ? `${Math.round(n / 1000)}k`
+  : n < 10_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1_000_000)}M`;
+const formatContext = (w: WorkerStatus) => w.context === undefined ? ""
+  : w.contextWindow ? `${(100 * w.context / w.contextWindow).toFixed(1)}%/${formatTokens(w.contextWindow)}` : `${formatTokens(w.context)} ctx`;
+const formatCost = (cost?: number) => cost ? `$${cost.toFixed(3)}` : "";
 
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const VISIBLE_RUNNING = 5;
@@ -138,9 +145,9 @@ export class TeamPanel implements Component, Focusable {
     const left = `${selected ? t.fg("accent", "› ") : "  "}${mark} ${selected ? t.fg("accent", t.bold(name)) : w.running ? name : t.fg("muted", name)}  `;
     const time = w.running && w.since ? formatDuration(now - w.since)
       : !w.running && w.since && w.finishedAt && w.finishedAt >= w.since ? formatDuration(w.finishedAt - w.since) : "";
-    // The model drops first on narrow terminals, then the activity text.
+    // On narrow terminals the model drops first, then the cost, then the activity text.
     const model = width >= 80 && w.model ? `${w.model}${w.thinking ? ` ${w.thinking}` : ""}` : "";
-    const right = [model, time, w.tokens ? formatTokens(w.tokens) : ""].filter(Boolean).join(" · ");
+    const right = [model, time, formatContext(w), width >= 70 && formatCost(w.cost)].filter(Boolean).join(" · ");
     const showRight = width >= 40 && right;
     const middle = !w.enabled ? "stopped" : w.running ? w.activity ?? "running"
       : `idle${w.finishedAt ? ` · last reply ${formatAgo(now - w.finishedAt)}` : ""}`;
@@ -170,9 +177,12 @@ export class TeamPanel implements Component, Focusable {
     if (this.ticker && !shown.length) { clearInterval(this.ticker); this.ticker = undefined; } // last recent row expired
     const idle = this.workers.filter(w => w.enabled && !w.running && !shown.includes(w)).length;
     const stopped = this.workers.filter(w => !w.enabled).length;
+    // Every worker's cost, listed or not; "(sub)" as in Pi's footer when any of it is subscription-billed.
+    const total = formatCost(this.workers.reduce((sum, w) => sum + (w.cost ?? 0), 0));
     const summary = [shown.length > VISIBLE_RUNNING && `+${shown.length - VISIBLE_RUNNING} more`,
-      idle && `${idle} idle`, stopped && `${stopped} stopped`].filter(Boolean).join(" · ");
-    push(truncateToWidth(t.fg("dim", `  ${shown.length ? "" : "team · "}${summary ? `${summary} · ` : ""}↓ to select`), width));
+      idle && `${idle} idle`, stopped && `${stopped} stopped`,
+      total && `team ${total}${this.workers.some(w => w.subscription) ? " (sub)" : ""}`].filter(Boolean).join(" · ");
+    push(truncateToWidth(t.fg("dim", `  ${shown.length || total ? "" : "team · "}${summary ? `${summary} · ` : ""}↓ to select`), width));
     return lines;
   }
   handleInput(data: string) {
@@ -329,8 +339,8 @@ export function renderTranscript(entries: TranscriptEntry[], worker: string, wid
   const markdown = (text: string, color?: (t: string) => string) => new Markdown(clean(text), 0, 0, md, color ? { color } : undefined).render(width);
   const wrap = (text: string) => wrapTextWithAnsi(text, width);
   const sorted = [...entries].sort((a, b) => Number(a.id) - Number(b.id));
-  // One dim stamp per answered request: clock time, wall time since its input, tokens of all its model calls.
-  let turnStart: number | undefined; let turnTokens = 0;
+  // One dim stamp per answered request: clock time, wall time since its input, tokens and cost of all its model calls.
+  let turnStart: number | undefined; let turnTokens = 0; let turnCost = 0;
   const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   for (const entry of sorted) {
     const message = entry.model?.[0];
@@ -338,7 +348,7 @@ export function renderTranscript(entries: TranscriptEntry[], worker: string, wid
       case "teams.message":
       case "teams.report":
       case "pi.user": {
-        if (typeof message?.timestamp === "number" && turnStart === undefined) { turnStart = message.timestamp; turnTokens = 0; }
+        if (typeof message?.timestamp === "number" && turnStart === undefined) { turnStart = message.timestamp; turnTokens = 0; turnCost = 0; }
         const from = entry.data?.from?.name ?? "input";
         const text = entry.kind === "teams.message" ? entry.data?.message ?? textOf(message) : textOf(message);
         block([...wrap(theme.fg("accent", theme.bold(`${clean(from)} → ${worker}`)) + (entry.kind === "teams.report" ? theme.fg("dim", " · report") : "")), ...markdown(text)]);
@@ -363,11 +373,12 @@ export function renderTranscript(entries: TranscriptEntry[], worker: string, wid
         if (message?.stopReason === "error" || message?.stopReason === "aborted") {
           lines.push(...wrap(theme.fg("error", `${message.stopReason}${message.errorMessage ? `: ${clean(message.errorMessage)}` : ""}`)));
         }
-        turnTokens += replyTokens(message?.usage);
+        turnTokens += replyTokens(message?.usage); turnCost += message?.usage?.cost?.total ?? 0;
         if (message?.stopReason && message.stopReason !== "toolUse" && typeof message.timestamp === "number") {
-          const parts = [clock(message.timestamp), turnStart !== undefined && message.timestamp >= turnStart && formatDuration(message.timestamp - turnStart), turnTokens && formatTokens(turnTokens)];
+          const parts = [clock(message.timestamp), turnStart !== undefined && message.timestamp >= turnStart && formatDuration(message.timestamp - turnStart),
+            turnTokens && `${formatTokens(turnTokens)} tok`, formatCost(turnCost)];
           lines.push(theme.fg("dim", parts.filter(Boolean).join(" · ")));
-          turnStart = undefined; turnTokens = 0;
+          turnStart = undefined; turnTokens = 0; turnCost = 0;
         }
         if (lines.length) block([theme.fg("customMessageLabel", theme.bold(worker)), ...lines], worker);
         break;
@@ -478,17 +489,16 @@ export class WorkerView implements Component {
   // Header, two rules and the key line always fit; the details line only when there is room for a body too.
   private showDetails() { return this.tui.terminal.rows >= 8; }
   private bodyHeight() { return Math.max(0, this.tui.terminal.rows - (this.showDetails() ? 5 : 4)); }
-  /** Model, time, tokens, context use and cwd, from the latest committed status. */
+  /** Model, time, context use, cost and cwd, from the latest committed status. */
   private details(now: number) {
     const s = this.status;
     if (!s) return "";
     const time = s.running && s.since ? `working ${formatDuration(now - s.since)}`
       : [s.since && s.finishedAt && s.finishedAt >= s.since && `last request ${formatDuration(s.finishedAt - s.since)}`,
         s.enabled && s.finishedAt && `idle ${formatDuration(now - s.finishedAt)}`].filter(Boolean).join(" · ");
-    const context = s.context === undefined ? "" : s.contextWindow ? `context ${Math.round(100 * s.context / s.contextWindow)}%` : `context ${formatTokens(s.context)}`;
     const home = homedir();
     const cwd = s.cwd ? (s.cwd === home || s.cwd.startsWith(`${home}/`) ? `~${s.cwd.slice(home.length)}` : s.cwd) : "";
-    return [s.model && `${s.model}${s.thinking ? ` ${s.thinking}` : ""}`, time, s.tokens && formatTokens(s.tokens), context, cwd].filter(Boolean).join(" · ");
+    return [s.model && `${s.model}${s.thinking ? ` ${s.thinking}` : ""}`, time, formatContext(s), formatCost(s.cost), cwd].filter(Boolean).join(" · ");
   }
 
   render(width: number): string[] {
