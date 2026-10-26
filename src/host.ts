@@ -114,7 +114,12 @@ export async function startHost(directory: string, socket: string, options: Team
       switch (pathname) {
         case "/action": {
           if (!Value.Check(ActionSchema, body.args)) throw new Error("Invalid team action arguments");
-          const result = await service.action(actor, body.args, body.requestId);
+          const controller = new AbortController();
+          const closed = () => controller.abort(new Error("Client disconnected"));
+          res.once("close", closed);
+          let result;
+          try { result = await service.action(actor, body.args, body.requestId, controller.signal); }
+          finally { res.off("close", closed); }
           return reply(res, 200, body.args.action === "list" && Array.isArray(result)
             ? result.map(agent => agent.role === "main" && !agent.hosted ? { ...agent, connected: streams.has(agent.id) } : agent)
             : result);
