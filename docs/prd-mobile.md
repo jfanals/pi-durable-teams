@@ -35,23 +35,26 @@ can import the same formatters. `ui.ts` re-uses them.
 
 ### 2. Transcript items: `src/chat.ts`
 
-`chatItems(entries)` turns committed Durable entries into a small, stable, JSON-friendly list.
+`chatItems(entries, prefix?)` turns committed Durable entries into a small, stable, JSON-friendly list.
 One item per entry that matters; every client renders these and nothing else:
 
 ```ts
 type ChatItem =
   | { id: string; kind: "input"; from: string; text: string; report?: boolean; at?: number }
-  | { id: string; kind: "reply"; text: string; thinking?: string[]; tools: ToolCall[];
+  | { id: string; kind: "reply"; parts: ChatPart[];
       error?: string; at?: number; turn?: { ms?: number; tokens: number; cost: number } }
   | { id: string; kind: "result"; callId: string; ok: boolean; error?: string }
   | { id: string; kind: "notice"; text: string };
-type ToolCall = { id: string; name: string; subject: string };
+type ChatPart = { type: "text"; text: string } | { type: "thinking"; text: string }
+  | { type: "tool"; id: string; name: string; subject: string };
 ```
 
 - A tool call's outcome comes from the `result` item with the same `callId`. Within a page the
   host already pairs them; across a page boundary the client keeps a `callId → result` map.
-- `turn` is set on the reply that ends a request (stop reason not `toolUse`), summed over the
-  replies of that request inside the page.
+- `turn` is set on the reply that ends a request (stop reason not `toolUse`), summed over all
+  replies of that request, not just the page. The host reads older entries in bounded ID scans
+  until the oldest request's input is found, and passes them as `prefix` (not returned items).
+- Reply parts retain their original order; each text part renders as its own Markdown block.
 - The terminal transcript renderer (`renderTranscript`) consumes `ChatItem[]`. The Pi extension
   applies `chatItems` to the entries it gets from `inspect transcript`; the host applies it for
   human routes. One function, every client.
@@ -71,16 +74,18 @@ their shapes.
 
 - `config.json` gains `remote: { port: number }`. When set, the host also listens on
   `127.0.0.1:<port>` (never 0.0.0.0) with the **same request handler**.
-- Every remote request needs `Authorization: Bearer <token>` (or `?token=` for the first page
-  load only, which the web app moves into storage and strips from the URL). The token lives in
-  `remote-token` (0600) in the state dir, created on first use. Constant-time comparison.
+- Every API request needs `Authorization: Bearer <token>` (`?token=` is accepted only for GET
+  shell paths such as `/` and future static files, which the web app moves into storage and strips from the URL). The token lives in
+  `remote-token` (0600) in the state dir, created atomically at remote host startup or pairing. Stored and presented tokens must be
+  at least 32 characters; invalid stored tokens disable remote access. Constant-time comparison.
 - Remote requests may only reach `/agents*` and the web app's static files. `/register`,
   `/action`, `/events`, `/ack`, `/publish`, `/resume`, `/watch` (agent routes) answer 404.
 - Tailscale provides the network and HTTPS: `tailscale serve --bg <port>` exposes it as
   `https://<machine>.<tailnet>.ts.net`. The token is still required: a tailnet can include other
   people's devices.
 - `pi-agents pair` prints the URL with the token and a QR code (via `qrencode` when present) for
-  the phone. `pi-agents pair --rotate` replaces the token.
+  the phone. `pi-agents pair --rotate` replaces the token atomically. A host timer checks file metadata once
+  per second and reloads changed credentials; a changed token destroys open remote streams.
 
 ## Mobile web app (phase M2)
 

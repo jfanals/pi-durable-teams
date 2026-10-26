@@ -1,3 +1,4 @@
+import { formatCost } from "./status.ts";
 import { execFile } from "node:child_process";
 import { DirPicker } from "./dir-picker.ts";
 import { agentNameError } from "./agent-name.ts";
@@ -7,7 +8,7 @@ import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent"
 import { type WorkerModel } from "./config.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { workerSource, type HostSource } from "./source.ts";
-import { ChatView, formatCost, statusRow } from "./ui.ts";
+import { ChatView, statusRow } from "./ui.ts";
 
 /** Screen-local selection and drafts only; all agent state comes from the host. */
 export class AgentsApp implements Component, Focusable {
@@ -121,11 +122,7 @@ export class AgentsApp implements Component, Focusable {
     }
     this.view?.dispose();
     this.loadBranch(agent.cwd);
-    const bound = agent.hosted ? workerSource(this.source, agent.id) : {
-      page: async () => ({ entries: [{ id: 1, kind: "pi.assistant", model: [{ content: [{ type: "text", text: this.rows().find(row => row.agent.id === agent.id)?.agent.latest ?? "No published message. This Pi session has no hosted transcript." }] }] }] }),
-      status: async () => this.rows().find(row => row.agent.id === agent.id)?.agent ?? agent,
-      watch: (signal: AbortSignal, receive: () => void) => this.source.roster(signal, () => receive()),
-    };
+    const bound = workerSource(this.source, agent.id);
     this.view = new ChatView(this.tui, this.theme, agent.name, bound, this.life.signal, {
       send: (text, mode) => this.source.send(agent.id, text, mode), stop: () => this.source.stop(agent.id),
       back: () => {

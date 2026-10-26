@@ -1,3 +1,7 @@
+import { readConfig } from "./config.ts";
+import { remoteToken, remoteAllowed, tokenMatches, tokenCache } from "./remote.ts";
+import { chatItems } from "./chat.ts";
+import { listDirectories } from "./directories.ts";
 import { randomUUID } from "node:crypto";
 import { Type, StringEnum } from "@earendil-works/pi-ai";
 import { chmodSync, mkdirSync, rmSync } from "node:fs";
@@ -22,19 +26,23 @@ const HumanActionSchema = Type.Object({
 export async function startHost(directory: string, socket: string, options: TeamsOptions) {
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   chmodSync(directory, 0o700);
+  const remotePort = (await readConfig(directory)).remote?.port;
   const owner = new DatabaseSync(join(directory, "owner.sqlite"));
   try { owner.exec("BEGIN EXCLUSIVE"); }
   catch { owner.close(); throw new Error("A Durable teams host already owns this directory"); }
   let service: Awaited<ReturnType<typeof openTeams>> | undefined;
   const streams = new Map<string, ServerResponse>();
   const workerStreams = new Set<ServerResponse>();
+  const remoteStreams = new Set<ServerResponse>();
+  const credentials = tokenCache(directory, () => { for (const res of remoteStreams) res.destroy(); });
+  let tokenTimer: ReturnType<typeof setInterval> | undefined;
   const cleanups = new Set<() => unknown>();
   const connectionsChanged = new Set<() => void>();
   const notifyConnections = () => { for (const listener of connectionsChanged) listener(); };
   async function frame(res: ServerResponse, value: unknown) {
     if (res.destroyed || res.write(`${JSON.stringify(value)}\n`)) return;
     // A large frame is not a failed client. Honor backpressure; Durable coalesces
-    // a slow worker watch to a fresh snapshot instead of accumulating events.
+    // a slow worker watch to a fresh change tick instead of accumulating events.
     await new Promise<void>(resolve => {
       const done = () => { res.off("drain", done); res.off("close", done); resolve(); };
       res.once("drain", done); res.once("close", done);
@@ -43,9 +51,21 @@ export async function startHost(directory: string, socket: string, options: Team
   const reply = (res: ServerResponse, status: number, value: unknown) => {
     res.writeHead(status, { "content-type": "application/json" }); res.end(JSON.stringify(value));
   };
-  const server = createServer(async (req, res) => {
+  const handler = (remote: boolean): import("node:http").RequestListener => async (req, res) => {
     try {
-      const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const pathname = url.pathname;
+      if (remote) {
+        const allowed = remoteAllowed(pathname);
+        if (!allowed) return reply(res, 404, { error: "Unknown operation" });
+        const { token, error } = credentials.get();
+        if (error) return reply(res, 503, { error: `remote disabled: ${error}` });
+        const supplied = req.headers.authorization?.match(/^Bearer (.+)$/i)?.[1]
+          ?? (allowed === "shell" && req.method === "GET" ? url.searchParams.get("token") : null) ?? "";
+        if (!tokenMatches(token, supplied)) return reply(res, 401, { error: "Unauthorized: Bearer token required for API requests" });
+        remoteStreams.add(res);
+        res.once("close", () => remoteStreams.delete(res));
+      }
       if (pathname === "/health") return reply(res, 200, { pid: process.pid, ready: Boolean(service) });
       if (!service) return reply(res, 503, { error: "Host starting" });
       const chunks: Buffer[] = [];
@@ -61,6 +81,10 @@ export async function startHost(directory: string, socket: string, options: Team
       if (pathname === "/agents/models") {
         const all = async () => modelChoices(await (typeof options.models === "function" ? options.models() : options.models).getAvailable());
         return reply(res, 200, await (options.availableModels ?? all)());
+      }
+      if (pathname === "/agents/dirs") {
+        if (body.path !== undefined && typeof body.path !== "string") throw new Error("path must be a string");
+        return reply(res, 200, await listDirectories(body.path));
       }
       if (pathname === "/agents") return reply(res, 200, await service.agents(id => streams.has(id)));
       if (pathname === "/agents/roster") {
@@ -108,6 +132,10 @@ export async function startHost(directory: string, socket: string, options: Team
           model: route === "model" ? { provider: body.provider, modelId: body.modelId } : body.model,
           thinking: body.thinking, cursor: body.cursor, ...(route === "page" ? { transcript: true } : {}) };
         if (!Value.Check(HumanActionSchema, args)) throw new Error("Invalid agent action arguments");
+        if (route === "page") {
+          const page = await service.action(human, args as Action, "") as any;
+          return reply(res, 200, { items: chatItems(page.entries, page.prefix), next: page.next });
+        }
         return reply(res, 200, await service.action(human, args as Action, body.requestId ?? randomUUID()));
       }
       const actor = pathname === "/agents/watch" ? human : await service.authenticate(body.sessionId, body.secret);
@@ -161,22 +189,28 @@ export async function startHost(directory: string, socket: string, options: Team
         case "/agents/watch":
         case "/watch": {
           if (typeof body.target !== "string") throw new Error("target is required");
-          // Resolve/acquire the watch before committing HTTP headers. Its initial
-          // snapshot is buffered so inaccessible/external targets get JSON errors.
-          const pending: unknown[] = [];
-          let ready = false;
-          const stop = await service.watch(actor, body.target, value => {
-            if (ready) return frame(res, value);
-            pending.push(value);
-          });
+          // Resolve before headers; coalesce changes even when a client is slow.
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          let running = false; let dirty = false; let stopped = false; let ready = false;
+          const flush = async () => {
+            timer = undefined;
+            if (running || stopped) return;
+            running = true; dirty = false;
+            try { await frame(res, { changed: true }); }
+            catch (error) { res.destroy(error as Error); }
+            finally { running = false; if (dirty) schedule(); }
+          };
+          const schedule = () => {
+            dirty = true;
+            if (!timer && !running && !stopped && ready) timer = setTimeout(() => { void flush(); }, 25);
+          };
+          const unsubscribe = await service.watch(actor, body.target, schedule);
+          const stop = async () => { stopped = true; clearTimeout(timer); await unsubscribe(); };
           if (res.destroyed) { await stop(); return; }
           res.writeHead(200, { "content-type": "application/x-ndjson" }); res.flushHeaders();
-          workerStreams.add(res);
-          cleanups.add(stop);
+          ready = true; schedule();
+          workerStreams.add(res); cleanups.add(stop);
           res.on("close", () => { workerStreams.delete(res); cleanups.delete(stop); void stop(); });
-          ready = true;
-          for (const value of pending) await frame(res, value);
-          pending.length = 0;
           return;
         }
         default: return reply(res, 404, { error: "Unknown operation" });
@@ -185,13 +219,17 @@ export async function startHost(directory: string, socket: string, options: Team
       if (res.headersSent) res.destroy(error as Error);
       else reply(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
-  });
+  };
+  const server = createServer(handler(false));
+  const remoteServer = remotePort ? createServer(handler(true)) : undefined;
   let closed = false;
   const close = async () => {
     if (closed) return;
     closed = true;
+    clearInterval(tokenTimer);
     for (const res of [...streams.values(), ...workerStreams]) res.destroy();
     server.close(); server.closeAllConnections();
+    remoteServer?.close(); remoteServer?.closeAllConnections();
     for (const cleanup of cleanups) await cleanup();
     await service?.close();
     rmSync(socket, { force: true });
@@ -203,6 +241,13 @@ export async function startHost(directory: string, socket: string, options: Team
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, resolve); });
     chmodSync(socket, 0o600);
     service = await openTeams(await openNodeSqliteStorage(join(directory, "teams.sqlite")), options);
+    if (remoteServer) {
+      // A corrupt stored token disables remote requests, not the trusted socket.
+      await remoteToken(directory).catch(() => {});
+      await credentials.refresh();
+      tokenTimer = setInterval(() => { void credentials.refresh(); }, 1000);
+      await new Promise<void>((resolve, reject) => { remoteServer.once("error", error => reject(new Error(`Cannot listen on remote.port ${remotePort} in config.json: ${error.message}`))); remoteServer.listen(remotePort, "127.0.0.1", resolve); });
+    }
     return { service, close };
   } catch (error) { await close(); throw error; }
 }

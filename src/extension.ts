@@ -1,3 +1,5 @@
+import { textOf, liveStatus, statusWord, type WorkerStatus } from "./status.ts";
+import { chatItems } from "./chat.ts";
 import { selectableModels } from "./model-choices.ts";
 import { randomUUID } from "node:crypto";
 import { realpath, mkdir, writeFile } from "node:fs/promises";
@@ -12,7 +14,7 @@ import { ActionSchema, IDENTITY_TYPE, MESSAGE_TYPE, SENT_TYPE, TOOL_DESCRIPTION,
 import { agentDir, stateDir } from "./paths.ts";
 import { contextLimit, LIMIT_PRESETS, writeContextLimit } from "./limits.ts";
 import { readConfig, writeWorkerModels, type WorkerModel } from "./config.ts";
-import { glyph, liveStatus, renderDelivery, renderSent, renderTeamCall, renderTeamResult, statusWord, TeamPanel, teamResultSummary, WorkerView, type ViewResult, type WorkerStatus } from "./ui.ts";
+import { glyph, renderDelivery, renderSent, renderTeamCall, renderTeamResult, TeamPanel, teamResultSummary, WorkerView, type ViewResult } from "./ui.ts";
 
 export default function durableTeams(pi: ExtensionAPI, createClient = () => new Client()) {
   let active: { ctx: ExtensionContext; sessionId: string; secret: string; life: AbortController; client: Client; queued: Set<string> } | undefined;
@@ -49,7 +51,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
   function lastAssistant(ctx: ExtensionContext) {
     const entry = ctx.sessionManager.getBranch().findLast(entry => entry.type === "message" && entry.message.role === "assistant");
     if (entry?.type !== "message" || entry.message.role !== "assistant") return undefined;
-    return entry.message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+    return textOf(entry.message);
   }
   async function register(current: NonNullable<typeof active>) {
     const { ctx } = current;
@@ -172,7 +174,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
       if (event.message.role === "custom" && event.message.customType === MESSAGE_TYPE) {
         await acknowledge(current, (event.message.details as Delivery).id);
       } else if (event.message.role === "assistant") {
-        const latest = event.message.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n");
+        const latest = textOf(event.message);
         await current.client.call("publish", { ...credentials(current), latest }, current.life.signal);
       }
     } catch (error) { if (!current.life.signal.aborted) notify(current, `team publication pending: ${String(error)}`); }
@@ -214,7 +216,10 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
   });
   async function openWorker(current: Current, ctx: ExtensionContext, worker: WorkerStatus): Promise<"back" | "close"> {
     const source = {
-      page: async (cursor?: string) => await call(current, { action: "inspect", target: worker.id, transcript: true, ...(cursor ? { cursor } : {}) }) as any,
+      page: async (cursor?: string) => {
+        const page = await call(current, { action: "inspect", target: worker.id, transcript: true, ...(cursor ? { cursor } : {}) }) as any;
+        return { items: chatItems(page.entries, page.prefix), next: page.next };
+      },
       status: async () => liveStatus({ ...worker, ...await call(current, { action: "inspect", target: worker.id }) }),
       watch: (signal: AbortSignal, onFrame: () => void) => current.client.stream("watch", { ...credentials(current), target: worker.id }, signal, () => onFrame()),
     };

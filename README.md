@@ -326,3 +326,24 @@ loaded yet.
 
 Preview without touching the live host: `npm run screen -- small` (`narrow` or `wide`
 also work). These scenarios use a temporary host and faux model, as do `test/app.test.ts`.
+
+## Phone access
+
+Enable the loopback API in `~/.pi/agent/durable-teams/config.json` (or your
+`PI_TEAMS_DIR`) and restart the host:
+
+```json
+{ "remote": { "port": 8787 } }
+```
+
+Run `pi-agents pair` to print the pairing URL and, if `qrencode` is installed, a QR
+code. Run the suggested `tailscale serve --bg 8787` command yourself to expose it
+with tailnet HTTPS. Without Tailscale the URL falls back to localhost.
+`pi-agents pair --rotate` revokes the old token and closes remote streams within one second.
+The host polls token-file metadata once per second, reloads only changes, and destroys remote
+streams when credentials change; requests and frame writes never create credentials.
+API routes require a Bearer header; query tokens are reserved for GET web-shell paths.
+Folder listings require absolute paths; macOS privacy restrictions may return EPERM.
+
+Treat the pairing URL as a secret: the API requires its token even on your tailnet.
+The phone UI is a later phase; pairing currently enables the `/agents` API only.

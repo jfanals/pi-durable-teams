@@ -23,8 +23,8 @@ test("directory picker browses, filters, previews and chooses directories at eve
     assert.doesNotMatch(wide, /node_modules|file.txt|\.hidden/);
     assert.doesNotMatch(screen(60), /Parent|Preview|│/);
     picker.handleInput("\r"); assert.equal(chosen.pop(), join(root, "beta"));
-    for (const char of "Al") picker.handleInput(char);
-    assert.match(screen(), /Filter: Al/);
+    for (const char of "Alpha") picker.handleInput(char); // long enough not to match the random temp folder name
+    assert.match(screen(), /Filter: Alpha/);
     assert.doesNotMatch(screen(), /Recent ·/);
     assert.match(screen(), /Project instructions/);
     picker.handleInput("\x1b[C"); assert.ok(screen().startsWith(join(root, "Alpha")));

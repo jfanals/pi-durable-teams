@@ -8,6 +8,7 @@ import { stateDir } from "./paths.ts";
 /** A worker model; `thinking` unset follows the parent's thinking level. */
 export type WorkerModel = { provider: string; modelId: string; thinking?: ModelThinkingLevel };
 export type Config = {
+  remote?: { port: number };
   /** Pi packages whose model providers the host loads. Read at host startup. */
   providerExtensions?: string[];
   /** Default for hosted top-level agents; unset requires an explicit choice. */
@@ -29,6 +30,7 @@ export async function readConfig(dir = stateDir): Promise<Config> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
     throw error;
   }
+  if (config.remote !== undefined && (!config.remote || !Number.isInteger(config.remote.port) || config.remote.port < 1 || config.remote.port > 65535)) throw new Error("remote must be { port: integer from 1 to 65535 }");
   if (config.providerExtensions !== undefined && !isStrings(config.providerExtensions)) throw new Error("providerExtensions must be an array of Pi package paths");
   if (config.agentModel !== undefined && !isModel(config.agentModel)) throw new Error("agentModel must be { provider, modelId, thinking? }");
   if (config.workerModel !== undefined && !isModel(config.workerModel)) throw new Error("workerModel must be { provider, modelId, thinking? }");

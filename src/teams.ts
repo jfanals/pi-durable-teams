@@ -12,7 +12,7 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { WorkerModel } from "./config.ts";
 import { agentNameError } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
-import { liveStatus } from "./ui.ts";
+import { liveStatus, textOf } from "./status.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { ActionSchema, TOOL_DESCRIPTION, TOOL_NAME, type Action, type Actor, type Delivery, type Mode } from "./protocol.ts";
 
@@ -64,8 +64,6 @@ export function reach(agents: Record<string, Agent>, actor: Actor, verb: string,
   if (["stop", "abort"].includes(verb)) return target.parent === own.id;
   return target.id === own.id || own.parent === target.id || target.parent === own.id || target.parent === own.parent;
 }
-const textOf = (message?: AssistantMessage) =>
-  message?.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n") ?? "";
 const terminal = () => ({ status: "terminal", outcome: { status: "completed", result: null } }) as const;
 const Anchor = defineTask<null, { phase: "done" }, null>({
   name: "teams.anchor", version: 1, initial: () => ({ phase: "done" }),
@@ -311,13 +309,27 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         return inspectRequest(actor, args.request);
       }
       if (target!.where.kind === "external") {
-        if (args.transcript) throw new Error("External Pi sessions do not have hosted transcripts");
+        if (args.transcript) return { entries: [{ id: "publication", kind: target!.where.session.latest ? "pi.assistant" : "teams.placeholder",
+          ...(target!.where.session.latest ? { model: [{ content: target!.where.session.latest }] } : { data: { text: "This Pi session has no hosted transcript." } }) }] };
         return { ...actorOf(target!), latest: target!.where.session.latest, observed: "last main publication; may be stale/offline" };
       }
       const conversation = await conversationOf(target!);
       if (args.transcript) {
-        const page = await conversation.entries({}, 40, args.cursor ? JSON.parse(args.cursor) : undefined, context);
-        return { ...actorOf(target!), entries: page.items, next: page.next ? JSON.stringify(page.next) : undefined };
+        const page = await conversation.entries({ order: "descending" }, 40, args.cursor ? JSON.parse(args.cursor) : undefined, context);
+        // Read backwards in bounded chunks only when the page begins mid-request.
+        const prefix: (typeof page.items)[number][] = [];
+        const input = (entry: { kind: string }) => ["teams.message", "teams.report", "pi.user"].includes(entry.kind);
+        let oldest: (typeof page.items)[number] | undefined = [...page.items].sort((a, b) => Number(a.id) - Number(b.id))[0];
+        while (oldest && !input(oldest)) {
+          const before = await conversation.entries({ order: "descending", maxEntryId: (Number(oldest.id) - 1) as EntryId }, 40, undefined, context);
+          if (!before.items.length) break;
+          const ordered = [...before.items].sort((a, b) => Number(b.id) - Number(a.id));
+          const boundary = ordered.findIndex(input);
+          prefix.push(...(boundary < 0 ? ordered : ordered.slice(0, boundary + 1)));
+          if (boundary >= 0) break;
+          oldest = ordered.at(-1);
+        }
+        return { ...actorOf(target!), entries: page.items, prefix, next: page.next ? JSON.stringify(page.next) : undefined };
       }
       const v = await conversation.viewState(context);
       try {
@@ -534,10 +546,15 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     async watch(actor: Actor, target: string, listener: (value: unknown) => void | Promise<void>) {
       const state = await read();
       const destination = resolveTarget(state, actor, target);
-      if (destination.where.kind !== "hosted") throw new Error("External Pi sessions have no hosted transcript");
+      if (destination.where.kind !== "hosted") {
+        await listener({ changed: true });
+        const notify = () => { void listener({ changed: true }); };
+        changed.add(notify);
+        return () => { changed.delete(notify); };
+      }
       const stream = await watchEvents(harness, destination.where.conversationId, context);
-      await listener({ snapshot: stream.snapshot });
-      stream.start(async events => { await listener({ events }); });
+      await listener({ changed: true });
+      stream.start(async () => { await listener({ changed: true }); });
       return () => stream.stop();
     },
     close: () => { unsubscribeCommits(); return harness.close(context); },

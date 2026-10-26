@@ -1,12 +1,13 @@
+import type { ChatItem } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import { randomUUID } from "node:crypto";
 import type { ModelRef } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Client } from "./client.ts";
 import type { AgentSummary, Mode } from "./protocol.ts";
-import type { TranscriptEntry, WorkerSource } from "./ui.ts";
+import type { WorkerSource } from "./ui.ts";
 
-export type TranscriptPage = { entries: TranscriptEntry[]; next?: string };
+export type TranscriptPage = { items: ChatItem[]; next?: string };
 export type RequestOptions = { requestId?: string; signal?: AbortSignal };
 export type MutationResult = { id?: string; taskId?: number; workerId?: string; delivery?: string; aborted?: string[]; stopped?: string[]; model?: ModelRef; thinking?: ModelThinkingLevel };
 export interface HostSource {

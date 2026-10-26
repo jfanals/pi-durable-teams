@@ -1,4 +1,4 @@
-import type { WorkerStatus } from "./ui.ts";
+import type { WorkerStatus } from "./status.ts";
 import { Type, StringEnum, type Static, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 export const ActionSchema = Type.Object({

@@ -1,3 +1,5 @@
+import { chatItems } from "../src/chat.ts";
+import { liveStatus, type WorkerStatus } from "../src/status.ts";
 import assert from "node:assert/strict";
 import { after as cleanup, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -9,7 +11,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { openTeams } from "../src/teams.ts";
-import { liveStatus, renderDelivery, renderTeamResult, renderTranscript, TeamPanel, WorkerView, type ViewResult, type WorkerStatus } from "../src/ui.ts";
+import { renderDelivery, renderTeamResult, renderTranscript, TeamPanel, WorkerView, type ViewResult } from "../src/ui.ts";
 
 initTheme("dark");
 const theme = { fg: (_: string, t: string) => t, bg: (_: string, t: string) => t, bold: (t: string) => t } as unknown as Theme;
@@ -101,7 +103,7 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     const spawned = await service.action(main, { action: "spawn", name: "reader", message: "Read missing.txt" }, "s") as any;
     await service.harness.waitForTask(spawned.taskId, BACKGROUND_CONTEXT);
     const page = await service.action(main, { action: "inspect", target: "reader", transcript: true }, "") as any;
-    const lines = plain(renderTranscript(page.entries, "reader", 50, theme));
+    const lines = plain(renderTranscript(chatItems(page.entries), "reader", 50, theme));
     const text = lines.join("\n");
     assert.ok(text.indexOf("Main → reader") < text.indexOf("▸ read missing.txt ✗"), text);
     assert.ok(text.indexOf("▸ read missing.txt ✗") < text.indexOf("The file is missing."), text);
@@ -115,7 +117,7 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     const life = new AbortController();
     cleanup(() => life.abort()); // stops the view's clock even when an assertion fails
     const view = new WorkerView(tui, theme, "reader", {
-      page: async () => ({ entries }),
+      page: async () => ({ items: chatItems(entries) }),
       status: async () => ({ id: "1", name: "reader", enabled: true, running: true, since: Date.now() - 75_000, cost: 0.31,
         model: "opus-5-5", thinking: "medium", context: 50_000, contextWindow: 200_000, cwd: "/srv/app" }),
       watch: signal => new Promise(resolve => signal.addEventListener("abort", () => resolve())),
@@ -142,4 +144,56 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     view.handleInput("s"); assert.deepEqual(result, { type: "send", mode: "steer" });
     life.abort();
   } finally { await service.close(); }
+});
+
+test("chat items are plain JSON with clean text, tool subjects, notices and complete turn totals", () => {
+  const items = chatItems([
+    { id: 1, kind: "pi.system", model: [{ content: "private setup" }] },
+    { id: 2, kind: "teams.message", data: { from: { name: "\x1b[31mLead\x1b[0m" }, message: "Read\x00 this" }, model: [{ timestamp: 1000 }] },
+    { id: 3, kind: "pi.assistant", model: [{ timestamp: 1100, stopReason: "toolUse", usage: { input: 10, output: 2, cacheRead: 99, cacheWrite: 3, cost: { total: 0.1 } }, content: [
+      { type: "thinking", thinking: "\x1b]0;title\x07Reasoning" },
+      { type: "toolCall", id: "call", name: "bash", arguments: { command: "\n ls -la\nignored" } },
+    ] }] },
+    { id: 4, kind: "pi.tool-result", model: [{ toolCallId: "call", isError: true, content: "<harness>[error] Not found</harness>" }] },
+    { id: 5, kind: "pi.assistant", model: [{ timestamp: 2500, stopReason: "stop", usage: { input: 20, output: 4, cacheRead: 99, cost: { total: 0.2 } }, content: [{ type: "text", text: "\x1bPprivate\x1b\\Done\x07" }] }] },
+    { id: 6, kind: "pi.compaction" }, { id: 7, kind: "pi.reset" }, { id: 8, kind: "other.event" },
+  ]);
+  assert.deepEqual(items[0], { id: "2", kind: "input", from: "Lead", text: "Read this", at: 1000 });
+  const call = items[1]; assert.ok(call?.kind === "reply");
+  assert.deepEqual(call.parts, [{ type: "thinking", text: "Reasoning" }, { type: "tool", id: "call", name: "bash", subject: "ls -la" }]); assert.equal(call.turn, undefined);
+  assert.deepEqual(items[2], { id: "4", kind: "result", callId: "call", ok: false, error: "Not found" });
+  const answer = items[3]; assert.ok(answer?.kind === "reply");
+  assert.deepEqual(answer.parts, [{ type: "text", text: "Done" }]); assert.equal(answer.turn?.ms, 1500); assert.equal(answer.turn?.tokens, 39);
+  assert.ok(Math.abs(answer.turn!.cost - 0.3) < 1e-10);
+  assert.deepEqual(items.slice(4).map(item => item.kind === "notice" && item.text), ["— context compacted —", "— context reset —", "[other.event]"]);
+  assert.doesNotMatch(JSON.stringify(items), /private|\\u001b|\\u0000|\\u0007/);
+});
+
+
+test("reply parts render in original thinking, text, tool, text order", () => {
+  const items = chatItems([{ id: 1, kind: "pi.assistant", model: [{ content: [
+    { type: "thinking", thinking: "First reasoning" },
+    { type: "text", text: "Before tool" },
+    { type: "toolCall", id: "call", name: "bash", arguments: { command: "pwd" } },
+    { type: "text", text: "After tool" },
+  ] }] }]);
+  const reply = items[0]; assert.ok(reply?.kind === "reply");
+  assert.deepEqual(reply.parts.map(part => part.type), ["thinking", "text", "tool", "text"]);
+  const rendered = plain(renderTranscript(items, "worker", 80, theme, true)).join("\n");
+  const offsets = ["First reasoning", "Before tool", "bash pwd", "After tool"].map(text => rendered.indexOf(text));
+  assert.ok(offsets.every((offset, i) => offset >= 0 && (i === 0 || offset > offsets[i - 1]!)), rendered);
+});
+
+test("a request crossing a page boundary retains its full turn stamp", () => {
+  const entries = [
+    { id: 1, kind: "pi.user", model: [{ timestamp: 1000, content: "Input" }] },
+    { id: 2, kind: "pi.assistant", model: [{ timestamp: 1500, stopReason: "toolUse", usage: { input: 10, output: 2, cost: { total: 0.1 } } }] },
+    { id: 3, kind: "pi.tool-result" },
+    { id: 4, kind: "pi.assistant", model: [{ timestamp: 2500, stopReason: "stop", usage: { input: 20, output: 3, cost: { total: 0.2 } } }] },
+  ];
+  const full = chatItems(entries);
+  const page = chatItems(entries.slice(2), entries.slice(0, 2));
+  assert.deepEqual(page, full.filter(item => Number(item.id) >= 3));
+  const reply = page.at(-1); assert.ok(reply?.kind === "reply");
+  assert.deepEqual(reply.turn, { ms: 1500, tokens: 35, cost: 0.1 + 0.2 });
 });

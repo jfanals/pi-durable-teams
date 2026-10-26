@@ -3,108 +3,25 @@ import { homedir } from "node:os";
 
 import { getMarkdownTheme, getSelectListTheme, keyText, type Theme } from "@earendil-works/pi-coding-agent";
 import {
-  Box, Editor, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, stripTerminalSequences, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi,
+  Box, Editor, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi,
   type Component, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
+import { clean, firstLine, textOf, liveStatus, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, type WorkerStatus } from "./status.ts";
+import type { ChatItem } from "./chat.ts";
 import type { Action, Delivery, Mode } from "./protocol.ts";
 
-export type WorkerStatus = {
-  id: string; name: string; enabled: boolean; running?: boolean;
-  /** Plain-words current activity while running: "reading src/ui.ts", "thinking", … */
-  activity?: string;
-  /** Start of the current or last request; end of the last answer. */
-  since?: number; finishedAt?: number;
-  /** List-price cost so far; subscription when its provider bills by subscription, not by this price. */
-  cost?: number; subscription?: boolean;
-  /** Short model label and thinking level, e.g. "opus-5-5" and "medium". */
-  model?: string; modelId?: string; provider?: string; thinking?: string;
-  tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number };
-  cacheHit?: number;
-  /** Prompt size of the latest reply and the model's window; working directory. */
-  context?: number; contextWindow?: number; cwd?: string;
-};
-export type TranscriptEntry = { id: number | string; kind: string; model?: any[]; data?: any };
 export type ViewResult = { type: "back" } | { type: "send"; mode: Mode } | { type: "stop" };
 
 const COLLAPSED_LINES = 4;
-const clean = (text: unknown) => stripTerminalSequences(String(text ?? ""));
 // Same small formatter as Pi's footer (not exported by its public package index).
 const formatCwd = (cwd: string) => {
   const home = homedir();
   return cwd === home || cwd.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd;
 };
-const firstLine = (text: unknown) => clean(text).split("\n").find(line => line.trim())?.trim() ?? "";
 const expandKey = () => { try { return keyText("app.tools.expand") || "ctrl+o"; } catch { return "ctrl+o"; } };
-const textOf = (message: any) => typeof message?.content === "string" ? message.content
-  : (message?.content ?? []).flatMap((part: any) => part.type === "text" ? [part.text] : []).join("\n");
+
 
 export const glyph = (w: WorkerStatus) => !w.enabled ? "■" : w.running ? "●" : "○";
-export const statusWord = (w: WorkerStatus) => !w.enabled ? "stopped" : w.running ? (w.activity ?? "running") : "idle";
-
-const VERBS: Record<string, string> = { read: "reading", edit: "editing", write: "writing", bash: "bash:" };
-/** What a running worker is doing, from its committed live state. Never infers success. */
-function describe(live: any, latest: any): string {
-  const slot = live?.tools?.find((s: any) => s.status === "running") ?? live?.tools?.find((s: any) => s.status === "pending");
-  if (slot) {
-    const call = latest?.content?.find((part: any) => part.type === "toolCall" && part.id === slot.callId);
-    const args = call?.arguments ?? {};
-    const subject = firstLine(args.path ?? args.command ?? args.target ?? args.name ?? "");
-    return `${VERBS[slot.name] ?? clean(slot.name)}${subject ? ` ${subject}` : ""}`;
-  }
-  if (live?.compactions?.length) return "compacting context";
-  if (live?.generation?.retry) return `retrying · ${firstLine(live.generation.retry.error)}`;
-  const parts = live?.generation?.message?.content ?? [];
-  if (parts.some((part: any) => part.type === "toolCall")) return "choosing a tool";
-  if (parts.some((part: any) => part.type === "text" && part.text)) return "writing";
-  return "thinking";
-}
-const costOf = (usage: any) => {
-  const buckets = Object.values(usage?.models ?? {}) as any[];
-  return buckets.length ? buckets.reduce((sum, u) => sum + (u?.cost?.total ?? 0), 0) : undefined;
-};
-/** Model ID without provider or "claude-" prefix: "claude-opus-5-5" → "opus-5-5". */
-const shortModel = (id: unknown) => typeof id === "string" && id ? clean(id).split("/").pop()!.replace(/^claude-/, "") : undefined;
-/** Tokens a request processed, for transcript stamps: everything except cache reads. */
-const replyTokens = (u: any) => (u?.input ?? 0) + (u?.output ?? 0) + (u?.cacheWrite ?? 0);
-export function liveStatus(worker: { id: string; name: string; enabled?: boolean; agent?: any; live?: any; usage?: any; latest?: any; since?: unknown; contextWindow?: unknown; subscription?: unknown }): WorkerStatus {
-  const running = Boolean(worker.live?.run);
-  const buckets = Object.values(worker.usage?.models ?? {}) as any[];
-  const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-  for (const bucket of buckets) for (const key of Object.keys(tokens) as (keyof typeof tokens)[]) tokens[key] += bucket?.[key] ?? 0;
-  const modelId = worker.agent?.model?.modelId ?? worker.latest?.model;
-  const prompt = worker.latest?.usage;
-  const promptTokens = (prompt?.input ?? 0) + (prompt?.cacheRead ?? 0) + (prompt?.cacheWrite ?? 0);
-  const thinking = worker.agent?.thinkingLevel ?? worker.latest?.providerThinkingLevel;
-  return {
-    id: worker.id, name: worker.name, enabled: worker.enabled !== false, running,
-    activity: running ? describe(worker.live, worker.latest) : undefined,
-    since: typeof worker.since === "number" ? worker.since : undefined,
-    finishedAt: typeof worker.latest?.timestamp === "number" ? worker.latest.timestamp : undefined,
-    tokens, modelId: typeof modelId === "string" ? clean(modelId) : undefined,
-    provider: worker.agent?.model?.provider ?? worker.latest?.provider,
-    cacheHit: promptTokens ? 100 * (prompt.cacheRead ?? 0) / promptTokens : undefined,
-    cost: costOf(worker.usage), subscription: worker.subscription === true,
-    model: shortModel(worker.agent?.model?.modelId ?? worker.latest?.model ?? Object.keys(worker.usage?.models ?? {})[0]),
-    thinking: typeof thinking === "string" && thinking !== "off" ? clean(thinking) : undefined,
-    context: worker.latest?.usage ? replyTokens(worker.latest.usage) + (worker.latest.usage.cacheRead ?? 0) : undefined,
-    contextWindow: typeof worker.contextWindow === "number" && worker.contextWindow > 0 ? worker.contextWindow : undefined,
-    cwd: typeof worker.agent?.cwd === "string" ? clean(worker.agent.cwd) : undefined,
-  };
-}
-export const formatDuration = (ms: number) => {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
-  return `${Math.floor(s / 3600)}h ${String(Math.floor(s / 60) % 60).padStart(2, "0")}m`;
-};
-const formatAgo = (ms: number) => ms < 60_000 ? "just now" : ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m ago` : `${Math.floor(ms / 3_600_000)}h ago`;
-// Pi footer formats: tokens "950", "4.2k", "188k", "1.0M"; context "18.8%/1M"; cost "$9.812".
-export const formatTokens = (n: number) => n < 1000 ? `${n}` : n < 10_000 ? `${(n / 1000).toFixed(1)}k` : n < 1_000_000 ? `${Math.round(n / 1000)}k`
-  : n < 10_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1_000_000)}M`;
-export const formatContext = (w: WorkerStatus) => w.context === undefined ? ""
-  : w.contextWindow ? `${(100 * w.context / w.contextWindow).toFixed(1)}%/${formatTokens(w.contextWindow)}` : `${formatTokens(w.context)} ctx`;
-export const formatCost = (cost?: number) => cost ? `$${cost.toFixed(3)}` : "";
-
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const VISIBLE_RUNNING = 5;
 /** Idle workers keep their row this long after their last reply, then join the summary count. */
@@ -351,15 +268,11 @@ export function renderTeamResult(result: { content: any[]; details?: unknown }, 
 }
 
 /** Worker transcript as terminal lines, oldest first. Tool calls are paired with their results by call ID. */
-export function renderTranscript(entries: TranscriptEntry[], worker: string, width: number, theme: Theme, showThinking = false): string[] {
-  const results = new Map<string, any>();
-  for (const entry of entries) {
-    const message = entry.model?.[0];
-    if (entry.kind === "pi.tool-result" && message?.toolCallId) results.set(message.toolCallId, message);
-  }
+export function renderTranscript(items: ChatItem[], worker: string, width: number, theme: Theme, showThinking = false): string[] {
+  const results = new Map(items.filter(item => item.kind === "result").map(item => [item.callId, item]));
   const md = getMarkdownTheme();
   const out: string[] = [];
-  let speaker: string | undefined; // consecutive turns by the same speaker share one heading
+  let speaker: string | undefined;
   const block = (lines: string[], who?: string) => {
     if (who && who === speaker) { out.push(...lines.slice(1)); return; }
     if (out.length) out.push("");
@@ -367,62 +280,35 @@ export function renderTranscript(entries: TranscriptEntry[], worker: string, wid
   };
   const markdown = (text: string, color?: (t: string) => string) => new Markdown(clean(text), 0, 0, md, color ? { color } : undefined).render(width);
   const wrap = (text: string) => wrapTextWithAnsi(text, width);
-  const sorted = [...entries].sort((a, b) => Number(a.id) - Number(b.id));
-  // One dim stamp per answered request: clock time, wall time since its input, tokens and cost of all its model calls.
-  let turnStart: number | undefined; let turnTokens = 0; let turnCost = 0;
   const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  for (const entry of sorted) {
-    const message = entry.model?.[0];
-    switch (entry.kind) {
-      case "teams.message":
-      case "teams.report":
-      case "pi.user": {
-        if (typeof message?.timestamp === "number" && turnStart === undefined) { turnStart = message.timestamp; turnTokens = 0; turnCost = 0; }
-        const from = entry.data?.from?.name ?? "input";
-        const text = entry.kind === "teams.message" ? entry.data?.message ?? textOf(message) : textOf(message);
-        block([...wrap(theme.fg("accent", theme.bold(`${clean(from)} → ${worker}`)) + (entry.kind === "teams.report" ? theme.fg("dim", " · report") : "")), ...markdown(text)]);
-        break;
+  for (const item of [...items].sort((a, b) => Number(a.id) - Number(b.id))) {
+    if (item.kind === "input") {
+      block([...wrap(theme.fg("accent", theme.bold(`${clean(item.from)} → ${worker}`)) + (item.report ? theme.fg("dim", " · report") : "")), ...markdown(item.text)]);
+    } else if (item.kind === "reply") {
+      const lines: string[] = [];
+      for (const part of item.parts) {
+        if (part.type === "text") { if (part.text.trim()) lines.push(...markdown(part.text)); }
+        else if (part.type === "thinking") {
+          if (part.text.trim()) lines.push(...(showThinking ? markdown(part.text, t => theme.fg("thinkingText", t)) : wrap(theme.fg("dim", `▸ thinking · ${part.text.split("\n").length} lines`))));
+        } else {
+          const result = results.get(part.id);
+          const outcome = !result ? theme.fg("dim", " · no result") : !result.ok ? theme.fg("error", ` ✗ ${result.error ?? ""}`) : theme.fg("success", " ✓");
+          lines.push(truncateToWidth(theme.fg("muted", `▸ ${clean(part.name)} `) + clean(part.subject) + outcome, width));
+        }
       }
-      case "pi.assistant": {
-        const lines: string[] = [];
-        for (const part of message?.content ?? []) {
-          if (part.type === "text" && part.text.trim()) lines.push(...markdown(part.text));
-          else if (part.type === "thinking" && part.thinking?.trim()) {
-            lines.push(...(showThinking ? markdown(part.thinking, t => theme.fg("thinkingText", t)) : wrap(theme.fg("dim", `▸ thinking · ${part.thinking.split("\n").length} lines`))));
-          } else if (part.type === "toolCall") {
-            const args = part.arguments ?? {};
-            const subject = args.path ?? args.command ?? args.target ?? Object.values(args).find(v => typeof v === "string") ?? "";
-            const result = results.get(part.id);
-            const outcome = !result ? theme.fg("dim", " · no result")
-              : result.isError ? theme.fg("error", ` ✗ ${firstLine(textOf(result).replace(/<\/?harness>/g, "").replace(/^\[error\]\s*/m, ""))}`)
-              : theme.fg("success", " ✓");
-            lines.push(truncateToWidth(theme.fg("muted", `▸ ${clean(part.name)} `) + clean(firstLine(subject)) + outcome, width));
-          }
-        }
-        if (message?.stopReason === "error" || message?.stopReason === "aborted") {
-          lines.push(...wrap(theme.fg("error", `${message.stopReason}${message.errorMessage ? `: ${clean(message.errorMessage)}` : ""}`)));
-        }
-        turnTokens += replyTokens(message?.usage); turnCost += message?.usage?.cost?.total ?? 0;
-        if (message?.stopReason && message.stopReason !== "toolUse" && typeof message.timestamp === "number") {
-          const parts = [clock(message.timestamp), turnStart !== undefined && message.timestamp >= turnStart && formatDuration(message.timestamp - turnStart),
-            turnTokens && `${formatTokens(turnTokens)} tok`, formatCost(turnCost)];
-          lines.push(theme.fg("dim", parts.filter(Boolean).join(" · ")));
-          turnStart = undefined; turnTokens = 0; turnCost = 0;
-        }
-        if (lines.length) block([theme.fg("customMessageLabel", theme.bold(worker)), ...lines], worker);
-        break;
+      if (item.error) lines.push(...wrap(theme.fg("error", item.error)));
+      if (item.turn) {
+        const parts = [item.at !== undefined && clock(item.at), item.turn.ms !== undefined && formatDuration(item.turn.ms), item.turn.tokens && `${formatTokens(item.turn.tokens)} tok`, formatCost(item.turn.cost)];
+        lines.push(theme.fg("dim", parts.filter(Boolean).join(" · ")));
       }
-      case "pi.tool-result": case "pi.system": break;
-      case "pi.compaction": block(wrap(theme.fg("dim", "— context compacted —"))); break;
-      case "pi.reset": block(wrap(theme.fg("dim", "— context reset —"))); break;
-      default: block(wrap(theme.fg("dim", `[${clean(entry.kind)}]`)));
-    }
+      if (lines.length) block([theme.fg("customMessageLabel", theme.bold(worker)), ...lines], worker);
+    } else if (item.kind === "notice") block(wrap(theme.fg("dim", item.text)));
   }
   return out;
 }
 
 export type WorkerSource = {
-  page(cursor?: string): Promise<{ entries: TranscriptEntry[]; next?: string }>;
+  page(cursor?: string): Promise<{ items: ChatItem[]; next?: string }>;
   status(): Promise<WorkerStatus>;
   watch(signal: AbortSignal, onFrame: () => void): Promise<void>;
 };
@@ -433,7 +319,7 @@ export type ChatActions = {
 
 /** Shared committed transcript, loading, watch and paging for both shells. */
 class Transcript implements Component {
-  entries = new Map<string, TranscriptEntry>();
+  entries = new Map<string, ChatItem>();
   next?: string;
   private olderLoaded = false;
   status?: WorkerStatus;
@@ -484,7 +370,7 @@ class Transcript implements Component {
         try {
           const [page, status] = await Promise.all([this.source.page(), this.source.status()]);
           if (this.life.signal.aborted) return;
-          for (const entry of page.entries) this.entries.set(String(entry.id), entry);
+          for (const entry of page.items) this.entries.set(String(entry.id), entry);
           if (!this.olderLoaded) this.next = page.next;
           this.status = status; this.note = undefined; this.version++;
           this.updateWorking();
@@ -511,7 +397,7 @@ class Transcript implements Component {
     try {
       const page = await this.source.page(this.next);
       if (this.life.signal.aborted) return;
-      for (const entry of page.entries) this.entries.set(String(entry.id), entry);
+      for (const entry of page.items) this.entries.set(String(entry.id), entry);
       this.next = page.next; this.olderLoaded = true; this.prepended = true; this.version++;
     } catch (error) { this.note = String(error); }
     this.changed();

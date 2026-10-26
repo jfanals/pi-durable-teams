@@ -30,7 +30,7 @@ async function terminate(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM"
   const exited = once(child, "exit"); child.kill(signal); await exited;
 }
 
-test("IPC: crash recovery, pending offline reports, snapshot stream and exclusive storage owner", { timeout: 20000 }, async () => {
+test("IPC: crash recovery, pending offline reports, change ticks and exclusive storage owner", { timeout: 20000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "teams-ipc-")); const socket = join(directory, "s");
   const client = new Client(socket);
   let host = launch(directory, socket, true); await host.ready;
@@ -44,11 +44,11 @@ test("IPC: crash recovery, pending offline reports, snapshot stream and exclusiv
     await assert.rejects(loser.ready, /already owns/);
     assert.equal((await client.call("health")).ready, true);
     const result = await client.call("action", { ...identity, args: { action: "spawn", name: "reader", message: "long work" }, requestId: "create" });
-    // Snapshot/live stream proves work is underway before an actual SIGKILL.
+    // The initial change tick confirms the watch attached before an actual SIGKILL.
     const watching = new AbortController(); streams.push(watching);
     let sawWork!: () => void; const work = new Promise<void>(resolve => { sawWork = resolve; });
     const watch = client.stream("watch", { ...identity, target: "reader" }, watching.signal, value => {
-      if (value.snapshot?.run || value.snapshot?.generation || value.events?.some((event: any) => event.type === "message_update")) sawWork();
+      if (value.changed) sawWork();
     }).catch(error => { if (!watching.signal.aborted && !String(error).includes("aborted")) throw error; });
     await work;
     await terminate(host.child, "SIGKILL"); watching.abort(); await watch;

@@ -1,22 +1,10 @@
-import { existsSync, openSync, readSync, closeSync, readdirSync, statSync } from "node:fs";
+import { clean as cleanText } from "./status.ts";
+import { directories, markers, errorText } from "./directories.ts";
+import { existsSync, openSync, readSync, closeSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { Key, matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
+import { Key, matchesKey, truncateToWidth, visibleWidth, type Component } from "@earendil-works/pi-tui";
 
-const clean = (text: string) => stripTerminalSequences(text).replace(/[\x00-\x1f\x7f]/g, " ");
-const errorText = (error: unknown) => `Cannot read: ${error instanceof Error ? error.message : String(error)}`;
-function directories(path: string): { names: string[]; error?: string } {
-  try {
-    const names = readdirSync(path, { withFileTypes: true }).filter(entry => {
-      if (entry.name === "node_modules") return false;
-      try { return entry.isDirectory() || (entry.isSymbolicLink() && statSync(join(path, entry.name)).isDirectory()); } catch { return false; }
-    }).map(entry => entry.name).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()) || a.localeCompare(b));
-    return { names };
-  } catch (error) { return { names: [], error: errorText(error) }; }
-}
-function markers(path: string) {
-  return [existsSync(join(path, ".git")) && "git", existsSync(join(path, "AGENTS.md")) && "AGENTS.md",
-    (existsSync(join(path, ".pi", "skills")) || existsSync(join(path, "skills", "SKILL.md"))) && "skills"].filter(Boolean).join(" · ");
-}
+const clean = (text: string) => cleanText(text).replace(/[\x00-\x1f\x7f]/g, " ");
 function instructions(path: string): string[] {
   if (!existsSync(join(path, "AGENTS.md"))) return [];
   let fd: number | undefined;
@@ -30,7 +18,7 @@ function instructions(path: string): string[] {
 }
 type Row = { path: string; label: string; recent?: boolean };
 
-/** Local filesystem for now: a phone client would need a host route instead. */
+/** Local picker using the same directory listing as the host API. */
 export class DirPicker implements Component {
   private cache = new Map<string, ReturnType<typeof directories> & { markers: string; instructions: string[]; loaded: boolean }>();
   private snapshot(path: string, listing = true) {
