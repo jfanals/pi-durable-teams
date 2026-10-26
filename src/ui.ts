@@ -1,8 +1,9 @@
 // Terminal presentation only. Nothing here changes delivery, acknowledgement or worker execution.
 import { homedir } from "node:os";
-import { getMarkdownTheme, keyText, type Theme } from "@earendil-works/pi-coding-agent";
+
+import { getMarkdownTheme, getSelectListTheme, keyText, type Theme } from "@earendil-works/pi-coding-agent";
 import {
-  Box, Key, Markdown, matchesKey, MouseRegion, stripTerminalSequences, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi,
+  Box, Editor, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, stripTerminalSequences, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi,
   type Component, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import type { Action, Delivery, Mode } from "./protocol.ts";
@@ -84,9 +85,9 @@ const formatAgo = (ms: number) => ms < 60_000 ? "just now" : ms < 3_600_000 ? `$
 // Pi footer formats: tokens "950", "4.2k", "188k", "1.0M"; context "18.8%/1M"; cost "$9.812".
 export const formatTokens = (n: number) => n < 1000 ? `${n}` : n < 10_000 ? `${(n / 1000).toFixed(1)}k` : n < 1_000_000 ? `${Math.round(n / 1000)}k`
   : n < 10_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1_000_000)}M`;
-const formatContext = (w: WorkerStatus) => w.context === undefined ? ""
+export const formatContext = (w: WorkerStatus) => w.context === undefined ? ""
   : w.contextWindow ? `${(100 * w.context / w.contextWindow).toFixed(1)}%/${formatTokens(w.contextWindow)}` : `${formatTokens(w.context)} ctx`;
-const formatCost = (cost?: number) => cost ? `$${cost.toFixed(3)}` : "";
+export const formatCost = (cost?: number) => cost ? `$${cost.toFixed(3)}` : "";
 
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const VISIBLE_RUNNING = 5;
@@ -94,6 +95,24 @@ const VISIBLE_RUNNING = 5;
 const RECENT_MS = 60_000;
 const recent = (w: WorkerStatus, now: number) => w.enabled && !w.running && !!w.finishedAt && now - w.finishedAt < RECENT_MS;
 const VISIBLE_FOCUSED = 8;
+
+export function statusRow(w: WorkerStatus, width: number, selected: boolean, now: number, theme: Theme, nameWidth: number, frame = 0, idleText?: string, modelMinWidth = 80) {
+  const t = theme;
+  const mark = !w.enabled ? t.fg("muted", "■") : w.running ? t.fg("accent", SPINNER[frame % SPINNER.length]!) : t.fg("muted", "○");
+  const name = truncateToWidth(clean(w.name), nameWidth, "…", true);
+  const left = `${selected ? t.fg("accent", "› ") : "  "}${mark} ${selected ? t.fg("accent", t.bold(name)) : w.running ? name : t.fg("muted", name)}  `;
+  const time = w.running && w.since ? formatDuration(now - w.since)
+    : !w.running && w.since && w.finishedAt && w.finishedAt >= w.since ? formatDuration(w.finishedAt - w.since) : "";
+  // On narrow terminals the model drops first, then the cost, then the activity text.
+  const model = width >= modelMinWidth && w.model ? `${w.model}${w.thinking ? ` ${w.thinking}` : ""}` : "";
+  const right = [model, time, formatContext(w), width >= 70 && formatCost(w.cost)].filter(Boolean).join(" · ");
+  const showRight = width >= 40 && right;
+  const middle = !w.enabled ? "stopped" : w.running ? w.activity ?? "running"
+    : idleText ?? `idle${w.finishedAt ? ` · last reply ${formatAgo(now - w.finishedAt)}` : ""}`;
+  const space = width - visibleWidth(left) - (showRight ? visibleWidth(right) + 2 : 0);
+  const mid = width >= 60 && space > 4 ? truncateToWidth(w.running ? middle : t.fg("dim", middle), space, "…", true) : " ".repeat(Math.max(0, space));
+  return truncateToWidth(`${left}${mid}${showRight ? `  ${t.fg("dim", right)}` : ""}`, width);
+}
 
 /**
  * Team panel under the prompt. Collapsed, it lists running workers (one per line, animated) and
@@ -137,27 +156,10 @@ export class TeamPanel implements Component, Focusable {
     this.tui.requestRender();
   }
 
-  private row(w: WorkerStatus, width: number, selected: boolean, now: number) {
-    const t = this.theme;
-    const nameWidth = Math.min(16, Math.max(6, ...this.workers.map(x => visibleWidth(clean(x.name)))));
-    const mark = !w.enabled ? t.fg("muted", "■") : w.running ? t.fg("accent", SPINNER[this.frame % SPINNER.length]!) : t.fg("muted", "○");
-    const name = truncateToWidth(clean(w.name), nameWidth, "…", true);
-    const left = `${selected ? t.fg("accent", "› ") : "  "}${mark} ${selected ? t.fg("accent", t.bold(name)) : w.running ? name : t.fg("muted", name)}  `;
-    const time = w.running && w.since ? formatDuration(now - w.since)
-      : !w.running && w.since && w.finishedAt && w.finishedAt >= w.since ? formatDuration(w.finishedAt - w.since) : "";
-    // On narrow terminals the model drops first, then the cost, then the activity text.
-    const model = width >= 80 && w.model ? `${w.model}${w.thinking ? ` ${w.thinking}` : ""}` : "";
-    const right = [model, time, formatContext(w), width >= 70 && formatCost(w.cost)].filter(Boolean).join(" · ");
-    const showRight = width >= 40 && right;
-    const middle = !w.enabled ? "stopped" : w.running ? w.activity ?? "running"
-      : `idle${w.finishedAt ? ` · last reply ${formatAgo(now - w.finishedAt)}` : ""}`;
-    const space = width - visibleWidth(left) - (showRight ? visibleWidth(right) + 2 : 0);
-    const mid = width >= 60 && space > 4 ? truncateToWidth(w.running ? middle : t.fg("dim", middle), space, "…", true) : " ".repeat(Math.max(0, space));
-    return truncateToWidth(`${left}${mid}${showRight ? `  ${t.fg("dim", right)}` : ""}`, width);
-  }
   render(width: number): string[] {
     const t = this.theme;
     const now = Date.now();
+    const nameWidth = Math.min(16, Math.max(6, ...this.workers.map(w => visibleWidth(clean(w.name)))));
     this.rows = [];
     if (!this.workers.length) return [];
     const lines: string[] = [];
@@ -166,14 +168,14 @@ export class TeamPanel implements Component, Focusable {
       // Leave room for the conversation and prompt on short terminals.
       const visible = Math.max(1, Math.min(VISIBLE_FOCUSED, (this.tui.terminal?.rows ?? 24) - 12));
       const start = Math.max(0, Math.min(this.selected - Math.floor(visible / 2), this.workers.length - visible));
-      for (const [i, w] of this.workers.slice(start, start + visible).entries()) push(this.row(w, width, start + i === this.selected, now), w);
+      for (const [i, w] of this.workers.slice(start, start + visible).entries()) push(statusRow(w, width, start + i === this.selected, now, t, nameWidth, this.frame), w);
       const more = this.workers.length > visible ? `${this.selected + 1}/${this.workers.length} · ` : "";
       push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · enter open · esc back`), width));
       return lines;
     }
     const running = this.workers.filter(w => w.running);
     const shown = [...running, ...this.workers.filter(w => recent(w, now))];
-    for (const w of shown.slice(0, VISIBLE_RUNNING)) push(this.row(w, width, false, now), w);
+    for (const w of shown.slice(0, VISIBLE_RUNNING)) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
     if (this.ticker && !shown.length) { clearInterval(this.ticker); this.ticker = undefined; } // last recent row expired
     const idle = this.workers.filter(w => w.enabled && !w.running && !shown.includes(w)).length;
     const stopped = this.workers.filter(w => !w.enabled).length;
@@ -398,19 +400,23 @@ export type WorkerSource = {
   watch(signal: AbortSignal, onFrame: () => void): Promise<void>;
 };
 
-/** Full-screen inspector for one worker. Reads committed Durable data; the watch stream only triggers re-reads. */
-export class WorkerView implements Component {
-  private entries = new Map<string, TranscriptEntry>();
-  private next?: string;
+export type ChatActions = {
+  send(text: string, mode: Mode): Promise<unknown>; stop(): Promise<unknown>; back(): void;
+};
+
+/** Shared committed transcript, loading, watch and paging for both shells. */
+class Transcript implements Component {
+  entries = new Map<string, TranscriptEntry>();
+  next?: string;
   private olderLoaded = false;
-  private status?: WorkerStatus;
-  private connection: "loading" | "live" | "stale" = "loading";
-  private note?: string;
-  private offset = 0; // lines scrolled up from the bottom; 0 follows live activity
-  private unseen = false;
-  private showThinking = false;
+  status?: WorkerStatus;
+  connection: "loading" | "live" | "stale" = "loading";
+  note?: string;
+  offset = 0; // lines scrolled up from the bottom; 0 follows live activity
+  unseen = false;
+  showThinking = false;
   private cache?: { width: number; version: number; lines: string[] };
-  private version = 0;
+  version = 0;
   private lastLength?: { width: number; length: number };
   private prepended = false;
   private life = new AbortController();
@@ -421,14 +427,14 @@ export class WorkerView implements Component {
   private onParentAbort = () => this.dispose();
   private clockTimer?: ReturnType<typeof setInterval>; // ticks the "working" time while the worker runs
 
-  private tui: TUI; private theme: Theme; private name: string; private source: WorkerSource; private done: (result: ViewResult) => void;
-  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, done: (result: ViewResult) => void, parent: AbortSignal) {
-    this.tui = tui; this.theme = theme; this.name = name; this.source = source; this.done = done;
+  tui: TUI; theme: Theme; name: string; source: WorkerSource;
+  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal) {
+    this.tui = tui; this.theme = theme; this.name = name; this.source = source;
     this.parent = parent;
     parent.addEventListener("abort", this.onParentAbort, { once: true });
     void this.refresh().then(() => this.attach());
   }
-  private attach() {
+  attach() {
     if (this.life.signal.aborted) return;
     this.connection = "live"; this.changed();
     this.source.watch(this.life.signal, () => this.schedule()).then(
@@ -436,11 +442,11 @@ export class WorkerView implements Component {
       () => { if (!this.life.signal.aborted) { this.connection = "stale"; this.changed(); } },
     );
   }
-  private schedule() {
+  schedule() {
     if (this.timer || this.life.signal.aborted) return;
     this.timer = setTimeout(() => { this.timer = undefined; void this.refresh(); }, 250);
   }
-  private refresh(): Promise<void> {
+  refresh(): Promise<void> {
     if (this.refreshing) { this.dirty = true; return this.refreshing; }
     this.refreshing = (async () => {
       do {
@@ -462,7 +468,7 @@ export class WorkerView implements Component {
     })().finally(() => { this.refreshing = undefined; });
     return this.refreshing;
   }
-  private async older() {
+  async older() {
     if (!this.next) { this.note = "start of transcript"; this.changed(); return; }
     try {
       const page = await this.source.page(this.next);
@@ -472,8 +478,8 @@ export class WorkerView implements Component {
     } catch (error) { this.note = String(error); }
     this.changed();
   }
-  private changed() { this.cache = undefined; this.tui.requestRender(); }
-  private lines(width: number) {
+  changed() { this.cache = undefined; this.tui.requestRender(); }
+  lines(width: number) {
     if (this.cache?.width !== width || this.cache.version !== this.version) {
       this.cache = { width, version: this.version, lines: renderTranscript([...this.entries.values()], this.name, width, this.theme, this.showThinking) };
     }
@@ -487,10 +493,10 @@ export class WorkerView implements Component {
     return lines;
   }
   // Header, two rules and the key line always fit; the details line only when there is room for a body too.
-  private showDetails() { return this.tui.terminal.rows >= 8; }
-  private bodyHeight() { return Math.max(0, this.tui.terminal.rows - (this.showDetails() ? 5 : 4)); }
+  showDetails() { return this.tui.terminal.rows >= 8; }
+  bodyHeight() { return Math.max(0, this.tui.terminal.rows - (this.showDetails() ? 5 : 4)); }
   /** Model, time, context use, cost and cwd, from the latest committed status. */
-  private details(now: number) {
+  details(now: number) {
     const s = this.status;
     if (!s) return "";
     const time = s.running && s.since ? `working ${formatDuration(now - s.since)}`
@@ -501,52 +507,101 @@ export class WorkerView implements Component {
     return [s.model && `${s.model}${s.thinking ? ` ${s.thinking}` : ""}`, time, formatContext(s), formatCost(s.cost), cwd].filter(Boolean).join(" · ");
   }
 
-  render(width: number): string[] {
-    const t = this.theme;
-    const lines = this.lines(width);
-    const height = this.bodyHeight();
-    this.offset = Math.max(0, Math.min(this.offset, lines.length - height));
-    if (this.offset === 0) this.unseen = false;
-    const end = lines.length - this.offset;
-    const visible = lines.slice(Math.max(0, end - height), end);
-    const status = this.status;
-    const word = status ? statusWord(status) : "…";
-    const color = !status ? "muted" : !status.enabled ? "warning" : status.running ? "accent" : "muted";
-    const connection = this.connection === "live" ? t.fg("success", "live") : this.connection === "stale" ? t.fg("warning", "stale · r to refresh") : t.fg("muted", "loading");
-    const top = this.next ? t.fg("dim", " · older pages: o") : "";
-    const header = `${t.fg("accent", t.bold(this.name))}${t.fg("dim", " · ")}${t.fg(color, word)}${t.fg("dim", " · ")}${connection}${top}`;
-    const rule = t.fg("borderMuted", "─".repeat(Math.max(0, width)));
-    const hints = [this.unseen && t.fg("accent", "↓ new activity · end"), this.note && t.fg("warning", this.note),
-      t.fg("dim", "esc back · f follow-up · s steer · x stop · ↑↓ pgup/pgdn scroll · o older · t thinking · r refresh")].filter(Boolean).join(t.fg("dim", " · "));
-    const empty = this.entries.size ? [] : [t.fg("muted", this.note ? "" : "Loading transcript…")];
-    const filled = [...Array(Math.max(0, height - visible.length - empty.length)).fill(""), ...empty, ...visible];
-    const body = height ? filled.slice(-height) : [];
-    const heading = this.showDetails() ? [header, t.fg("dim", this.details(Date.now()))] : [header];
-    return [...heading, rule, ...body, rule, hints].map(line => truncateToWidth(line, width));
-  }
-  handleInput(data: string) {
-    const page = Math.max(1, this.bodyHeight() - 2);
-    if (matchesKey(data, Key.escape) || data === "q") return this.done({ type: "back" });
-    if (data === "f") return this.done({ type: "send", mode: "followUp" });
-    if (data === "s") return this.done({ type: "send", mode: "steer" });
-    if (data === "x") return this.done({ type: "stop" });
-    if (data === "o") return void this.older();
-    if (data === "r") { if (this.connection === "stale") this.attach(); return void this.refresh(); }
-    if (data === "t") { this.showThinking = !this.showThinking; this.version++; return this.changed(); }
-    if (matchesKey(data, Key.up) || data === "k") this.offset += 1;
-    else if (matchesKey(data, Key.down) || data === "j") this.offset -= 1;
-    else if (matchesKey(data, Key.pageUp)) this.offset += page;
-    else if (matchesKey(data, Key.pageDown)) this.offset -= page;
-    else if (matchesKey(data, Key.home) || data === "g") this.offset = Number.MAX_SAFE_INTEGER;
-    else if (matchesKey(data, Key.end) || data === "G") this.offset = 0;
-    else return;
-    this.offset = Math.max(0, this.offset);
-    this.tui.requestRender();
-  }
+  render(width: number) { return this.lines(width); }
   invalidate() { this.cache = undefined; }
   dispose() {
     this.life.abort(); if (this.timer) clearTimeout(this.timer);
     if (this.clockTimer) clearInterval(this.clockTimer); this.clockTimer = undefined;
     this.parent.removeEventListener("abort", this.onParentAbort);
   }
+}
+
+/** Pi's full-screen inspector; its keys and bounded viewport stay unchanged. */
+export class WorkerView implements Component {
+  private transcript: Transcript;
+  private done: (result: ViewResult) => void;
+  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, done: (result: ViewResult) => void, parent: AbortSignal) {
+    this.transcript = new Transcript(tui, theme, name, source, parent); this.done = done;
+  }
+  render(width: number): string[] {
+    const t = this.transcript.theme;
+    const lines = this.transcript.lines(width);
+    const height = this.transcript.bodyHeight();
+    this.transcript.offset = Math.max(0, Math.min(this.transcript.offset, lines.length - height));
+    if (this.transcript.offset === 0) this.transcript.unseen = false;
+    const end = lines.length - this.transcript.offset;
+    const visible = lines.slice(Math.max(0, end - height), end);
+    const status = this.transcript.status;
+    const word = status ? statusWord(status) : "…";
+    const color = !status ? "muted" : !status.enabled ? "warning" : status.running ? "accent" : "muted";
+    const connection = this.transcript.connection === "live" ? t.fg("success", "live") : this.transcript.connection === "stale" ? t.fg("warning", "stale · r to refresh") : t.fg("muted", "loading");
+    const top = this.transcript.next ? t.fg("dim", " · older pages: o") : "";
+    const header = `${t.fg("accent", t.bold(this.transcript.name))}${t.fg("dim", " · ")}${t.fg(color, word)}${t.fg("dim", " · ")}${connection}${top}`;
+    const rule = t.fg("borderMuted", "─".repeat(Math.max(0, width)));
+    const hints = [this.transcript.unseen && t.fg("accent", "↓ new activity · end"), this.transcript.note && t.fg("warning", this.transcript.note),
+      t.fg("dim", "esc back · f follow-up · s steer · x stop · ↑↓ pgup/pgdn scroll · o older · t thinking · r refresh")].filter(Boolean).join(t.fg("dim", " · "));
+    const empty = this.transcript.entries.size ? [] : [t.fg("muted", this.transcript.note ? "" : "Loading transcript…")];
+    const filled = [...Array(Math.max(0, height - visible.length - empty.length)).fill(""), ...empty, ...visible];
+    const body = height ? filled.slice(-height) : [];
+    const heading = this.transcript.showDetails() ? [header, t.fg("dim", this.transcript.details(Date.now()))] : [header];
+    return [...heading, rule, ...body, rule, hints].map(line => truncateToWidth(line, width));
+  }
+  handleInput(data: string) {
+    const page = Math.max(1, this.transcript.bodyHeight() - 2);
+    if (matchesKey(data, Key.escape) || data === "q") return this.done({ type: "back" });
+    if (data === "f") return this.done({ type: "send", mode: "followUp" });
+    if (data === "s") return this.done({ type: "send", mode: "steer" });
+    if (data === "x") return this.done({ type: "stop" });
+    if (data === "o") return void this.transcript.older();
+    if (data === "r") { if (this.transcript.connection === "stale") this.transcript.attach(); return void this.transcript.refresh(); }
+    if (data === "t") { this.transcript.showThinking = !this.transcript.showThinking; this.transcript.version++; return this.transcript.changed(); }
+    if (matchesKey(data, Key.up) || data === "k") this.transcript.offset += 1;
+    else if (matchesKey(data, Key.down) || data === "j") this.transcript.offset -= 1;
+    else if (matchesKey(data, Key.pageUp)) this.transcript.offset += page;
+    else if (matchesKey(data, Key.pageDown)) this.transcript.offset -= page;
+    else if (matchesKey(data, Key.home) || data === "g") this.transcript.offset = Number.MAX_SAFE_INTEGER;
+    else if (matchesKey(data, Key.end) || data === "G") this.transcript.offset = 0;
+    else return;
+    this.transcript.offset = Math.max(0, this.transcript.offset);
+    this.transcript.tui.requestRender();
+  }
+  refresh() { return this.transcript.refresh(); }
+  invalidate() { this.transcript.invalidate(); }
+  dispose() { this.transcript.dispose(); }
+}
+
+/** Standalone chat shell. The alternate-screen TUI owns layout and scrolling. */
+export class ChatView implements Component, Focusable {
+  get focused() { return this.editor.focused; }
+  set focused(value: boolean) { this.editor.focused = value; }
+  private transcript: Transcript;
+  private editor: Editor;
+  private actions: ChatActions;
+  readonly layout: VStack;
+  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "") {
+    this.actions = actions;
+    this.transcript = new Transcript(tui, theme, name, source, parent);
+    this.editor = new Editor(tui, { borderColor: text => theme.fg("accent", text), selectList: getSelectListTheme() });
+    this.editor.onSubmit = text => this.submit(text, "steer");
+    const scroll = new ScrollView(this.transcript, { follow: "end", primary: true });
+    const footer = { render: (width: number) => [truncateToWidth(theme.fg("dim", [name, this.transcript.details(Date.now()), this.transcript.note, notice()].filter(Boolean).join(" · ")), width), truncateToWidth(theme.fg("dim", "enter send · alt+enter follow-up · esc stop · ← back"), width)], invalidate() {} };
+    this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, this.editor, footer]);
+  }
+  private submit(text: string, mode: Mode) {
+    if (!text.trim()) return;
+    this.editor.setText("");
+    void this.actions.send(text, mode).then(() => { this.editor.addToHistory(text); this.transcript.note = undefined; this.transcript.changed(); }, error => {
+      if (!this.editor.getText()) this.editor.setText(text);
+      this.transcript.note = String(error); this.transcript.changed();
+    });
+  }
+  render(width: number) { return this.layout.render(width); }
+  handleInput(data: string) {
+    if (matchesKey(data, Key.left) && !this.editor.getText()) return this.actions.back();
+    if (matchesKey(data, Key.escape)) { void this.actions.stop().catch(error => { this.transcript.note = String(error); this.transcript.changed(); }); return; }
+    if (matchesKey(data, "alt+enter")) return this.submit(this.editor.getExpandedText(), "followUp");
+    this.editor.handleInput(data);
+  }
+  invalidate() { this.transcript.invalidate(); this.editor.invalidate(); }
+  dispose() { this.transcript.dispose(); }
 }

@@ -9,7 +9,8 @@
   "pi": { "extensions": ["./src/extension.ts"], "skills": ["./skills"] },
   "scripts": {
     "test": "node --test --test-concurrency=1 test/*.test.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "screen": "node scripts/screen.ts"
   },
   "dependencies": {
     "@earendil-works/chord": "1.4.0",
@@ -28,6 +29,10 @@
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
     "@types/node": "^24.0.0",
+    "@xterm/headless": "^6.0.0",
     "typescript": "^5.9.0"
+  },
+  "bin": {
+    "pi-agents": "./src/pi-agents.ts"
   }
 }

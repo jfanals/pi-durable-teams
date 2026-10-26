@@ -1,0 +1,93 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
+import { initTheme } from "@earendil-works/pi-coding-agent";
+import { TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
+import { AgentsApp } from "../../src/app.ts";
+import { Client } from "../../src/client.ts";
+import { startHost } from "../../src/host.ts";
+import { piPresentation } from "../../src/presentation.ts";
+import { SocketHostSource } from "../../src/source.ts";
+import { VirtualTerminal } from "./virtual-terminal.ts";
+
+export async function appScenario(width: number, height: number, print?: (name: string, frame: string) => void) {
+  const directory = await mkdtemp(join(tmpdir(), "agents-app-"));
+  const fake = fauxProvider({ models: [{ id: "faux-1" }], tokensPerSecond: 1000 });
+  fake.setResponses(Array.from({ length: 100 }, () => request => {
+    const last = request.messages.findLast(message => message.role !== "system");
+    const text = JSON.stringify(last);
+    if (last?.role === "user" && text.includes("DELEGATE")) return fauxAssistantMessage(fauxToolCall("team", { action: "spawn", name: "reader", message: "Read and report" }), { stopReason: "toolUse" });
+    if (last?.role === "user" && text.includes("SLOW")) return fauxAssistantMessage("Still working. ".repeat(10000));
+    if (last?.role === "user" && text.includes("SCROLL")) return fauxAssistantMessage(Array.from({ length: 80 }, (_, i) => `Transcript line ${i + 1}`).join("\n\n"));
+    return fauxAssistantMessage("Hello from the faux agent.");
+  }));
+  const models = createModels(); models.setProvider(fake.provider);
+  const host = await startHost(directory, join(directory, "s"), { models, agentModel: async () => ({ provider: "faux", modelId: "faux-1" }) });
+  const source = new SocketHostSource(new Client(join(directory, "s")));
+  const terminal = new VirtualTerminal(width, height); const tui = new TuiAltScreen(terminal);
+  initTheme("dark", false); const { theme } = await piPresentation();
+  let exited = false;
+  const app = new AgentsApp(source, tui, theme, { agentModel: { provider: "faux", modelId: "faux-1" }, exit: () => { exited = true; } });
+  async function frame() { await terminal.waitForRender(); const lines = await terminal.flushAndGetViewport(); assert.ok(app.render(width).every(line => visibleWidth(line) <= width)); return lines.join("\n"); }
+  async function wait(text: string) { for (let i = 0; i < 300; i++) { const screen = await frame(); if (screen.includes(text)) return screen; await delay(10); } throw new Error(`Missing ${text}\n${await frame()}`); }
+  async function until(predicate: () => Promise<boolean>) { for (let i = 0; i < 300; i++) { if (await predicate()) return; await delay(10); } assert.fail("Timed out waiting for host state"); }
+  async function key(data: string) { terminal.sendInput(data); await delay(50); }
+  try {
+    await source.newAgent({ name: "alpha", cwd: directory }); await source.newAgent({ name: "beta", cwd: directory });
+    tui.addChild(app); tui.setFocus(app); tui.start();
+    const list = await wait("beta"); assert.match(list, /alpha/); print?.("list", list);
+    await key("\r"); await wait("enter send");
+    await key("Hello"); await key("\r"); const chat = await wait("Hello from the faux agent."); print?.("chat", chat);
+    if (width >= 120) {
+      assert.match(chat, /pi-agents/);
+      assert.ok(chat.split("\n").some(line => line.indexOf("alpha") < 62 && line.indexOf("alpha") >= 0 && line.includes("faux-1")));
+      assert.ok(chat.split("\n").find(line => line.includes("Hello from"))!.indexOf("Hello from") >= 64);
+    }
+    await key("SLOW"); await key("\r");
+    await until(async () => (await source.list())[0]?.running === true);
+    await key("\x1b");
+    await until(async () => (await source.list())[0]?.running === false);
+    assert.equal((await source.list())[0]?.enabled, true);
+    await key("SCROLL"); await key("\r"); await wait("Transcript line 80");
+    const bottom = await frame();
+    await key("\x1b[5~"); const scrolled = await frame(); assert.notEqual(scrolled, bottom);
+    await key("\x1b[6~"); assert.match(await frame(), /Transcript line 80/);
+    await key(`\x1b[<64;${Math.min(width - 2, 70)};5M`);
+    assert.notEqual(await frame(), bottom);
+    await key("\x1b[6~");
+
+    await key("\x1b[D"); await wait("n new");
+    await key("n"); await wait("New agent"); await key("gamma"); await key("\r"); await key("\r");
+    await key("\r"); await key("\r");
+    const created = await wait("gamma"); print?.("created", created);
+    assert.ok((await source.list()).some(agent => agent.name === "gamma"));
+    const lead = (await source.list())[0]!;
+    await source.send(lead.id, "DELEGATE");
+    await until(async () => (await source.list())[0]!.children.length > 0);
+    const identity = { sessionId: "external", secret: "s".repeat(36) };
+    await source.client.call("register", { ...identity, name: "Pi main", cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
+    const roster = await wait("Pi main (Pi)"); assert.match(roster, /  reader/); assert.doesNotMatch(roster, /Pi · (connected|offline)/);
+    print?.("nested and Pi", roster);
+    await key("x"); await wait("Disable"); await key("y");
+    for (let i = 0; i < 100 && (await source.list())[0]?.enabled; i++) await delay(10);
+    assert.equal((await source.list())[0]?.enabled, false);
+    // Raw Ctrl+C is global, including the editor and modal confirmation screens.
+    for (const screen of ["list", "chat", "form", "confirm"]) {
+      const term = new VirtualTerminal(width, height); const screenTui = new TuiAltScreen(term);
+      let didExit = false;
+      const screenApp = new AgentsApp(source, screenTui, theme, { exit: () => { didExit = true; } });
+      try {
+        screenTui.addChild(screenApp); screenTui.setFocus(screenApp); screenTui.start();
+        await delay(100);
+        if (screen !== "list") term.sendInput(screen === "chat" ? "\r" : screen === "form" ? "n" : "x");
+        await delay(50); term.sendInput("\x03"); await delay(20);
+        assert.equal(didExit, true, screen);
+      } finally { screenApp.dispose(); screenTui.stop(); }
+    }
+    await key("\x03"); assert.equal(exited, true);
+  } finally { app.dispose(); tui.stop(); await host.close(); await rm(directory, { recursive: true, force: true }); }
+}

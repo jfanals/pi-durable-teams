@@ -146,9 +146,9 @@ Pi prompt-builder imports or permanent per-directory resource cache.
 
 ## Hosted top-level agents (service API)
 
-Phase 1 exposes `openTeams().action(human, args, requestId)` for local service callers;
-there are no human-client HTTP routes or standalone app yet. `human` is exported
-from `src/teams.ts`. Create with `{ action: "newAgent", name, cwd, model?, thinking? }`,
+`openTeams().action(human, args, requestId)` is available for local service callers;
+`HostSource` provides the human-client socket API used by `pi-agents`. `human` is
+exported from `src/teams.ts`. Create with `{ action: "newAgent", name, cwd, model?, thinking? }`,
 then send/inspect/control with the same actions as the team tool. Only the human
 can create a top-level agent or change an agent's model. `newAgent` returns `{ id }`.
 Hosted names are unique among hosted siblings; external Pi display names may
@@ -298,3 +298,26 @@ and a disposable migration. All fixture processes and data are cleaned up.
 Not verified by offline tests: live Codex/provider authentication/streaming, real
 model delegation quality, and visual TUI appearance. A paid/real-model smoke run
 requires separate approval. The registry and in-flight reporter tasks migrate from v1 automatically on open.
+
+## pi-agents
+
+Run `node src/pi-agents.ts` to chat with agents in the host. The `pi-agents` bin
+is a `.ts` file: use `npm link` from this repository to put it on your PATH.
+Node does not strip TypeScript types under `node_modules`, so a regular package
+installation is not supported yet. Closing the app leaves agents running. Terminals at least 120 columns
+show the list beside the open chat.
+
+Pi 1.4 does not export its live theme instance or the app `KeybindingsManager`
+class (upstream export request). A single checked compatibility import loads the
+theme; the app uses public TUI keybindings, so your `keybindings.json` is not
+loaded yet.
+
+- List: **↑↓** select, **Enter/→** open, **n** create, **x** disable (confirm with **y**).
+- New agent: enter name, cwd, `provider/model-id`, then thinking level. Model and
+  thinking default to `config.json`'s `agentModel`; without it, choose a model explicitly.
+- Chat: **Enter** send/steer, **Alt+Enter** queue follow-up, **Esc** stop current run,
+  **←** on an empty editor return, **PgUp/PgDn** scroll.
+- **Ctrl+C** exits. External Pi sessions show their latest publication, not a transcript.
+
+Preview without touching the live host: `npm run screen -- small` (`narrow` or `wide`
+also work). These scenarios use a temporary host and faux model, as do `test/app.test.ts`.

@@ -25,7 +25,9 @@ export class SocketHostSource implements HostSource {
   readonly client: Client;
   constructor(client = new Client()) { this.client = client; }
   list(signal?: AbortSignal) { return this.client.call<AgentSummary[]>("agents", {}, signal); }
-  roster(signal: AbortSignal, receive: (agents: AgentSummary[]) => void | Promise<void>) {
+  async roster(signal: AbortSignal, receive: (agents: AgentSummary[]) => void | Promise<void>) {
+    await this.client.ensureHost(signal);
+    if (signal.aborted) return;
     return this.client.stream("agents/roster", {}, signal, receive);
   }
   page(target: string, cursor?: string, signal?: AbortSignal) { return this.client.call<TranscriptPage>("agents/page", { target, cursor }, signal); }
