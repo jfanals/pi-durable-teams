@@ -493,6 +493,8 @@ class Transcript implements Component {
       if (lines.length > this.lastLength.length) this.unseen = true;
     }
     this.prepended = false; this.lastLength = { width, length: lines.length };
+    // A new agent's conversation has only setup entries: say what to do instead of a blank screen.
+    if (!lines.length && this.connection !== "loading" && !this.note) return [this.theme.fg("muted", "No messages yet · type a task and press enter · ← back")];
     return lines;
   }
   // Header, two rules and the key line always fit; the details line only when there is room for a body too.

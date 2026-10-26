@@ -177,8 +177,10 @@ export class AgentsApp implements Component, Focusable {
     } else if (form.step === 3) {
       form.model = { ...form.model!, thinking: text as WorkerModel["thinking"] };
       try {
-        await this.source.newAgent({ name: form.name, cwd: form.cwd, model: form.model, thinking: form.model.thinking });
-        this.form = undefined; this.setScreen(); this.note = "";
+        const { id } = await this.source.newAgent({ name: form.name, cwd: form.cwd, model: form.model, thinking: form.model.thinking });
+        this.form = undefined; this.note = "";
+        // Open the new agent's chat: its first message is the task. The roster may not list it yet.
+        this.open({ id: id!, name: form.name, cwd: form.cwd, enabled: true, hosted: true, children: [] });
       } catch (error) { form.error = String(error); }
     }
     if (form.error) { const error = form.error; this.editor.setText(text); form.error = error; }

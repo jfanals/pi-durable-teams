@@ -82,7 +82,10 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x15"); await key("\x1b[B"); await key("\r");
     const thinking = await wait("Thinking ·"); print?.("form thinking", thinking);
     await key("\x1b[B"); await key("\r");
-    const created = await wait("n new"); print?.("created", created);
+    const created = await wait("No messages yet"); print?.("created", created);
+    assert.match(created, /gamma/);
+    await key("first task"); await key("\r"); await wait("Hello from the faux agent.");
+    await key("\x1b[D"); await wait("n new");
     const gamma = (await source.list()).find(agent => agent.name === "gamma");
     assert.ok(gamma); assert.equal(gamma.cwd, await realpath(directory)); assert.equal(gamma.model, "faux-opus-2"); assert.equal(gamma.thinking, "high");
     // A model fetch completing after Esc must not advance the name screen.
