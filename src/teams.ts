@@ -10,6 +10,8 @@ import {
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { WorkerModel } from "./config.ts";
+import { liveStatus } from "./ui.ts";
+import type { AgentSummary } from "./protocol.ts";
 import { ActionSchema, TOOL_DESCRIPTION, TOOL_NAME, type Action, type Actor, type Delivery, type Mode } from "./protocol.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -231,7 +233,10 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const answer = result?.answer === undefined ? undefined : (await storage.entry(result.answer, context))?.entry;
         return { request: task.id, state: task.state, submissionKey: submissionId, answer: answer?.model?.[0] };
       }
-      if (target!.where.kind === "external") return { ...actorOf(target!), latest: target!.where.session.latest, observed: "last main publication; may be stale/offline" };
+      if (target!.where.kind === "external") {
+        if (args.transcript) throw new Error("External Pi sessions do not have hosted transcripts");
+        return { ...actorOf(target!), latest: target!.where.session.latest, observed: "last main publication; may be stale/offline" };
+      }
       const conversation = await conversationOf(target!);
       if (args.transcript) {
         const page = await conversation.entries({}, 40, args.cursor ? JSON.parse(args.cursor) : undefined, context);
@@ -250,7 +255,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       } finally { v.dispose(); }
     }
     if (!requestId) throw new Error("A stable request ID is required");
-    const requestKey = `${actor.id}:${requestId}`;
+    const requestKey = actor.id === human.id ? `human:${args.action}:${requestId}` : `${actor.id}:${requestId}`;
     if (state.requests[requestKey]) return state.requests[requestKey];
     if (!active(state, actor.id)) throw new Error("Agent/team stopped or paused");
 
@@ -373,8 +378,22 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     }
   }, context);
   harness.resume();
+  // Commit listeners must not re-enter Session APIs through subscribers.
+  const unsubscribeCommits = harness.subscribeCommits(() => queueMicrotask(notify));
   return {
     harness, action,
+    async agents(connected: (id: string) => boolean): Promise<AgentSummary[]> {
+      const state = await read();
+      const rows = await Promise.all(Object.values(state.agents).map(async agent => {
+        const base = { id: agent.id, name: agent.name, cwd: agent.cwd, enabled: agent.enabled, hosted: agent.where.kind === "hosted" };
+        if (agent.where.kind === "external") return { ...base, connected: connected(agent.id), latest: agent.where.session.latest, children: [] } as AgentSummary;
+        const details = await action(human, { action: "inspect", target: agent.id }, "") as Parameters<typeof liveStatus>[0];
+        return { ...base, ...liveStatus(details), children: [] } as AgentSummary;
+      }));
+      const byId = new Map(rows.map(row => [row.id, row]));
+      for (const agent of Object.values(state.agents)) if (agent.parent) byId.get(agent.parent)?.children.push(byId.get(agent.id)!);
+      return rows.filter(row => !state.agents[row.id]!.parent);
+    },
     async register(main: MainRegistration) {
       if (!/^[a-zA-Z0-9][\w-]{0,127}$/.test(main.sessionId) || /^\d+$/.test(main.sessionId) || ["constructor", "prototype", "__proto__", "human"].includes(main.sessionId) || !main.secret || main.secret.length < 32) throw new Error("Invalid main identity/secret");
       main.cwd = await realpath(main.cwd);
@@ -407,13 +426,13 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     async watch(actor: Actor, target: string, listener: (value: unknown) => void | Promise<void>) {
       const state = await read();
       const destination = resolveTarget(state, actor, target);
-      if (destination.where.kind !== "hosted") throw new Error("External Pi sessions do not have hosted streams");
+      if (destination.where.kind !== "hosted") throw new Error("External Pi sessions have no hosted transcript");
       const stream = await watchEvents(harness, destination.where.conversationId, context);
       await listener({ snapshot: stream.snapshot });
       stream.start(async events => { await listener({ events }); });
       return () => stream.stop();
     },
-    close: () => harness.close(context),
+    close: () => { unsubscribeCommits(); return harness.close(context); },
   };
 }
 export type TeamsService = Awaited<ReturnType<typeof openTeams>>;

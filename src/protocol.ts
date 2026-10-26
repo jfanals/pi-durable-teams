@@ -1,3 +1,4 @@
+import type { WorkerStatus } from "./ui.ts";
 import { Type, StringEnum, type Static, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 
 export const ActionSchema = Type.Object({
@@ -27,3 +28,7 @@ export const TOOL_DESCRIPTION = "Manage durable agents: spawn children, list rea
 export const MESSAGE_TYPE = "durable-team-message";
 export const IDENTITY_TYPE = "durable-team-identity";
 export const SENT_TYPE = "durable-team-sent";
+
+export type AgentSummary = WorkerStatus & {
+  hosted: boolean; connected?: boolean; latest?: string; children: AgentSummary[];
+};

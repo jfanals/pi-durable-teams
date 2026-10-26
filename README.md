@@ -6,6 +6,30 @@ completion polling, or mirrored Durable main conversation.
 
 Node 24+, Pi 1.4.0. Dependencies are pinned; Durable is experimental.
 
+## Local client API
+
+`SocketHostSource` in `src/source.ts` is the typed client for the same Unix socket;
+`HostSource` is the terminal app boundary. `workerSource(source, id)` adapts it to
+`WorkerView`. Clients never open the database. The socket's private 0700 directory
+is the only human-route authentication: any process running as the user (including agents with bash) can act as the human.
+
+- `GET` or `POST /agents`: top-level agents with nested `children` and committed
+  `liveStatus` fields (`contextWindow` is the model window). External Pi sessions
+  expose only known identity, cwd, enabled, connection and latest publication data.
+- `POST /agents/new`, `/agents/send`, `/agents/model`: create, message, change model.
+- `POST /agents/stop`: abort the current run; `/agents/disable`: disable the subtree.
+- `POST /agents/page`: `{target, cursor?}` transcript page; external sessions have no transcript.
+- `POST /agents/watch`: `{target}` NDJSON snapshots/events for any hosted agent.
+- `POST /agents/roster`: NDJSON full-list frames, initially and on status changes.
+
+Mutations accept `requestId`: retain and reuse it for retries. The typed client
+supplies a UUID when omitted and never retries automatically; raw requests without
+an ID get a server-generated one and cannot be safely retried. IDs are scoped to
+the human and action, so use a unique ID for each distinct mutation of an action. Roster invalidation follows
+all Durable commits (including model/tool/run activity) and Pi-session connections;
+updates coalesce for 25 ms and unchanged lists are suppressed. Slow streams respect
+backpressure rather than queueing every change.
+
 ## Web tools in hosted agents
 
 Hosted agents and workers share one `pi-web-access-mcp` stdio server. The host

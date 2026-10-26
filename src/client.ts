@@ -51,7 +51,7 @@ export class Client {
     }
     throw new Error(`Durable host did not start. Inspect ${join(stateDir, "host.log")}; no work was retried by the client.`);
   }
-  async stream(operation: "events" | "watch", body: unknown, signal: AbortSignal, receive: (value: any) => void | Promise<void>) {
+  async stream(operation: "events" | "watch" | "agents/watch" | "agents/roster", body: unknown, signal: AbortSignal, receive: (value: any) => void | Promise<void>) {
     await new Promise<void>((resolve, reject) => {
       const req = request({ socketPath: this.socket, path: `/${operation}`, method: "POST", signal }, async res => {
         try {

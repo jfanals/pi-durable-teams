@@ -1,0 +1,59 @@
+import { randomUUID } from "node:crypto";
+import type { ModelRef } from "@earendil-works/pi-durable";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { Client } from "./client.ts";
+import type { AgentSummary, Mode } from "./protocol.ts";
+import type { TranscriptEntry, WorkerSource } from "./ui.ts";
+
+export type TranscriptPage = { entries: TranscriptEntry[]; next?: string };
+export type RequestOptions = { requestId?: string; signal?: AbortSignal };
+export type MutationResult = { id?: string; taskId?: number; workerId?: string; delivery?: string; aborted?: string[]; stopped?: string[]; model?: ModelRef; thinking?: ModelThinkingLevel };
+export interface HostSource {
+  list(signal?: AbortSignal): Promise<AgentSummary[]>;
+  roster(signal: AbortSignal, receive: (agents: AgentSummary[]) => void | Promise<void>): Promise<void>;
+  page(target: string, cursor?: string, signal?: AbortSignal): Promise<TranscriptPage>;
+  watch(target: string, signal: AbortSignal, receive: (frame: unknown) => void | Promise<void>): Promise<void>;
+  send(target: string, message: string, mode?: Mode, options?: RequestOptions): Promise<MutationResult>;
+  stop(target: string, options?: RequestOptions): Promise<MutationResult>;
+  disable(target: string, options?: RequestOptions): Promise<MutationResult>;
+  newAgent(agent: { name: string; cwd: string; model?: ModelRef; thinking?: ModelThinkingLevel }, options?: RequestOptions): Promise<MutationResult>;
+  setModel(target: string, provider: string, modelId: string, thinking?: ModelThinkingLevel, options?: RequestOptions): Promise<MutationResult>;
+}
+
+/** No implicit retries. Supply the same requestId when retrying a mutation. */
+export class SocketHostSource implements HostSource {
+  readonly client: Client;
+  constructor(client = new Client()) { this.client = client; }
+  list(signal?: AbortSignal) { return this.client.call<AgentSummary[]>("agents", {}, signal); }
+  roster(signal: AbortSignal, receive: (agents: AgentSummary[]) => void | Promise<void>) {
+    return this.client.stream("agents/roster", {}, signal, receive);
+  }
+  page(target: string, cursor?: string, signal?: AbortSignal) { return this.client.call<TranscriptPage>("agents/page", { target, cursor }, signal); }
+  watch(target: string, signal: AbortSignal, receive: (frame: unknown) => void | Promise<void>) {
+    return this.client.stream("agents/watch", { target }, signal, receive);
+  }
+  private mutate(route: string, body: object, options: RequestOptions = {}) {
+    return this.client.call<MutationResult>(`agents/${route}`, { ...body, requestId: options.requestId ?? randomUUID() }, options.signal);
+  }
+  send(target: string, message: string, mode: Mode = "followUp", options?: RequestOptions) { return this.mutate("send", { target, message, mode }, options); }
+  stop(target: string, options?: RequestOptions) { return this.mutate("stop", { target }, options); }
+  disable(target: string, options?: RequestOptions) { return this.mutate("disable", { target }, options); }
+  newAgent(agent: { name: string; cwd: string; model?: ModelRef; thinking?: ModelThinkingLevel }, options?: RequestOptions) { return this.mutate("new", agent, options); }
+  setModel(target: string, provider: string, modelId: string, thinking?: ModelThinkingLevel, options?: RequestOptions) { return this.mutate("model", { target, provider, modelId, thinking }, options); }
+}
+
+/** Bind the shared chat inspector to one agent without database access. */
+export function workerSource(source: HostSource, target: string): WorkerSource {
+  return {
+    page: cursor => source.page(target, cursor),
+    status: async () => {
+      const find = (rows: AgentSummary[]): AgentSummary | undefined => {
+        for (const row of rows) { if (row.id === target) return row; const child = find(row.children); if (child) return child; }
+      };
+      const agent = find(await source.list());
+      if (!agent) throw new Error("Agent not found");
+      return agent;
+    },
+    watch: (signal, onFrame) => source.watch(target, signal, onFrame),
+  };
+}

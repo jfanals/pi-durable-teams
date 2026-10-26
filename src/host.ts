@@ -1,11 +1,20 @@
+import { randomUUID } from "node:crypto";
+import { Type, StringEnum } from "@earendil-works/pi-ai";
 import { chmodSync, mkdirSync, rmSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Value } from "typebox/value";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { ActionSchema } from "./protocol.ts";
-import { openTeams, type TeamsOptions } from "./teams.ts";
+import { ActionSchema, type Action } from "./protocol.ts";
+import { human, openTeams, type TeamsOptions } from "./teams.ts";
+
+const HumanActionSchema = Type.Object({
+  ...ActionSchema.properties,
+  action: StringEnum(["newAgent", "send", "abort", "stop", "model", "inspect"]),
+  model: Type.Optional(Type.Object({ provider: Type.String(), modelId: Type.String() })),
+  thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"])),
+});
 
 // SQLite's OS-backed exclusive lock prevents two hosts opening Durable storage.
 // Unlike a PID/heartbeat lock, a crash releases it and a paused process cannot lose it.
@@ -19,6 +28,8 @@ export async function startHost(directory: string, socket: string, options: Team
   const streams = new Map<string, ServerResponse>();
   const workerStreams = new Set<ServerResponse>();
   const cleanups = new Set<() => unknown>();
+  const connectionsChanged = new Set<() => void>();
+  const notifyConnections = () => { for (const listener of connectionsChanged) listener(); };
   async function frame(res: ServerResponse, value: unknown) {
     if (res.destroyed || res.write(`${JSON.stringify(value)}\n`)) return;
     // A large frame is not a failed client. Honor backpressure; Durable coalesces
@@ -33,7 +44,8 @@ export async function startHost(directory: string, socket: string, options: Team
   };
   const server = createServer(async (req, res) => {
     try {
-      if (req.url === "/health") return reply(res, 200, { pid: process.pid, ready: Boolean(service) });
+      const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+      if (pathname === "/health") return reply(res, 200, { pid: process.pid, ready: Boolean(service) });
       if (!service) return reply(res, 503, { error: "Host starting" });
       const chunks: Buffer[] = [];
       let size = 0;
@@ -43,9 +55,58 @@ export async function startHost(directory: string, socket: string, options: Team
         chunks.push(chunk);
       }
       const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-      if (req.url === "/register") return reply(res, 200, await service.register(body));
-      const actor = await service.authenticate(body.sessionId, body.secret);
-      switch (req.url) {
+      if (pathname === "/register") return reply(res, 200, await service.register(body));
+      // Local human clients are authenticated by the private socket directory.
+      if (pathname === "/agents") return reply(res, 200, await service.agents(id => streams.has(id)));
+      if (pathname === "/agents/roster") {
+        res.writeHead(200, { "content-type": "application/x-ndjson" }); res.flushHeaders();
+        workerStreams.add(res);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let running = false; let dirty = false; let stopped = false;
+        let previous = "";
+        const flush = async () => {
+          timer = undefined;
+          if (running || stopped) return;
+          running = true;
+          try {
+            while (dirty && !stopped) {
+              dirty = false;
+              const rows = await service!.agents(id => streams.has(id));
+              const json = JSON.stringify(rows);
+              if (json !== previous) { previous = json; await frame(res, rows); }
+            }
+          } catch (error) { res.destroy(error as Error); }
+          finally { running = false; }
+        };
+        const schedule = () => {
+          dirty = true;
+          if (!timer && !running && !stopped) timer = setTimeout(() => { void flush(); }, 25);
+        };
+        const unsubscribe = service.subscribe(schedule);
+        connectionsChanged.add(schedule);
+        const stop = () => {
+          stopped = true; clearTimeout(timer); unsubscribe(); connectionsChanged.delete(schedule);
+          workerStreams.delete(res); cleanups.delete(stop);
+        };
+        cleanups.add(stop); res.on("close", stop);
+        schedule();
+        return;
+      }
+      if (pathname.startsWith("/agents/") && pathname !== "/agents/watch") {
+        const verbs: Record<string, Action["action"]> = { new: "newAgent", send: "send", stop: "abort", disable: "stop", model: "model", page: "inspect" };
+        const route = pathname.slice("/agents/".length);
+        const verb = verbs[route];
+        if (!verb) return reply(res, 404, { error: "Unknown operation" });
+        if (route !== "new" && typeof body.target !== "string") throw new Error("target is required");
+        if (body.requestId !== undefined && (typeof body.requestId !== "string" || !body.requestId)) throw new Error("requestId must be a nonempty string");
+        const args = { action: verb, target: body.target, name: body.name, cwd: body.cwd, message: body.message, mode: body.mode,
+          model: route === "model" ? { provider: body.provider, modelId: body.modelId } : body.model,
+          thinking: body.thinking, cursor: body.cursor, ...(route === "page" ? { transcript: true } : {}) };
+        if (!Value.Check(HumanActionSchema, args)) throw new Error("Invalid agent action arguments");
+        return reply(res, 200, await service.action(human, args as Action, body.requestId ?? randomUUID()));
+      }
+      const actor = pathname === "/agents/watch" ? human : await service.authenticate(body.sessionId, body.secret);
+      switch (pathname) {
         case "/action": {
           if (!Value.Check(ActionSchema, body.args)) throw new Error("Invalid team action arguments");
           const result = await service.action(actor, body.args, body.requestId);
@@ -61,6 +122,7 @@ export async function startHost(directory: string, socket: string, options: Team
           res.writeHead(200, { "content-type": "application/x-ndjson" });
           res.flushHeaders();
           streams.set(actor.id, res);
+          notifyConnections();
           const sent = new Set<string>();
           let running = false;
           let dirty = false;
@@ -82,17 +144,29 @@ export async function startHost(directory: string, socket: string, options: Team
             finally { running = false; }
           };
           const unsubscribe = service.subscribe(() => { void flush(); });
-          res.on("close", () => { unsubscribe(); if (streams.get(actor.id) === res) streams.delete(actor.id); });
+          res.on("close", () => { unsubscribe(); if (streams.get(actor.id) === res) streams.delete(actor.id); notifyConnections(); });
           await flush();
           return;
         }
+        case "/agents/watch":
         case "/watch": {
+          if (typeof body.target !== "string") throw new Error("target is required");
+          // Resolve/acquire the watch before committing HTTP headers. Its initial
+          // snapshot is buffered so inaccessible/external targets get JSON errors.
+          const pending: unknown[] = [];
+          let ready = false;
+          const stop = await service.watch(actor, body.target, value => {
+            if (ready) return frame(res, value);
+            pending.push(value);
+          });
+          if (res.destroyed) { await stop(); return; }
           res.writeHead(200, { "content-type": "application/x-ndjson" }); res.flushHeaders();
           workerStreams.add(res);
-          const stop = await service.watch(actor, body.target, value => frame(res, value));
-          if (res.destroyed) { workerStreams.delete(res); await stop(); return; }
           cleanups.add(stop);
           res.on("close", () => { workerStreams.delete(res); cleanups.delete(stop); void stop(); });
+          ready = true;
+          for (const value of pending) await frame(res, value);
+          pending.length = 0;
           return;
         }
         default: return reply(res, 404, { error: "Unknown operation" });
