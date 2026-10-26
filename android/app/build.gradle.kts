@@ -26,6 +26,8 @@ dependencies {
     implementation(libs.serialization.json)
     implementation(libs.coroutines.android)
     implementation(libs.okhttp)
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
+    implementation("com.mikepenz:multiplatform-markdown-renderer-m3:0.30.0")
     testImplementation(libs.junit)
     testImplementation(libs.mockwebserver)
 }

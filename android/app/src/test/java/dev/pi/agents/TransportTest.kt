@@ -33,7 +33,6 @@ class TransportTest {
                     assertTrue(seenIds.add(id))
                 }
             }
-            check("", "[]") { api.list() }
             check("/models", "[]") { api.models() }
             check("/page", """{"items":[]}""") { api.page("a", "cursor") }
             check("/dirs", """{"path":"/","dirs":[]}""") { api.dirs() }

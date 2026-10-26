@@ -9,8 +9,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.json.JsonClassDiscriminator
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.modules.SerializersModule
 import kotlinx.serialization.json.*
 import okhttp3.Call
 import okhttp3.Callback
@@ -22,7 +25,13 @@ import okhttp3.Response
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
-val apiJson = Json { ignoreUnknownKeys = true; classDiscriminator = "kind" }
+val apiJson = Json {
+    ignoreUnknownKeys = true; classDiscriminator = "kind"
+    serializersModule = SerializersModule {
+        polymorphicDefaultDeserializer(ChatItem::class) { ChatItem.Unknown.serializer() }
+        polymorphicDefaultDeserializer(ChatPart::class) { ChatPart.Unknown.serializer() }
+    }
+}
 
 @Serializable
 data class TokenUsage(val input: Long, val output: Long, val cacheRead: Long, val cacheWrite: Long)
@@ -50,18 +59,26 @@ data class MutationResult(
     val delivery: String? = null, val aborted: List<String>? = null, val stopped: List<String>? = null,
     val model: ModelRef? = null, val thinking: String? = null,
 )
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
-data class ToolCall(val id: String, val name: String, val subject: String)
+@JsonClassDiscriminator("type")
+sealed class ChatPart {
+    @Serializable data class Unknown(val ignored: String? = null) : ChatPart()
+    @Serializable @SerialName("text") data class Text(val text: String) : ChatPart()
+    @Serializable @SerialName("thinking") data class Thinking(val text: String) : ChatPart()
+    @Serializable @SerialName("tool") data class Tool(val id: String, val name: String, val subject: String) : ChatPart()
+}
 @Serializable
 data class Turn(val tokens: Long, val cost: Double, val ms: Double? = null)
 
 @Serializable
 sealed class ChatItem {
     abstract val id: String
+    @Serializable data class Unknown(override val id: String = "unknown") : ChatItem()
     @Serializable @SerialName("input")
     data class Input(override val id: String, val from: String, val text: String, val report: Boolean? = null, val at: Double? = null) : ChatItem()
     @Serializable @SerialName("reply")
-    data class Reply(override val id: String, val text: String, val tools: List<ToolCall>, val thinking: List<String>? = null, val error: String? = null, val at: Double? = null, val turn: Turn? = null) : ChatItem()
+    data class Reply(override val id: String, val parts: List<ChatPart>, val error: String? = null, val at: Double? = null, val turn: Turn? = null) : ChatItem()
     @Serializable @SerialName("result")
     data class Result(override val id: String, val callId: String, val ok: Boolean, val error: String? = null) : ChatItem()
     @Serializable @SerialName("notice")
@@ -89,6 +106,8 @@ class ApiClient(baseUrl: String, private val token: String) {
 
     private fun request(route: String, body: JsonObject) = Request.Builder()
         .url("$base/$route").header("Authorization", "Bearer $token")
+        // Mutations cannot retry a stale pooled socket; use a fresh connection instead.
+        .header("Connection", "close")
         .post(body.toString().toRequestBody("application/json".toMediaType())).build()
 
     private suspend inline fun <reified T> post(route: String, body: JsonObject = buildJsonObject {}): T {
@@ -129,7 +148,6 @@ class ApiClient(baseUrl: String, private val token: String) {
         awaitClose { call.cancel(); reader.cancel() }
     }
 
-    suspend fun list(): List<AgentSummary> = post("agents")
     suspend fun models(): List<ModelChoice> = post("agents/models")
     suspend fun page(target: String, cursor: String? = null): TranscriptPage = post("agents/page", buildJsonObject {
         put("target", target); cursor?.let { put("cursor", it) }
@@ -155,4 +173,10 @@ class ApiClient(baseUrl: String, private val token: String) {
     suspend fun setModel(target: String, provider: String, modelId: String, thinking: String? = null) = mutate("model", buildJsonObject {
         put("target", target); put("provider", provider); put("modelId", modelId); thinking?.let { put("thinking", it) }
     })
+}
+
+/** Preserve loaded history only while the newest page still overlaps it. */
+internal fun refreshedPage(loaded: List<ChatItem>, cursor: String?, page: TranscriptPage): TranscriptPage {
+    val overlap = loaded.indexOfFirst { it.id == page.items.firstOrNull()?.id }
+    return if (overlap >= 0) TranscriptPage(loaded.take(overlap) + page.items, cursor) else page
 }

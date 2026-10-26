@@ -5,6 +5,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ApiTest {
+    @Test fun newestPageMustOverlapLoadedHistory() {
+        fun item(id: String) = ChatItem.Notice(id, id)
+        val loaded = listOf(item("1"), item("2"), item("3"))
+        val overlap = refreshedPage(loaded, "older", TranscriptPage(listOf(item("3"), item("4")), "new"))
+        assertEquals(listOf("1", "2", "3", "4"), overlap.items.map { it.id })
+        assertEquals("older", overlap.next)
+        val disjoint = TranscriptPage(listOf(item("8"), item("9")), "gap")
+        assertEquals(disjoint, refreshedPage(loaded, "older", disjoint))
+        assertEquals(TranscriptPage(emptyList()), refreshedPage(loaded, "older", TranscriptPage(emptyList())))
+    }
+    @Test fun unknownVariants() {
+        val page = apiJson.decodeFromString<TranscriptPage>("""{"items":[{"id":"future","kind":"new-kind","extra":42},{"id":"r","kind":"reply","parts":[{"type":"future-part","payload":{}},{"type":"text","text":"kept"}]}]}""")
+        assertTrue(page.items[0] is ChatItem.Unknown)
+        val parts = (page.items[1] as ChatItem.Reply).parts
+        assertTrue(parts[0] is ChatPart.Unknown)
+        assertEquals("kept", (parts[1] as ChatPart.Text).text)
+    }
     @Test fun nestedAgents() {
         val agents = apiJson.decodeFromString<List<AgentSummary>>("""[
             {"id":"a","name":"Parent","enabled":true,"hosted":true,"running":true,
@@ -23,10 +40,11 @@ class ApiTest {
     }
 
     @Test fun replyItem() {
-        val item = apiJson.decodeFromString<ChatItem>("""{"id":"r","kind":"reply","text":"Done","thinking":["Plan"],"tools":[{"id":"t","name":"read","subject":"Api.kt"}],"turn":{"ms":24,"tokens":12,"cost":0.01}}""") as ChatItem.Reply
-        assertEquals("Api.kt", item.tools.single().subject)
+        val item = apiJson.decodeFromString<ChatItem>("""{"id":"r","kind":"reply","parts":[{"type":"thinking","text":"Plan"},{"type":"tool","id":"t","name":"read","subject":"Api.kt"},{"type":"text","text":"Done"}],"turn":{"ms":24,"tokens":12,"cost":0.01}}""") as ChatItem.Reply
+        assertEquals("Api.kt", (item.parts[1] as ChatPart.Tool).subject)
         assertEquals(12L, item.turn?.tokens)
-        assertEquals(listOf("Plan"), item.thinking)
+        assertEquals("Plan", (item.parts[0] as ChatPart.Thinking).text)
+        assertEquals("Done", (item.parts[2] as ChatPart.Text).text)
     }
 
     @Test fun resultItem() {
