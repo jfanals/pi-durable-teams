@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -68,8 +68,8 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x15"); await key("gamma"); await key("\r");
     const cwd = await wait("Working directory"); print?.("form cwd", cwd);
     await key("\x1b"); await wait("Name"); await key("\r");
-    await key("\x15"); await key(join(directory, "missing")); await key("\r"); await wait("must be an existing directory");
-    await key("\x15"); await key(directory); await key("\r");
+    assert.match(await frame(), /Recent/);
+    await key("\r"); // First recent is alpha/beta's working directory.
     const picker = await wait("type to filter"); print?.("form model", picker);
     await key("faux-2"); assert.doesNotMatch(await frame(), /faux\/faux-1/);
     await key("\x15"); await key("\x1b[B"); await key("\r");
@@ -77,7 +77,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[B"); await key("\r");
     const created = await wait("n new"); print?.("created", created);
     const gamma = (await source.list()).find(agent => agent.name === "gamma");
-    assert.ok(gamma); assert.equal(gamma.model, "faux-2"); assert.equal(gamma.thinking, "high");
+    assert.ok(gamma); assert.equal(gamma.cwd, await realpath(directory)); assert.equal(gamma.model, "faux-2"); assert.equal(gamma.thinking, "high");
     const lead = (await source.list())[0]!;
     await source.send(lead.id, "DELEGATE");
     await until(async () => (await source.list())[0]!.children.length > 0);
