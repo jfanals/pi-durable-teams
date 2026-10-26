@@ -56,7 +56,12 @@ export class AgentsApp implements Component, Focusable {
     while (!this.life.signal.aborted) {
       try {
         await this.source.roster(this.life.signal, rows => {
-          this.agents = rows; this.view?.setChildren(this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent.children ?? []); this.note = ""; delay = 250;
+          // Rows reorder by recency: keep the selection on the same agent.
+          const selectedId = this.rows()[this.selected]?.agent.id;
+          this.agents = rows;
+          const index = this.rows().findIndex(row => row.agent.id === selectedId);
+          if (index >= 0) this.selected = index;
+          this.view?.setChildren(this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent.children ?? []); this.note = ""; delay = 250;
           const running = this.rows().some(row => row.agent.running);
           if (running && !this.ticker) this.ticker = setInterval(() => { this.frame++; this.tui.requestRender(); }, 100);
           if (!running && this.ticker) { clearInterval(this.ticker); this.ticker = undefined; }

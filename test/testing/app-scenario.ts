@@ -37,18 +37,20 @@ export async function appScenario(width: number, height: number, print?: (name: 
   async function until(predicate: () => Promise<boolean>) { for (let i = 0; i < 300; i++) { if (await predicate()) return; await delay(10); } assert.fail("Timed out waiting for host state"); }
   async function key(data: string) { terminal.sendInput(data); await delay(50); }
   try {
-    await source.newAgent({ name: "alpha", cwd: directory }); await source.newAgent({ name: "beta", cwd: directory });
+    const alphaId = (await source.newAgent({ name: "alpha", cwd: directory })).id!; await source.newAgent({ name: "beta", cwd: directory });
+    const alpha = async () => (await source.list()).find(agent => agent.id === alphaId);
     tui.addChild(app); tui.setFocus(app); tui.start();
     const list = await wait("beta"); assert.match(list, /alpha/); print?.("list", list);
+    assert.ok(list.indexOf("beta") < list.indexOf("alpha"), "most recent agent first");
     assert.match(list, /r rename.*x disable.*q quit/);
-    await key("\r"); await wait("enter send");
+    await key("\x1b[B"); await key("\r"); await wait("enter send"); // alpha is second: beta is newer.
     await key("Hello"); await key("\r"); const chat = await wait("Hello from the faux agent."); print?.("chat", chat);
     assert.doesNotMatch(chat, /pi-agents|beta/);
     await key("SLOW"); await key("\r");
-    await until(async () => (await source.list())[0]?.running === true);
+    await until(async () => (await alpha())?.running === true);
     await key("\x1b");
-    await until(async () => (await source.list())[0]?.running === false);
-    assert.equal((await source.list())[0]?.enabled, true);
+    await until(async () => (await alpha())?.running === false);
+    assert.equal((await alpha())?.enabled, true);
     await key("SCROLL"); await key("\r"); await wait("Transcript line 80");
     const bottom = await frame();
     await key("\x1b[5~"); const scrolled = await frame(); assert.notEqual(scrolled, bottom);
@@ -99,9 +101,9 @@ export async function appScenario(width: number, height: number, print?: (name: 
     assert.match(await frame(), /Name/); assert.doesNotMatch(await frame(), /Model ·/);
     source.models = fetchModels;
     await key("\x1b"); await wait("n new");
-    const lead = (await source.list())[0]!;
+    const lead = (await alpha())!;
     await source.send(lead.id, "DELEGATE");
-    await until(async () => (await source.list())[0]!.children.length > 0);
+    await until(async () => (await alpha())!.children.length > 0);
     const identity = { sessionId: "external", secret: "s".repeat(36) };
     await source.client.call("register", { ...identity, name: "Pi main", cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
     const roster = await wait("Pi main (Pi)"); assert.match(roster, /  reader/); assert.doesNotMatch(roster, /Pi · (connected|offline)/);
@@ -115,7 +117,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await wait("Rename failed"); assert.match(await frame(), /renamed/);
     source.rename = renameAgent;
     await key("\r");
-    const renamed = await wait("renamed"); assert.equal((await source.list())[0]!.name, "renamed"); print?.("renamed", renamed);
+    const renamed = await wait("renamed"); assert.equal((await alpha())!.name, "renamed"); print?.("renamed", renamed);
     await key("\r"); await wait("1 idle");
     await key("\x1b[B"); const panel = await wait("enter open"); print?.("sub-agent panel", panel);
     await key("\x1b[A"); assert.doesNotMatch(await frame(), /enter open/);
@@ -126,8 +128,8 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[D"); const parentChat = await wait("enter open"); assert.match(parentChat, /renamed/); print?.("back to parent panel", parentChat);
     await key("\x1b[D"); await wait("n new");
     await key("x"); await wait("Disable"); await key("y");
-    for (let i = 0; i < 100 && (await source.list())[0]?.enabled; i++) await delay(10);
-    assert.equal((await source.list())[0]?.enabled, false);
+    for (let i = 0; i < 100 && (await alpha())?.enabled; i++) await delay(10);
+    assert.equal((await alpha())?.enabled, false);
     // Raw Ctrl+C is global, including the editor and modal confirmation screens.
     // Legacy \x03, Kitty keyboard protocol ctrl+c (Ghostty, cmux), and q on the list all exit.
     for (const [screen, exitKey] of [["list", "\x03"], ["chat", "\x03"], ["form", "\x03"], ["confirm", "\x03"], ["list", "\x1b[99;5u"], ["chat", "\x1b[99;5u"], ["list", "q"]] as const) {

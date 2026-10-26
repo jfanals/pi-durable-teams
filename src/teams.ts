@@ -23,6 +23,8 @@ export type MainRegistration = {
 };
 export type Agent = {
   id: string; name: string; parent?: string; enabled: boolean; paused?: boolean; cwd: string;
+  /** Last creation, registration or publication (ms); the list orders by recency with run times. */
+  activeAt?: number;
   where: { kind: "hosted"; conversationId: ConversationId }
     | { kind: "external"; session: MainRegistration; inbox: Record<string, Delivery> };
 };
@@ -357,7 +359,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         if (Object.values(doc.agents).some(agent => agent.where.kind === "hosted" && agent.parent === parent && agent.name === args.name)) throw new Error("Name already exists; reuse the agent or choose a distinct name");
         const anchor = await tx.createTask(Anchor, null, { ownership: { kind: "conversation" }, background: true });
         const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
-        recipient = { id: String(child.id), name: args.name!, ...(parent ? { parent } : {}), cwd: cwd!, enabled: true, where: { kind: "hosted", conversationId: child.id } };
+        recipient = { id: String(child.id), name: args.name!, ...(parent ? { parent } : {}), cwd: cwd!, enabled: true, activeAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
         if (doc.agents[recipient.id]) throw new Error("Agent ID collision with a registered Pi session");
         await configure(tx, child.id, prepared!);
         doc.agents[recipient.id] = recipient;
@@ -412,8 +414,12 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const details = await action(human, { action: "inspect", target: agent.id }, "") as Parameters<typeof liveStatus>[0];
         return { ...base, ...liveStatus(details), children: [] } as AgentSummary;
       }));
+      // Most recent first, at every level: running agents, then the latest activity.
+      const now = Date.now();
+      const recency = (row: AgentSummary) => row.running || row.connected ? now : Math.max(state.agents[row.id]!.activeAt ?? 0, row.since ?? 0, row.finishedAt ?? 0);
+      rows.sort((a, b) => recency(b) - recency(a));
       const byId = new Map(rows.map(row => [row.id, row]));
-      for (const agent of Object.values(state.agents)) if (agent.parent) byId.get(agent.parent)?.children.push(byId.get(agent.id)!);
+      for (const row of rows) { const parent = state.agents[row.id]!.parent; if (parent) byId.get(parent)?.children.push(row); }
       return rows.filter(row => !state.agents[row.id]!.parent);
     },
     async register(main: MainRegistration) {
@@ -424,8 +430,8 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const doc = await tx.doc(Teams);
         const existing = doc.agents[main.sessionId];
         if (existing && (existing.where.kind !== "external" || existing.where.session.secret !== main.secret)) throw new Error("Main identity secret mismatch");
-        if (existing?.where.kind === "external") { existing.where.session = main; existing.name = main.name; existing.cwd = main.cwd; }
-        else doc.agents[main.sessionId] = { id: main.sessionId, name: main.name, cwd: main.cwd, enabled: true, where: { kind: "external", session: main, inbox: {} } };
+        if (existing?.where.kind === "external") { existing.where.session = main; existing.name = main.name; existing.cwd = main.cwd; existing.activeAt = Date.now(); }
+        else doc.agents[main.sessionId] = { id: main.sessionId, name: main.name, cwd: main.cwd, enabled: true, activeAt: Date.now(), where: { kind: "external", session: main, inbox: {} } };
       }, context);
       return actorOf((await read()).agents[main.sessionId]!);
     },
@@ -442,7 +448,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       await harness.commit(async tx => { const agent = (await tx.doc(Teams)).agents[actor.id]; if (agent?.where.kind === "external") delete agent.where.inbox[id]; }, context);
     },
     async publish(actor: Actor, latest: string) {
-      await harness.commit(async tx => { const agent = (await tx.doc(Teams)).agents[actor.id]; if (agent?.where.kind === "external") agent.where.session.latest = latest; }, context);
+      await harness.commit(async tx => { const agent = (await tx.doc(Teams)).agents[actor.id]; if (agent?.where.kind === "external") { agent.where.session.latest = latest; agent.activeAt = Date.now(); } }, context);
     },
     subscribe(listener: () => void) { changed.add(listener); return () => { changed.delete(listener); }; },
     async watch(actor: Actor, target: string, listener: (value: unknown) => void | Promise<void>) {
