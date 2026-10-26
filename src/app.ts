@@ -1,4 +1,5 @@
 import { statSync } from "node:fs";
+import { DirPicker } from "./dir-picker.ts";
 import { agentNameError } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import { Editor, Key, SelectList, matchesKey, truncateToWidth, type Component, type Focusable, type TuiAltScreen } from "@earendil-works/pi-tui";
@@ -25,6 +26,7 @@ export class AgentsApp implements Component, Focusable {
   private note = "Connecting…"; private editor: Editor;
   private form?: { step: number; name: string; cwd: string; model?: WorkerModel; choices: ModelChoice[]; error?: string };
   private picker?: SelectList;
+  private dirPicker?: DirPicker;
   private confirming?: AgentSummary;
   private ticker?: ReturnType<typeof setInterval>;
   private frame = 0;
@@ -126,7 +128,12 @@ export class AgentsApp implements Component, Focusable {
   }
   private formStep(step: number) {
     const form = this.form; if (!form) return;
-    form.step = step; form.error = undefined; this.picker = undefined;
+    form.step = step; form.error = undefined; this.picker = undefined; this.dirPicker = undefined;
+    if (step === 1) this.dirPicker = new DirPicker({
+      recent: this.rows().flatMap(({ agent }) => agent.cwd ? [agent.cwd] : []),
+      height: () => Math.max(6, this.tui.terminal.rows - 4),
+      onChoose: path => void this.advance(path), onCancel: () => this.formStep(0),
+    });
     this.editor.setText(step === 0 ? form.name : step === 1 ? form.cwd : "");
     if (step === 2) {
       this.picker = new SelectList(form.choices.map(model => ({ value: `${model.provider}/${model.modelId}`, label: `${model.provider}/${model.modelId}`, description: model.name })), 8, getSelectListTheme());
@@ -192,7 +199,7 @@ export class AgentsApp implements Component, Focusable {
       const form = this.form;
       const breadcrumb = [form.step > 0 ? form.name : "", form.step > 1 ? form.cwd : "", form.step > 2 ? `${form.model!.provider}/${form.model!.modelId}` : ""].filter(Boolean).join(" › ");
       return ["New agent · esc back · esc on name cancels", breadcrumb, ["Name", "Working directory", "Model · type to filter · ↑↓ select · enter choose", "Thinking · ↑↓ select · enter create"][form.step]!,
-        ...(form.step < 3 ? this.editor.render(width) : []), ...(this.picker?.render(width) ?? []), form.error ? this.theme.fg("error", form.error) : ""].map(line => truncateToWidth(line, width));
+        ...(form.step === 1 ? this.dirPicker!.render(width) : form.step < 3 ? this.editor.render(width) : []), ...(this.picker?.render(width) ?? []), form.error ? this.theme.fg("error", form.error) : ""].map(line => truncateToWidth(line, width));
     }
     if (this.confirming) return [`Disable ${this.confirming.name}? y / n`].map(line => truncateToWidth(line, width));
     return this.view ? this.view.render(width).map(line => truncateToWidth(line, width)) : this.list(width);
@@ -203,10 +210,10 @@ export class AgentsApp implements Component, Focusable {
       else this.editor.handleInput(data);
     }
     else if (this.form) {
-      if (matchesKey(data, Key.escape)) {
+      if (this.form.step === 1) this.dirPicker!.handleInput(data);
+      else if (matchesKey(data, Key.escape)) {
         if (this.form.step === 0) this.form = undefined;
         else {
-          if (this.form.step === 1) this.form.cwd = this.editor.getText();
           this.formStep(this.form.step - 1);
         }
       } else if (this.picker && (this.form.step === 3 || matchesKey(data, Key.up) || matchesKey(data, Key.down) || matchesKey(data, Key.enter))) this.picker.handleInput(data);
