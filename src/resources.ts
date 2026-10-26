@@ -8,6 +8,7 @@ import { DefaultResourceLoader, discoverAndLoadExtensions, formatSkillsForPrompt
 import { Teams, type TeamsOptions } from "./teams.ts";
 import { readConfig, workerModelFor } from "./config.ts";
 import { withContextLimits } from "./limits.ts";
+import { openWebTools } from "./web.ts";
 import { agentDir, stateDir } from "./paths.ts";
 export { socketPath, stateDir } from "./paths.ts";
 
@@ -58,6 +59,9 @@ export async function productionOptions(): Promise<TeamsOptions> {
   const registry = createRegistry();
   registry.install(CodingTools);
   registry.install(coding);
+  // Web tools are optional: a broken pi-web-access setup must not stop the host that runs every agent.
+  const web = await openWebTools().catch(error => { console.error("Web tools disabled:", error); });
+  if (web) registry.install(web.extension);
   return {
     // Pi's per-model compaction settings apply to workers too; re-read on every spawn like worker models.
     models: withContextLimits(runtime, settings), registry,
