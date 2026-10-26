@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -16,7 +16,7 @@ import { VirtualTerminal } from "./virtual-terminal.ts";
 
 export async function appScenario(width: number, height: number, print?: (name: string, frame: string) => void) {
   const directory = await mkdtemp(join(tmpdir(), "agents-app-"));
-  const fake = fauxProvider({ models: [{ id: "faux-1", reasoning: true }, { id: "faux-2", reasoning: true }], tokensPerSecond: 1000 });
+  const fake = fauxProvider({ models: [{ id: "faux-1", reasoning: true }, { id: "faux-opus-2", name: "Middle Fancy Model", reasoning: true }], tokensPerSecond: 1000 });
   fake.setResponses(Array.from({ length: 100 }, () => request => {
     const last = request.messages.findLast(message => message.role !== "system");
     const text = JSON.stringify(last);
@@ -40,6 +40,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await source.newAgent({ name: "alpha", cwd: directory }); await source.newAgent({ name: "beta", cwd: directory });
     tui.addChild(app); tui.setFocus(app); tui.start();
     const list = await wait("beta"); assert.match(list, /alpha/); print?.("list", list);
+    assert.match(list, /r rename.*x disable.*q quit/);
     await key("\r"); await wait("enter send");
     await key("Hello"); await key("\r"); const chat = await wait("Hello from the faux agent."); print?.("chat", chat);
     assert.doesNotMatch(chat, /pi-agents|beta/);
@@ -59,21 +60,42 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[D"); await wait("n new");
     await key("n"); await wait("New agent");
     await key("main"); const invalid = await wait("Use a unique");
-    await key("\r"); assert.match(await frame(), /Name/); print?.("form invalid name", invalid);
+    await key("\r"); assert.match(await frame(), /Name/); assert.match(await frame(), /main/); print?.("form invalid name", invalid);
     await key("\x15"); await key("alpha"); await key("\r"); await wait("Name already exists");
+    assert.match(await frame(), /alpha/);
     await key("\x15"); await key("gamma"); await key("\r");
     const cwd = await wait("Working directory"); print?.("form cwd", cwd);
     await key("\x1b"); await wait("Name"); await key("\r");
     assert.match(await frame(), /Recent/);
     await key("\r"); // First recent is alpha/beta's working directory.
     const picker = await wait("type to filter"); print?.("form model", picker);
-    await key("faux-2"); assert.doesNotMatch(await frame(), /faux\/faux-1/);
+    await key("\x1b"); await wait("Working directory");
+    assert.ok((await frame()).includes(basename(directory)), "back from model starts at chosen cwd");
+    await key("\r"); await wait("Model ·");
+    for (const char of "OpUs") await key(char);
+    assert.match(await frame(), /faux\/faux-opus-2/);
+    assert.doesNotMatch(await frame(), /faux\/faux-1/);
+    await key("\x15");
+    for (const char of "fancy") await key(char);
+    assert.match(await frame(), /faux\/faux-opus-2/);
+    assert.doesNotMatch(await frame(), /faux\/faux-1/);
     await key("\x15"); await key("\x1b[B"); await key("\r");
     const thinking = await wait("Thinking ·"); print?.("form thinking", thinking);
     await key("\x1b[B"); await key("\r");
     const created = await wait("n new"); print?.("created", created);
     const gamma = (await source.list()).find(agent => agent.name === "gamma");
-    assert.ok(gamma); assert.equal(gamma.cwd, await realpath(directory)); assert.equal(gamma.model, "faux-2"); assert.equal(gamma.thinking, "high");
+    assert.ok(gamma); assert.equal(gamma.cwd, await realpath(directory)); assert.equal(gamma.model, "faux-opus-2"); assert.equal(gamma.thinking, "high");
+    // A model fetch completing after Esc must not advance the name screen.
+    const fetchModels = source.models.bind(source);
+    let releaseModels!: () => void;
+    const modelGate = new Promise<void>(resolve => { releaseModels = resolve; });
+    source.models = async signal => { await modelGate; return fetchModels(signal); };
+    await key("n"); await key("race"); await key("\r"); await wait("Working directory");
+    await key("\r"); await key("\x1b"); await wait("Name");
+    releaseModels(); await delay(100);
+    assert.match(await frame(), /Name/); assert.doesNotMatch(await frame(), /Model ·/);
+    source.models = fetchModels;
+    await key("\x1b"); await wait("n new");
     const lead = (await source.list())[0]!;
     await source.send(lead.id, "DELEGATE");
     await until(async () => (await source.list())[0]!.children.length > 0);
@@ -83,7 +105,13 @@ export async function appScenario(width: number, height: number, print?: (name: 
     print?.("nested and Pi", roster);
     await key("r"); await wait("Rename agent");
     await key("\x15"); await key("beta"); await key("\r"); await wait("Name already exists");
+    assert.match(await frame(), /beta/);
+    const renameAgent = source.rename.bind(source);
+    source.rename = async () => { throw new Error("Rename failed"); };
     await key("\x15"); await key("renamed"); await key("\r");
+    await wait("Rename failed"); assert.match(await frame(), /renamed/);
+    source.rename = renameAgent;
+    await key("\r");
     const renamed = await wait("renamed"); assert.equal((await source.list())[0]!.name, "renamed"); print?.("renamed", renamed);
     await key("\r"); await wait("1 idle");
     await key("\x1b[B"); const panel = await wait("enter open"); print?.("sub-agent panel", panel);

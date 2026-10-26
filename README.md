@@ -304,21 +304,24 @@ requires separate approval. The registry and in-flight reporter tasks migrate fr
 Run `node src/pi-agents.ts` to chat with agents in the host. The `pi-agents` bin
 is a `.ts` file: use `npm link` from this repository to put it on your PATH.
 Node does not strip TypeScript types under `node_modules`, so a regular package
-installation is not supported yet. Closing the app leaves agents running. Terminals at least 120 columns
-show the list beside the open chat.
+installation is not supported yet. Closing the app leaves agents running.
 
 Pi 1.4 does not export its live theme instance or the app `KeybindingsManager`
 class (upstream export request). A single checked compatibility import loads the
 theme; the app uses public TUI keybindings, so your `keybindings.json` is not
 loaded yet.
 
-- List: **↑↓** select, **Enter/→** open, **n** create, **x** disable (confirm with **y**).
-- New agent: enter a unique name and existing working directory (defaults to the app's cwd).
-  Type to filter host models; **↑↓/Enter** pick a model and supported thinking level.
+- List: **↑↓** select, **Enter/→** open, **n** create, **r** rename, **q** quit, **x** disable (confirm with **y**).
+- New agent: enter a unique name, then pick an existing working directory.
+  Folder picker: **↑↓** move, **→** enter folder, **←** parent, **Enter** choose,
+  typing filters, **Backspace** edits, **Esc** back. Recent directories appear first;
+  paste an existing directory path to jump there. Wide terminals show a preview.
+  Model filter matches any part of `provider/modelId` or name, ignoring case; **↑↓/Enter** pick a model and supported thinking level.
   Model defaults to `config.json`'s `agentModel`; thinking uses its level, else medium if supported.
   **Esc** goes back one step; on the name step it cancels. Validation errors stay inline.
 - Chat: **Enter** send/steer, **Alt+Enter** queue follow-up, **Esc** stop current run,
-  **←** on an empty editor return, **PgUp/PgDn** scroll.
+  **↓/Enter** on an empty editor select/open a sub-agent, **←** goes back
+  to its parent or the list, **PgUp/PgDn** scroll.
 - **Ctrl+C** exits. External Pi sessions show their latest publication, not a transcript.
 
 Preview without touching the live host: `npm run screen -- small` (`narrow` or `wide`

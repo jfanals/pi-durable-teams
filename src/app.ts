@@ -1,4 +1,3 @@
-import { statSync } from "node:fs";
 import { DirPicker } from "./dir-picker.ts";
 import { agentNameError } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
@@ -40,7 +39,7 @@ export class AgentsApp implements Component, Focusable {
     this.editor.onChange = text => {
       if (this.renaming) this.renaming.error = this.nameError(text.trim(), this.renaming.agent);
       else if (this.form?.step === 0) this.form.error = this.nameError(text.trim());
-      else if (this.form?.step === 2) this.picker?.setFilter(text);
+      else if (this.form?.step === 2) this.filterModels(text);
       else if (this.form) this.form.error = undefined;
     };
     this.model = options.agentModel; this.exit = options.exit ?? (() => {});
@@ -105,7 +104,7 @@ export class AgentsApp implements Component, Focusable {
         const child = this.stack.pop();
         const parent = this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent;
         if (parent) { this.open(parent, false); if (child) this.view?.focusChild(child); }
-        else { this.view?.dispose(); this.view = undefined; this.setScreen(); }
+        else { this.stack = []; this.view?.dispose(); this.view = undefined; this.setScreen(); }
         this.tui.requestRender();
       },
     }, () => this.note, { open: worker => {
@@ -125,26 +124,34 @@ export class AgentsApp implements Component, Focusable {
       try { await this.source.rename(rename.agent.id, text.trim()); this.renaming = undefined; this.note = ""; }
       catch (error) { rename.error = String(error); }
     }
+    if (rename.error) { const error = rename.error; this.editor.setText(text); rename.error = error; }
     this.setScreen(); this.tui.requestRender();
+  }
+  private filterModels(text: string) {
+    const form = this.form; if (!form || form.step !== 2) return;
+    const query = text.toLowerCase();
+    const choices = form.choices.filter(model => `${model.provider}/${model.modelId}`.toLowerCase().includes(query) || (model.name ?? "").toLowerCase().includes(query));
+    this.picker = new SelectList(choices.map(model => ({ value: `${model.provider}/${model.modelId}`, label: `${model.provider}/${model.modelId}`, description: model.name })), 8, getSelectListTheme());
+    this.picker.onSelect = item => {
+      const model = choices.find(model => `${model.provider}/${model.modelId}` === item.value)!;
+      form.model = { provider: model.provider, modelId: model.modelId, thinking: form.model?.thinking };
+      this.formStep(3); this.tui.requestRender();
+    };
   }
   private formStep(step: number) {
     const form = this.form; if (!form) return;
     form.step = step; form.error = undefined; this.picker = undefined; this.dirPicker = undefined;
     if (step === 1) this.dirPicker = new DirPicker({
+      cwd: form.cwd || undefined,
       recent: this.rows().flatMap(({ agent }) => agent.cwd ? [agent.cwd] : []),
       height: () => Math.max(6, this.tui.terminal.rows - 4),
       onChoose: path => void this.advance(path), onCancel: () => this.formStep(0),
     });
-    this.editor.setText(step === 0 ? form.name : step === 1 ? form.cwd : "");
+    this.editor.setText(step === 0 ? form.name : "");
     if (step === 2) {
-      this.picker = new SelectList(form.choices.map(model => ({ value: `${model.provider}/${model.modelId}`, label: `${model.provider}/${model.modelId}`, description: model.name })), 8, getSelectListTheme());
+      this.filterModels("");
       const index = form.choices.findIndex(model => model.provider === form.model?.provider && model.modelId === form.model?.modelId);
-      this.picker.setSelectedIndex(Math.max(0, index));
-      this.picker.onSelect = item => {
-        const model = form.choices.find(model => `${model.provider}/${model.modelId}` === item.value)!;
-        form.model = { provider: model.provider, modelId: model.modelId, thinking: form.model?.thinking };
-        this.formStep(3); this.tui.requestRender();
-      };
+      this.picker!.setSelectedIndex(Math.max(0, index));
     } else if (step === 3) {
       const levels = form.choices.find(model => model.provider === form.model?.provider && model.modelId === form.model?.modelId)!.thinkingLevels;
       this.picker = new SelectList(levels.map(level => ({ value: level, label: level })), 8, getSelectListTheme());
@@ -162,14 +169,11 @@ export class AgentsApp implements Component, Focusable {
     } else if (form.step === 1) {
       form.cwd = text.trim();
       try {
-        if (!statSync(form.cwd).isDirectory()) throw new Error();
-      } catch { form.error = "Working directory must be an existing directory"; this.tui.requestRender(); return; }
-      try {
         form.choices = await this.source.models(this.life.signal);
-        if (this.form !== form) return;
+        if (this.form !== form || form.step !== 1) return;
         if (!form.choices.length) throw new Error("No models available; log in or configure models first");
         this.formStep(2);
-      } catch (error) { form.error = String(error); }
+      } catch (error) { if (this.form !== form || form.step !== 1) return; form.error = String(error); }
     } else if (form.step === 3) {
       form.model = { ...form.model!, thinking: text as WorkerModel["thinking"] };
       try {
@@ -177,21 +181,25 @@ export class AgentsApp implements Component, Focusable {
         this.form = undefined; this.setScreen(); this.note = "";
       } catch (error) { form.error = String(error); }
     }
+    if (form.error) { const error = form.error; this.editor.setText(text); form.error = error; }
     this.tui.requestRender();
   }
   private list(width: number): string[] {
     const rows = this.rows(); this.selected = Math.max(0, Math.min(this.selected, rows.length - 1));
     const height = this.tui.terminal.rows;
-    const start = Math.max(0, this.selected - Math.max(1, height - 5) + 1);
+    const hints = width >= 64 ? ["↑↓ select · enter/→ open · n new · r rename · x disable · q quit"]
+      : ["↑↓ select · enter/→ open · n new", "r rename · x disable · q quit"];
+    const capacity = Math.max(1, height - 4 - hints.length);
+    const start = Math.max(0, this.selected - capacity + 1);
     const lines = [this.theme.fg("accent", this.theme.bold("pi-agents")), ""];
     const nameWidth = Math.min(24, Math.max(6, ...rows.map(({ agent, depth }) => 2 * depth + agent.name.length + (agent.hosted ? 0 : 5))));
-    for (const [index, { agent: a, depth }] of rows.slice(start, start + Math.max(1, height - 5)).entries()) {
+    for (const [index, { agent: a, depth }] of rows.slice(start, start + capacity).entries()) {
       const display = { ...a, name: `${"  ".repeat(depth)}${a.name}${a.hosted ? "" : " (Pi)"}` };
       lines.push(statusRow(display, width, index + start === this.selected, Date.now(), this.theme, nameWidth, this.frame, a.hosted ? undefined : `${a.connected ? "connected" : "offline"}`, 60));
     }
-    while (lines.length < height - 3) lines.push("");
+    while (lines.length < height - 2 - hints.length) lines.push("");
     const total = formatCost(rows.reduce((sum, row) => sum + (row.agent.cost ?? 0), 0));
-    lines.push(total ? `Total ${total}${rows.some(row => row.agent.subscription) ? " (sub)" : ""}` : "", this.note, "↑↓ select · enter/→ open · n new · r rename · x disable · q quit");
+    lines.push(total ? `Total ${total}${rows.some(row => row.agent.subscription) ? " (sub)" : ""}` : "", this.note, ...hints);
     return lines.map(line => truncateToWidth(line, width));
   }
   render(width: number): string[] {
@@ -232,7 +240,7 @@ export class AgentsApp implements Component, Focusable {
     }
     else if (data === "q") { this.dispose(); this.tui.stop(); this.exit(); return; }
     else if (data === "x") this.confirming = this.rows()[this.selected]?.agent;
-    else if (data === "n") { this.form = { step: 0, name: "", cwd: process.cwd(), model: this.model, choices: [] }; this.note = ""; this.formStep(0); }
+    else if (data === "n") { this.form = { step: 0, name: "", cwd: "", model: this.model, choices: [] }; this.note = ""; this.formStep(0); }
     this.setScreen();
     this.tui.requestRender();
   }
