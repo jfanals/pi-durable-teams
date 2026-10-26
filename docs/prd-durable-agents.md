@@ -253,6 +253,16 @@ committing. Ask before pushing.
 - A new agent's model defaults to `config.json` (see design 1).
 - ← on an empty editor returns from chat to the list.
 
+## App decisions (2026-10-26, after the first hand-off)
+
+- Chat is full screen at every width: no agent list beside it. ← on an empty editor goes back
+  (sub-agent chat → its parent's chat → list). ↓ on an empty editor opens the sub-agent panel
+  under the chat, as the Pi extension's team panel does; Enter opens a sub-agent.
+- `r` renames a hosted agent (human only); the new name reaches the agent's prompt.
+- Agents never move to another folder.
+- New-agent cwd uses a directory picker: ranger-style columns (parent, current, preview) when
+  the terminal is wide enough, one column otherwise; recent agent folders first.
+
 ## Resolved questions
 
 - Agents cannot see or message other agents' sub-agents; the human can reach any agent.
