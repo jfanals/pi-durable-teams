@@ -1,3 +1,4 @@
+import { selectableModels } from "./model-choices.ts";
 import { randomUUID } from "node:crypto";
 import { realpath, mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -300,7 +301,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
   }
   /** A model, thinking level and context limit; undefined for the `unset` row, null when cancelled. */
   async function chooseModel(ctx: ExtensionCommandContext, settings: SettingsManager, unset?: string): Promise<WorkerModel | undefined | null> {
-    const models = ctx.scopedModels.length ? ctx.scopedModels.map(s => s.model) : ctx.modelRegistry.getAvailable();
+    const models = selectableModels(ctx.scopedModels, () => ctx.modelRegistry.getAvailable());
     if (!models.length) { ctx.ui.notify("No models available; log in or configure models first", "error"); return null; }
     const names = [...(unset ? [unset] : []), ...models.map(m => `${m.provider}/${m.id}`)];
     const picked = names.indexOf(await ctx.ui.select("Worker model", names) ?? "");

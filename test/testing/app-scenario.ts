@@ -16,7 +16,7 @@ import { VirtualTerminal } from "./virtual-terminal.ts";
 
 export async function appScenario(width: number, height: number, print?: (name: string, frame: string) => void) {
   const directory = await mkdtemp(join(tmpdir(), "agents-app-"));
-  const fake = fauxProvider({ models: [{ id: "faux-1" }], tokensPerSecond: 1000 });
+  const fake = fauxProvider({ models: [{ id: "faux-1", reasoning: true }, { id: "faux-2", reasoning: true }], tokensPerSecond: 1000 });
   fake.setResponses(Array.from({ length: 100 }, () => request => {
     const last = request.messages.findLast(message => message.role !== "system");
     const text = JSON.stringify(last);
@@ -61,10 +61,23 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[6~");
 
     await key("\x1b[D"); await wait("n new");
-    await key("n"); await wait("New agent"); await key("gamma"); await key("\r"); await key("\r");
-    await key("\r"); await key("\r");
-    const created = await wait("gamma"); print?.("created", created);
-    assert.ok((await source.list()).some(agent => agent.name === "gamma"));
+    await key("n"); await wait("New agent");
+    await key("main"); const invalid = await wait("Use a unique");
+    await key("\r"); assert.match(await frame(), /Name/); print?.("form invalid name", invalid);
+    await key("\x15"); await key("alpha"); await key("\r"); await wait("Name already exists");
+    await key("\x15"); await key("gamma"); await key("\r");
+    const cwd = await wait("Working directory"); print?.("form cwd", cwd);
+    await key("\x1b"); await wait("Name"); await key("\r");
+    await key("\x15"); await key(join(directory, "missing")); await key("\r"); await wait("must be an existing directory");
+    await key("\x15"); await key(directory); await key("\r");
+    const picker = await wait("type to filter"); print?.("form model", picker);
+    await key("faux-2"); assert.doesNotMatch(await frame(), /faux\/faux-1/);
+    await key("\x15"); await key("\x1b[B"); await key("\r");
+    const thinking = await wait("Thinking ·"); print?.("form thinking", thinking);
+    await key("\x1b[B"); await key("\r");
+    const created = await wait("n new"); print?.("created", created);
+    const gamma = (await source.list()).find(agent => agent.name === "gamma");
+    assert.ok(gamma); assert.equal(gamma.model, "faux-2"); assert.equal(gamma.thinking, "high");
     const lead = (await source.list())[0]!;
     await source.send(lead.id, "DELEGATE");
     await until(async () => (await source.list())[0]!.children.length > 0);

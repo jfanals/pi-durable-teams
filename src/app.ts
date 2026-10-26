@@ -1,4 +1,7 @@
-import { Editor, HStack, Key, matchesKey, truncateToWidth, type Component, type Focusable, type TuiAltScreen } from "@earendil-works/pi-tui";
+import { statSync } from "node:fs";
+import { agentNameError } from "./agent-name.ts";
+import type { ModelChoice } from "./model-choices.ts";
+import { Editor, HStack, Key, SelectList, matchesKey, truncateToWidth, type Component, type Focusable, type TuiAltScreen } from "@earendil-works/pi-tui";
 import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { type WorkerModel } from "./config.ts";
 import type { AgentSummary } from "./protocol.ts";
@@ -11,14 +14,15 @@ export class AgentsApp implements Component, Focusable {
   get focused() { return this.hasFocus; }
   set focused(value: boolean) { this.hasFocus = value; this.updateFocus(); }
   private updateFocus() {
-    this.editor.focused = this.hasFocus && !!this.form;
+    this.editor.focused = this.hasFocus && !!this.form && this.form.step !== 3;
     if (this.view) this.view.focused = this.hasFocus && !this.form && !this.confirming;
   }
   private source: HostSource; private tui: TuiAltScreen; private theme: Theme;
   private life = new AbortController(); private agents: AgentSummary[] = [];
   private selected = 0; private view?: ChatView;
   private note = "Connecting…"; private editor: Editor;
-  private form?: { step: number; name: string; cwd: string; model?: WorkerModel };
+  private form?: { step: number; name: string; cwd: string; model?: WorkerModel; choices: ModelChoice[]; error?: string };
+  private picker?: SelectList;
   private confirming?: AgentSummary;
   private ticker?: ReturnType<typeof setInterval>;
   private frame = 0;
@@ -29,6 +33,11 @@ export class AgentsApp implements Component, Focusable {
     this.source = source; this.tui = tui; this.theme = theme;
     this.editor = new Editor(tui, { borderColor: text => theme.fg("accent", text), selectList: getSelectListTheme() });
     this.editor.onSubmit = text => void this.advance(text);
+    this.editor.onChange = text => {
+      if (this.form?.step === 0) this.form.error = this.nameError(text.trim());
+      else if (this.form?.step === 2) this.picker?.setFilter(text);
+      else if (this.form) this.form.error = undefined;
+    };
     this.model = options.agentModel; this.exit = options.exit ?? (() => {});
     this.removeInput = tui.addInputListener(data => {
       if (data !== "\x03") return;
@@ -83,19 +92,55 @@ export class AgentsApp implements Component, Focusable {
       back: () => { this.view?.dispose(); this.view = undefined; this.setScreen(); this.tui.requestRender(); },
     }, () => this.note); this.setScreen(); this.tui.requestRender();
   }
+  private nameError(name: string) {
+    return agentNameError(name) ?? (this.agents.some(agent => agent.hosted && agent.name === name)
+      ? "Name already exists; reuse the agent or choose a distinct name" : undefined);
+  }
+  private formStep(step: number) {
+    const form = this.form; if (!form) return;
+    form.step = step; form.error = undefined; this.picker = undefined;
+    this.editor.setText(step === 0 ? form.name : step === 1 ? form.cwd : "");
+    if (step === 2) {
+      this.picker = new SelectList(form.choices.map(model => ({ value: `${model.provider}/${model.modelId}`, label: `${model.provider}/${model.modelId}`, description: model.name })), 8, getSelectListTheme());
+      const index = form.choices.findIndex(model => model.provider === form.model?.provider && model.modelId === form.model?.modelId);
+      this.picker.setSelectedIndex(Math.max(0, index));
+      this.picker.onSelect = item => {
+        const model = form.choices.find(model => `${model.provider}/${model.modelId}` === item.value)!;
+        form.model = { provider: model.provider, modelId: model.modelId, thinking: form.model?.thinking };
+        this.formStep(3); this.tui.requestRender();
+      };
+    } else if (step === 3) {
+      const levels = form.choices.find(model => model.provider === form.model?.provider && model.modelId === form.model?.modelId)!.thinkingLevels;
+      this.picker = new SelectList(levels.map(level => ({ value: level, label: level })), 8, getSelectListTheme());
+      const preferred = form.model?.thinking;
+      this.picker.setSelectedIndex(Math.max(0, levels.indexOf(preferred && levels.includes(preferred) ? preferred : levels.includes("medium") ? "medium" : levels[0]!)));
+      this.picker.onSelect = item => void this.advance(item.value);
+    }
+    this.updateFocus();
+  }
   private async advance(text: string) {
     const form = this.form; if (!form) return;
-    if (form.step === 0) { if (!text.trim()) return; form.name = text.trim(); this.editor.setText(form.cwd); }
-    if (form.step === 1) { form.cwd = text.trim() || process.cwd(); this.editor.setText(form.model ? `${form.model.provider}/${form.model.modelId}` : ""); }
-    if (form.step === 2) {
-      const slash = text.indexOf("/"); if (slash < 1 || !text.slice(slash + 1).trim()) { this.note = "Choose provider/model-id"; this.tui.requestRender(); return; }
-      form.model = { ...form.model, provider: text.slice(0, slash), modelId: text.slice(slash + 1) }; this.editor.setText(form.model.thinking ?? "off");
+    if (form.step === 0) {
+      form.error = this.nameError(text.trim());
+      if (!form.error) { form.name = text.trim(); this.formStep(1); }
+    } else if (form.step === 1) {
+      form.cwd = text.trim();
+      try {
+        if (!statSync(form.cwd).isDirectory()) throw new Error();
+      } catch { form.error = "Working directory must be an existing directory"; this.tui.requestRender(); return; }
+      try {
+        form.choices = await this.source.models(this.life.signal);
+        if (this.form !== form) return;
+        if (!form.choices.length) throw new Error("No models available; log in or configure models first");
+        this.formStep(2);
+      } catch (error) { form.error = String(error); }
+    } else if (form.step === 3) {
+      form.model = { ...form.model!, thinking: text as WorkerModel["thinking"] };
+      try {
+        await this.source.newAgent({ name: form.name, cwd: form.cwd, model: form.model, thinking: form.model.thinking });
+        this.form = undefined; this.setScreen(); this.note = "";
+      } catch (error) { form.error = String(error); }
     }
-    if (form.step === 3) {
-      if (!["off", "minimal", "low", "medium", "high", "xhigh"].includes(text)) { this.note = "Thinking: off, minimal, low, medium, high, xhigh"; this.tui.requestRender(); return; }
-      try { await this.source.newAgent({ name: form.name, cwd: form.cwd, model: form.model, thinking: text as WorkerModel["thinking"] }); this.form = undefined; this.setScreen(); this.note = ""; }
-      catch (error) { this.fail(error); return; }
-    } else form.step++;
     this.tui.requestRender();
   }
   private list(width: number): string[] {
@@ -115,20 +160,32 @@ export class AgentsApp implements Component, Focusable {
   }
   render(width: number): string[] {
     if (this.form) {
-      return ["New agent · esc cancel", "", ["Name", "Working directory", "Model (provider/model-id)", "Thinking"][this.form.step]!, ...this.editor.render(width), this.note].map(line => truncateToWidth(line, width));
+      const form = this.form;
+      const breadcrumb = [form.step > 0 ? form.name : "", form.step > 1 ? form.cwd : "", form.step > 2 ? `${form.model!.provider}/${form.model!.modelId}` : ""].filter(Boolean).join(" › ");
+      return ["New agent · esc back · esc on name cancels", breadcrumb, ["Name", "Working directory", "Model · type to filter · ↑↓ select · enter choose", "Thinking · ↑↓ select · enter create"][form.step]!,
+        ...(form.step < 3 ? this.editor.render(width) : []), ...(this.picker?.render(width) ?? []), form.error ? this.theme.fg("error", form.error) : ""].map(line => truncateToWidth(line, width));
     }
     if (this.confirming) return [`Disable ${this.confirming.name}? y / n`].map(line => truncateToWidth(line, width));
     return this.view ? this.view.render(width).map(line => truncateToWidth(line, width)) : this.list(width);
   }
   handleInput(data: string) {
-    if (this.form) { if (matchesKey(data, Key.escape)) this.form = undefined; else this.editor.handleInput(data); }
+    if (this.form) {
+      if (matchesKey(data, Key.escape)) {
+        if (this.form.step === 0) this.form = undefined;
+        else {
+          if (this.form.step === 1) this.form.cwd = this.editor.getText();
+          this.formStep(this.form.step - 1);
+        }
+      } else if (this.picker && (this.form.step === 3 || matchesKey(data, Key.up) || matchesKey(data, Key.down) || matchesKey(data, Key.enter))) this.picker.handleInput(data);
+      else this.editor.handleInput(data);
+    }
     else if (this.confirming) { const target = this.confirming; this.confirming = undefined; if (data === "y") void this.source.disable(target.id).catch(error => this.fail(error)); }
     else if (this.view) this.view.handleInput(data);
     else if (matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
     else if (matchesKey(data, Key.down)) this.selected = Math.min(this.rows().length - 1, this.selected + 1);
     else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) { const row = this.rows()[this.selected]; if (row) this.open(row.agent); }
     else if (data === "x") this.confirming = this.rows()[this.selected]?.agent;
-    else if (data === "n") { this.form = { step: 0, name: "", cwd: process.cwd(), model: this.model }; this.note = ""; this.editor.setText(""); }
+    else if (data === "n") { this.form = { step: 0, name: "", cwd: process.cwd(), model: this.model, choices: [] }; this.note = ""; this.formStep(0); }
     this.setScreen();
     this.tui.requestRender();
   }

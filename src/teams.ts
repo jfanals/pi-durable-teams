@@ -10,6 +10,8 @@ import {
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { WorkerModel } from "./config.ts";
+import { agentNameError } from "./agent-name.ts";
+import type { ModelChoice } from "./model-choices.ts";
 import { liveStatus } from "./ui.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { ActionSchema, TOOL_DESCRIPTION, TOOL_NAME, type Action, type Actor, type Delivery, type Mode } from "./protocol.ts";
@@ -74,6 +76,8 @@ type ReporterResult = { answer?: EntryId; status: string };
 
 export type TeamsOptions = Omit<HarnessOptions, "registry"> & {
   registry?: ReturnType<typeof createRegistry>;
+  /** Models a new agent may use: Pi's scoped models, else all available. Tests fall back to `models`. */
+  availableModels?: () => Promise<ModelChoice[]>;
   validateModel?: (model: ModelRef) => void;
   /** Top-level default, read on creation; missing requires an explicit model. */
   agentModel?: () => Promise<WorkerModel | undefined>;
@@ -307,7 +311,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     const parent = actor.id === human.id ? undefined : actor.id;
     if (creating) {
       if (!parent && !args.cwd) throw new Error("Choose a cwd for the top-level agent");
-      if (!args.name || !/^[a-zA-Z0-9][\w.-]{0,63}$/.test(args.name) || ["main", "human", "constructor", "prototype", "__proto__"].includes(args.name)) throw new Error("Use a unique 1–64 character name: letters/digits, dash, underscore, dot; not main");
+      const nameError = agentNameError(args.name ?? ""); if (nameError) throw new Error(nameError);
       cwd = await realpath(args.cwd ?? own?.cwd ?? ".");
       if (!(await stat(cwd)).isDirectory()) throw new Error("cwd must be a directory");
       prepared = await options.workerAgent?.(cwd) ?? {};
@@ -318,7 +322,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         try { const agent = view.value.docs["pi.agent"] as AgentChange; if (agent?.model) inherited = { ...agent.model, thinking: agent.thinkingLevel ?? undefined }; }
         finally { view.dispose(); }
       }
-      const configured = parent ? await options.workerModel?.(args.name) : (args.model ? { ...args.model, thinking: args.thinking } : await options.agentModel?.());
+      const configured = parent ? await options.workerModel?.(args.name!) : (args.model ? { ...args.model, thinking: args.thinking } : await options.agentModel?.());
       const model = configured ?? inherited;
       if (!model) throw new Error("Choose a top-level agent model (agentModel is not configured)");
       options.validateModel?.(model);

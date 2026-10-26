@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Value } from "typebox/value";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { ActionSchema, type Action } from "./protocol.ts";
+import { modelChoices } from "./model-choices.ts";
 import { human, openTeams, type TeamsOptions } from "./teams.ts";
 
 const HumanActionSchema = Type.Object({
@@ -57,6 +58,10 @@ export async function startHost(directory: string, socket: string, options: Team
       const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
       if (pathname === "/register") return reply(res, 200, await service.register(body));
       // Local human clients are authenticated by the private socket directory.
+      if (pathname === "/agents/models") {
+        const all = async () => modelChoices(await (typeof options.models === "function" ? options.models() : options.models).getAvailable());
+        return reply(res, 200, await (options.availableModels ?? all)());
+      }
       if (pathname === "/agents") return reply(res, 200, await service.agents(id => streams.has(id)));
       if (pathname === "/agents/roster") {
         res.writeHead(200, { "content-type": "application/x-ndjson" }); res.flushHeaders();

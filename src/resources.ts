@@ -4,10 +4,11 @@ import { join } from "node:path";
 import { defineExtension, section } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { DefaultResourceLoader, discoverAndLoadExtensions, formatSkillsForPrompt, ModelRuntime, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader, discoverAndLoadExtensions, formatSkillsForPrompt, ModelRuntime, SettingsManager, resolveModelScopeWithDiagnostics } from "@earendil-works/pi-coding-agent";
 import { Teams, type TeamsOptions } from "./teams.ts";
 import { readConfig, workerModelFor } from "./config.ts";
 import { withContextLimits } from "./limits.ts";
+import { modelChoices, selectableModels } from "./model-choices.ts";
 import { openWebTools } from "./web.ts";
 import { agentDir, stateDir } from "./paths.ts";
 export { socketPath, stateDir } from "./paths.ts";
@@ -66,6 +67,13 @@ export async function productionOptions(): Promise<TeamsOptions> {
   return {
     // Pi's per-model compaction settings apply to workers too; re-read on every spawn like worker models.
     models: withContextLimits(runtime, settings), registry,
+    async availableModels() {
+      await settings.reload();
+      const patterns = settings.getEnabledModels() ?? [];
+      const scoped = patterns.length ? (await resolveModelScopeWithDiagnostics(patterns, runtime)).scopedModels : [];
+      const available = await runtime.getAvailable();
+      return modelChoices(selectableModels(scoped, () => available));
+    },
     agentModel: async () => (await readConfig()).agentModel,
     workerModel: async name => { await settings.reload(); return workerModelFor(await readConfig(), name); },
     modelInfo(ref) {

@@ -34,6 +34,10 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
   let roster: AgentSummary[] = []; const frames: AgentSummary[][] = [];
   const identity = { sessionId: "external", secret: "s".repeat(36) };
   try {
+    assert.deepEqual((await source.models()).map(model => ({ provider: model.provider, modelId: model.modelId, thinkingLevels: model.thinkingLevels })), [
+      { provider: "faux", modelId: "faux-1", thinkingLevels: ["off"] },
+      { provider: "faux", modelId: "faux-2", thinkingLevels: ["off"] },
+    ]);
     observe(source.roster(life.signal, rows => { roster = rows; frames.push(rows); }));
     await until(() => frames.length > 0);
     const created = await source.newAgent({ name: "lead", cwd: directory }, { requestId: "create" });

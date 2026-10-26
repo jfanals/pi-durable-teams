@@ -1,3 +1,4 @@
+import type { ModelChoice } from "./model-choices.ts";
 import { randomUUID } from "node:crypto";
 import type { ModelRef } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -9,6 +10,7 @@ export type TranscriptPage = { entries: TranscriptEntry[]; next?: string };
 export type RequestOptions = { requestId?: string; signal?: AbortSignal };
 export type MutationResult = { id?: string; taskId?: number; workerId?: string; delivery?: string; aborted?: string[]; stopped?: string[]; model?: ModelRef; thinking?: ModelThinkingLevel };
 export interface HostSource {
+  models(signal?: AbortSignal): Promise<ModelChoice[]>;
   list(signal?: AbortSignal): Promise<AgentSummary[]>;
   roster(signal: AbortSignal, receive: (agents: AgentSummary[]) => void | Promise<void>): Promise<void>;
   page(target: string, cursor?: string, signal?: AbortSignal): Promise<TranscriptPage>;
@@ -24,6 +26,7 @@ export interface HostSource {
 export class SocketHostSource implements HostSource {
   readonly client: Client;
   constructor(client = new Client()) { this.client = client; }
+  models(signal?: AbortSignal) { return this.client.call<ModelChoice[]>("agents/models", {}, signal); }
   list(signal?: AbortSignal) { return this.client.call<AgentSummary[]>("agents", {}, signal); }
   async roster(signal: AbortSignal, receive: (agents: AgentSummary[]) => void | Promise<void>) {
     await this.client.ensureHost(signal);

@@ -313,8 +313,10 @@ theme; the app uses public TUI keybindings, so your `keybindings.json` is not
 loaded yet.
 
 - List: **↑↓** select, **Enter/→** open, **n** create, **x** disable (confirm with **y**).
-- New agent: enter name, cwd, `provider/model-id`, then thinking level. Model and
-  thinking default to `config.json`'s `agentModel`; without it, choose a model explicitly.
+- New agent: enter a unique name and existing working directory (defaults to the app's cwd).
+  Type to filter host models; **↑↓/Enter** pick a model and supported thinking level.
+  Model defaults to `config.json`'s `agentModel`; thinking uses its level, else medium if supported.
+  **Esc** goes back one step; on the name step it cancels. Validation errors stay inline.
 - Chat: **Enter** send/steer, **Alt+Enter** queue follow-up, **Esc** stop current run,
   **←** on an empty editor return, **PgUp/PgDn** scroll.
 - **Ctrl+C** exits. External Pi sessions show their latest publication, not a transcript.
