@@ -162,6 +162,10 @@ export async function startHost(directory: string, socket: string, options: Team
         if (body.instructions !== undefined && typeof body.instructions !== "string") throw new Error("instructions must be a string");
         return reply(res, 200, await service.compact(body.target, body.instructions));
       }
+      if (pathname === "/agents/tree") {
+        if (typeof body.target !== "string" || (body.entryId !== undefined && typeof body.entryId !== "string")) throw new Error("Expected target and optional entryId");
+        return reply(res, 200, await service.tree(body.target, body.requestId ?? randomUUID(), body.entryId));
+      }
       if (pathname === "/agents/inputs") {
         if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
         if (typeof body.target !== "string" || !body.target) throw new Error("target is required");

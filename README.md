@@ -18,6 +18,7 @@ is the only human-route authentication: any process running as the user (includi
   expose only known identity, cwd, enabled, connection and latest publication data.
 - `POST /agents/new`, `/agents/send`, `/agents/model`: create, message, change model.
 - `POST /agents/stop`: abort the current run; `/agents/disable`: disable the subtree.
+- `POST /agents/tree`: `{target}` reads the session tree; `{target, entryId, requestId}` navigates it while idle with an empty inbox.
 - `POST /agents/page`: `{target, cursor?}` transcript page; external sessions have no transcript.
 - `POST /agents/watch`: `{target}` NDJSON snapshots/events for any hosted agent.
 - `POST /agents/roster`: NDJSON full-list frames, initially and on status changes.
@@ -329,6 +330,11 @@ loaded yet.
 - Chat: **Enter** send/steer, **Alt+Enter** queue follow-up, **Esc** stop current run,
   **↓/Enter** on an empty editor select/open a sub-agent, **←** goes back
   to its parent or the list, **PgUp/PgDn** scroll.
+- **/tree** opens Pi's session-tree selector, as does **Esc Esc** within 500 ms while idle with an empty editor
+  (honours Pi's `doubleEscapeAction` setting). Selecting a user message restores its text in the editor;
+  selecting another message continues from there. The agent keeps its ID, name and children. Previous branches
+  remain navigable and usage totals include their spend. Navigation creates a Durable fork behind the same agent
+  identity; it does not undo files or tool side effects. Branch summaries are not supported.
 - **Ctrl+C** exits.
 
 Remove is human-only (terminal **d**, web **⋮ → Remove**): it stops the agent and
@@ -362,7 +368,7 @@ Treat the pairing URL as a secret: the API requires its token even on your tailn
 Open the pairing URL on your phone in Chrome to use the web app. In Chrome's menu,
 choose **Install app** (sometimes under **Add to Home screen**) to install Pi Agents.
 Launch the installed app for a standalone window without an address bar. The app keeps the token on that
-phone and removes it from the address bar. You can read chats, send or steer messages,
+phone and removes it from the address bar. You can read chats, use `/tree` or **Rewind here** on a message, send or steer messages,
 stop agents, and create agents with a folder, model and thinking level. Creation opens
 on review using the most recent top-level agent’s folder; if none exists, choose a
 folder first. The browser never silently uses the host process’s working directory.

@@ -63,6 +63,7 @@ export function transcript(items: ChatItem[]) {
       if (item.kind === "input")
         return `<article class="input">
 <small>${escape(item.from)}${item.report ? " · report" : ""}</small>
+<button data-rewind="${escape(item.id)}">Rewind here</button>
 <div class="markdown">${markdown(item.text, true)}</div>
 </article>`;
       const parts = item.parts
@@ -91,7 +92,7 @@ export function transcript(items: ChatItem[]) {
             .join(" · ")
         : "";
       const error = item.error ? `<p class="error">${escape(item.error)}</p>` : "";
-      return `<article class="reply">${parts}${error}
+      return `<article class="reply"><button data-rewind="${escape(item.id)}">Rewind here</button>${parts}${error}
 ${turn ? `<small class="stamp">${stamp}</small>` : ""}</article>`;
     })
     .join("");

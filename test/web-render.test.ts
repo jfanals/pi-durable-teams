@@ -10,9 +10,11 @@ test("web markdown escapes HTML, drops unsafe URLs and images, and keeps HTTP li
   assert.match(markdown('[safe](http://example.com)'), /href="http:\/\/example.com"/);
   const html = transcript([{ id: "1", kind: "input", from: "Lead", text: "**bold**\nnext" }]);
   assert.match(html, /<strong>bold<\/strong><br>/);
+  assert.match(html, /data-rewind="1"/);
   const thoughts = transcript([{ id: "2", kind: "reply", parts: [
     { type: "thinking", text: "one" }, { type: "thinking", text: "two" },
   ] }]);
+  assert.match(thoughts, /data-rewind="2"/);
   assert.match(thoughts, /data-thinking="2-0"/);
   assert.match(thoughts, /data-thinking="2-1"/);
 });

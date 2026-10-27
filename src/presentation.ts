@@ -71,3 +71,8 @@ export async function piCacheWarming(): Promise<{
 }> {
   return import(piModule("./core/cache-warmer.js"));
 }
+
+/** Pi's session-tree selector: keep its rendering, filtering, folding and navigation keys. */
+export async function piTreeSelector() {
+  return (await import(piModule("./modes/interactive/components/tree-selector.js"))).TreeSelectorComponent;
+}

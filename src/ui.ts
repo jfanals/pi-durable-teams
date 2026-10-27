@@ -2,12 +2,13 @@
 import { homedir } from "node:os";
 
 import { getMarkdownTheme, getSelectListTheme, keyText, ToolExecutionComponent, UserMessageSelectorComponent, type Theme, type ThemeBg } from "@earendil-works/pi-coding-agent";
-import { builtInRenderers, loadToolRenderers } from "./presentation.ts";
+import { builtInRenderers, loadToolRenderers, piTreeSelector } from "./presentation.ts";
 import {
   Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth,
   type Component, type DefaultTextStyle, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import { clean, firstLine, textOf, liveStatus, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, type WorkerStatus } from "./status.ts";
+import type { TreeResult } from "./source.ts";
 import type { ChatItem, Queued } from "./chat.ts";
 import type { Action, Delivery, Mode } from "./protocol.ts";
 
@@ -321,7 +322,7 @@ export function renderTranscript(items: ChatItem[], worker: string, width: numbe
 }
 
 export type WorkerSource = {
-  page(cursor?: string): Promise<{ items: ChatItem[]; queued?: Queued[]; next?: string }>;
+  page(cursor?: string): Promise<{ conversationId?: string; items: ChatItem[]; queued?: Queued[]; next?: string }>;
   status(): Promise<WorkerStatus>;
   watch(signal: AbortSignal, onFrame: () => void): Promise<void>;
 };
@@ -333,11 +334,14 @@ export type ChatActions = {
   /** `/fork` and `/clone`, top-level agents only: the human's messages, and a fork before one of them or of everything. */
   inputs?(): Promise<{ id: string; text: string }[]>;
   fork?(before?: string, draft?: string): Promise<unknown>;
+  tree?(entryId?: string): Promise<TreeResult>;
+  doubleEscapeAction?: "tree" | "fork" | "none";
 };
 
 /** Shared committed transcript, loading, watch and paging for both shells. */
 class Transcript implements Component {
   entries = new Map<string, ChatItem>();
+  private conversationId?: string;
   next?: string;
   private olderLoaded = false;
   status?: WorkerStatus;
@@ -398,6 +402,10 @@ class Transcript implements Component {
         try {
           const [page, status] = await Promise.all([this.source.page(), this.source.status()]);
           if (this.life.signal.aborted) return;
+          if (page.conversationId !== this.conversationId) {
+            this.entries.clear(); this.olderLoaded = false; this.next = undefined; this.offset = 0;
+            this.conversationId = page.conversationId;
+          }
           for (const entry of page.items) this.entries.set(String(entry.id), entry);
           this.queued = page.queued ?? [];
           if (!this.olderLoaded) this.next = page.next;
@@ -543,6 +551,7 @@ export class ChatView implements Component, Focusable {
   private actions: ChatActions;
   private panel?: TeamPanel;
   private picker?: { component: Component; input(data: string): void };
+  private lastEscapeTime = 0;
   readonly layout: VStack;
   constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }, branch: () => string = () => "") {
     this.actions = actions;
@@ -602,6 +611,25 @@ export class ChatView implements Component, Focusable {
     this.picker = { component: selector, input: data => selector.getMessageList().handleInput(data) };
     this.transcript.changed();
   }
+  /** Reuse Pi's actual tree component; the host supplies the session projection. No branch summary. */
+  private async showTreePicker() {
+    try {
+      const tree = await this.actions.tree!();
+      if (!tree.nodes.length) throw new Error("No entries in session");
+      const Selector = await piTreeSelector();
+      const close = () => { this.picker = undefined; this.transcript.changed(); };
+      const selector = new Selector(tree.nodes, tree.leafId, this.transcript.tui.terminal.rows, (id: string) => {
+        close();
+        if (id === tree.leafId) return;
+        this.run("Navigating tree…", this.actions.tree!(id), result => {
+          if (result.editorText !== undefined && !this.editor.getText().trim()) this.editor.setText(result.editorText);
+          return "Navigated to selected point";
+        });
+      }, close);
+      this.picker = { component: selector, input: data => selector.handleInput(data) };
+      this.transcript.changed();
+    } catch (error) { this.transcript.note = String(error); this.transcript.changed(); }
+  }
   setChildren(workers: WorkerStatus[]) { this.panel?.setWorkers(workers); }
   focusChild(target: string) { this.panel?.enter(this.editor, target); }
   private submit(text: string, mode: Mode) {
@@ -613,6 +641,9 @@ export class ChatView implements Component, Focusable {
         result.outcome === "compacted" ? "Context compacted" : result.outcome === "nothing" ? "Nothing to compact yet"
           : result.outcome === "running" ? "Still compacting in the background" : `Compaction failed: ${result.error}`);
       return;
+    }
+    if (this.actions.tree && command === "/tree") {
+      this.editor.setText(""); void this.showTreePicker(); return;
     }
     if (this.actions.fork && (command === "/fork" || command === "/clone")) {
       this.editor.setText("");
@@ -632,7 +663,21 @@ export class ChatView implements Component, Focusable {
     if (matchesKey(data, Key.left) && !this.editor.getText()) return this.actions.back();
     if (this.panel?.focused) { this.panel.handleInput(data); return; }
     if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasWorkers) { this.panel.enter(this.editor); return; }
-    if (matchesKey(data, Key.escape)) { void this.actions.stop().catch(error => { this.transcript.note = String(error); this.transcript.changed(); }); return; }
+    if (matchesKey(data, Key.escape)) {
+      if (this.transcript.status?.running) {
+        this.lastEscapeTime = 0;
+        void this.actions.stop().catch(error => { this.transcript.note = String(error); this.transcript.changed(); });
+      } else if (!this.editor.getText().trim() && this.actions.doubleEscapeAction !== "none") {
+        const now = Date.now();
+        if (now - this.lastEscapeTime < 500) {
+          this.lastEscapeTime = 0;
+          if (this.actions.doubleEscapeAction === "fork") { if (this.actions.fork) void this.showForkPicker(); }
+          else if (this.actions.tree) void this.showTreePicker();
+        }
+        else this.lastEscapeTime = now;
+      }
+      return;
+    }
     // Pi's follow-up key (option+enter on a Mac, or the user's own binding in Pi's keybindings.json).
     if (getKeybindings().matches(data, "app.message.followUp")) return this.submit(this.editor.getExpandedText(), "followUp");
     if (this.transcript.toggle(data)) return;

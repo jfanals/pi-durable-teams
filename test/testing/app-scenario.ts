@@ -76,6 +76,15 @@ export async function appScenario(width: number, height: number, print?: (name: 
     assert.notEqual(await frame(), bottom);
     await key("\x1b[6~");
 
+    // Pi's /tree and idle double-Esc use Pi's own selector; selecting a user message restores its editor text.
+    await key("/tree"); await key("\r"); await wait("Session Tree");
+    await key("\x1b");
+    await key("\x1b"); await key("\x1b"); await wait("Session Tree");
+    await key("\x1b[A"); await key("\r");
+    await until(async () => (await source.inputs(alphaId)).at(-1)?.text !== "SCROLL");
+    assert.match(await frame(), /SCROLL/);
+    await key("\r"); await wait("Transcript line 80");
+
     await key("\x1b[D"); await wait("n new");
     await key("n");
     const review = await wait("Review ·"); print?.("form review", review);

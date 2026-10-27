@@ -33,6 +33,7 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
   const fake = fauxProvider({ tokensPerSecond: 100, models: [{ id: "faux-1" }, { id: "faux-2" }] });
   fake.setResponses(Array.from({ length: 100 }, () => req => {
     const last = req.messages.findLast(m => m.role !== "system");
+    if (last?.role === "user" && JSON.stringify(last).includes("LIST-TEAM")) return fauxAssistantMessage(fauxToolCall("team", { action: "list" }), { stopReason: "toolUse" });
     if (last?.role === "user" && JSON.stringify(last).includes("DELEGATE")) return fauxAssistantMessage(fauxToolCall("team", { action: "spawn", name: "reader", message: "Read and report" }), { stopReason: "toolUse" });
     return fauxAssistantMessage("An answer from the faux agent. ".repeat(8));
   }));
@@ -71,6 +72,13 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
     const child = roster[0]!.children[0]!;
     await source.send(child.id, "Human input", "steer");
     await until(async () => JSON.stringify(await source.page(child.id)).includes("Human input"));
+    await until(async () => !(await source.list())[0]?.children[0]?.running);
+    const beforeRewind = await source.inputs(child.id);
+    await source.tree(child.id, beforeRewind.find(input => input.text === "Human input")!.id);
+    assert.equal((await source.list())[0]!.children[0]!.id, child.id);
+    await source.send(child.id, "LIST-TEAM");
+    await until(async () => (await source.page(child.id)).items.some(item => item.kind === "result" && item.ok));
+    assert.ok(!(await source.inputs(child.id)).some(input => input.text === "Human input"));
     const page = await source.page(target);
     assert.ok(page.items.some(item => item.kind === "input"));
     const called = page.items.find(item => item.kind === "reply" && item.parts.some(part => part.type === "tool"));
@@ -450,6 +458,7 @@ test("queued messages, /compact, /fork, /clone and Pi's cache-miss notices", { t
     // Pi shows waiting input above its editor; the page carries it, oldest first, by mode.
     await source.send(agent.id!, "Steer this way", "steer");
     await source.send(agent.id!, "Then this\nsecond line", "followUp");
+    await assert.rejects(source.tree(agent.id!, (await source.inputs(agent.id!))[0]!.id), /idle.*inbox/);
     const queued = (await source.page(agent.id!)).queued;
     assert.deepEqual(queued, [{ mode: "steer", text: "Steer this way" }, { mode: "followUp", text: "Then this" }]);
     await source.stop(agent.id!);
@@ -476,6 +485,37 @@ test("queued messages, /compact, /fork, /clone and Pi's cache-miss notices", { t
     assert.equal(row(forked.id).cwd, row(agent.id).cwd);
     assert.deepEqual((await source.inputs(forked.id!)).map(input => input.text), ["Start"]);
     assert.deepEqual((await source.inputs(cloned.id!)).map(input => input.text), ["Start", "Second request"]);
+    // /tree switches conversation behind the same identity, retaining all old branch entries.
+    const originalPage = await source.page(agent.id!);
+    const tree = await source.tree(agent.id!);
+    assert.ok(JSON.stringify(tree.nodes).includes("Second request"));
+    await source.tree(agent.id!, tree.leafId!);
+    assert.equal((await source.page(agent.id!)).conversationId, originalPage.conversationId, "current leaf is a no-op");
+    const spend = (await source.list()).find(row => row.id === agent.id)!.cost;
+    const rewound = await source.tree(agent.id!, inputs[1]!.id, { requestId: "rewind" });
+    assert.equal(rewound.id, agent.id);
+    assert.equal(rewound.editorText, "Second request");
+    assert.deepEqual(await source.tree(agent.id!, inputs[1]!.id, { requestId: "rewind" }), rewound);
+    const shortened = await source.page(agent.id!);
+    assert.notEqual(shortened.conversationId, originalPage.conversationId);
+    assert.ok(!JSON.stringify(shortened).includes("Second request"));
+    assert.deepEqual((await source.inputs(agent.id!)).map(input => input.text), ["Start"]);
+    assert.equal((await source.list()).find(row => row.id === agent.id)!.cost, spend);
+    await source.send(agent.id!, "Replacement request");
+    await until(async () => !(await source.list()).find(row => row.id === agent.id)?.running);
+    assert.deepEqual((await source.inputs(agent.id!)).map(input => input.text), ["Start", "Replacement request"]);
+    assert.ok(JSON.stringify((await source.tree(agent.id!)).nodes).includes("Second request"));
+    // An abandoned branch is navigable, including a non-user node.
+    await source.tree(agent.id!, tree.leafId!);
+    assert.deepEqual((await source.inputs(agent.id!)).map(input => input.text), ["Start", "Second request"]);
+    // Root navigation empties the context without discarding configured tools/model/instructions.
+    await source.tree(agent.id!, inputs[0]!.id);
+    assert.deepEqual((await source.inputs(agent.id!)), []);
+    assert.equal((await source.list()).find(row => row.id === agent.id)!.model, "faux-1");
+    await source.send(agent.id!, "Fresh root request");
+    await until(async () => !(await source.list()).find(row => row.id === agent.id)?.running);
+    assert.deepEqual((await source.inputs(agent.id!)).map(input => input.text), ["Fresh root request"]);
+
   } finally { await host.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
