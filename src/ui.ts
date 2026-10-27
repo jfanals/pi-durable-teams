@@ -576,6 +576,11 @@ export class ChatView implements Component, Focusable {
   }
   /** Text for the editor, as Pi restores a forked message. */
   setDraft(text: string) { this.editor.setText(text); }
+  /** The markdown of every loaded message and answer, oldest first: what a terminal selection is copied from. */
+  markdown() {
+    return [...this.transcript.entries.values()].flatMap(item => item.kind === "input" ? [item.text]
+      : item.kind === "reply" ? item.parts.flatMap(part => part.type === "tool" ? [] : [part.text]) : []);
+  }
   /** Run a host request behind Pi's status spinner, then show its outcome as the footer note. */
   private run<T>(label: string, request: Promise<T>, done: (value: T) => string | undefined) {
     const t = this.transcript;

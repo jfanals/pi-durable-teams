@@ -1,4 +1,5 @@
 import { chatItems } from "../src/chat.ts";
+import { markdownForSelection } from "../src/copy.ts";
 import { liveStatus, type WorkerStatus } from "../src/status.ts";
 import assert from "node:assert/strict";
 import { after as cleanup, test } from "node:test";
@@ -8,8 +9,8 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { createRegistry, MemoryStorage } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { stripTerminalSequences, visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import { getMarkdownTheme, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import { Markdown, stripTerminalSequences, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { openTeams } from "../src/teams.ts";
 import { loadToolRenderers } from "../src/presentation.ts";
 import { renderDelivery, renderTeamResult, renderTranscript, TeamPanel, WorkerView, type ViewResult } from "../src/ui.ts";
@@ -208,4 +209,25 @@ test("a request crossing a page boundary retains its full turn stamp", () => {
   assert.deepEqual(page, full.filter(item => Number(item.id) >= 3));
   const reply = page.at(-1); assert.ok(reply?.kind === "reply");
   assert.deepEqual(reply.turn, { ms: 1500, tokens: 35, cost: 0.1 + 0.2 });
+});
+
+test("copying a terminal selection copies the markdown behind it, not the wrapped screen rows", () => {
+  initTheme("dark", false);
+  const code = "const answer = computeSomethingVeryLong(argumentNumberOne, argumentNumberTwo, three);";
+  const source = `Here is a paragraph that wraps across several lines in a narrow terminal.\n\n\`\`\`ts\n${code}\nif (answer) console.log(answer);\n\`\`\`\n\n- item one with **bold** text\n- item \`two\`\n\n| a | b |\n|---|---|\n| 1 | 2 |`;
+  const rows = new Markdown(source, 1, 0, getMarkdownTheme()).render(40).map(line => stripTerminalSequences(line).trimEnd());
+  const select = (from: string, to: string) => {
+    const a = rows.findIndex(row => row.includes(from)), b = rows.findLastIndex(row => row.includes(to));
+    return rows.slice(a, b + 1).join("\n");
+  };
+  const copy = (text: string) => markdownForSelection(text, ["An older message: answer", source]);
+  // Whole blocks come back as written: fences, list markers, emphasis, backticks and table pipes.
+  assert.equal(copy(select("```ts", "```")), "```ts\n" + code + "\nif (answer) console.log(answer);\n```");
+  assert.equal(copy(select("item one", "item two")), "- item one with **bold** text\n- item `two`");
+  assert.equal(copy(select("│ a", "│ 1")), "| a | b |\n|---|---|\n| 1 | 2 |");
+  // A wrapped paragraph loses the wrap breaks; a few words inside one row copy as they are.
+  assert.equal(copy(select("Here is", "terminal.")), "Here is a paragraph that wraps across several lines in a narrow terminal.");
+  assert.equal(copy("several lines"), "several lines");
+  // No single message holds it (a tool box, or across messages): the screen text as selected.
+  assert.equal(copy("╭─ bash ─╮\n│ ls -la │"), "╭─ bash ─╮\n│ ls -la │");
 });

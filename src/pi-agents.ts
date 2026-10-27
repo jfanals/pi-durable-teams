@@ -2,7 +2,7 @@
 import { pair } from "./remote.ts";
 import { stateDir } from "./paths.ts";
 import { ProcessTerminal, TuiAltScreen, setKeybindings } from "@earendil-works/pi-tui";
-import { initTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { copyToClipboard, initTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { piKeybindings, piPresentation, syncTerminalColors } from "./presentation.ts";
 import { AgentsApp } from "./app.ts";
 import { SocketHostSource } from "./source.ts";
@@ -17,7 +17,12 @@ const { theme } = await piPresentation();
 setKeybindings(await piKeybindings());
 const source = new SocketHostSource();
 await source.client.ensureHost();
-const tui = new TuiAltScreen(new ProcessTerminal());
+// Pi's clipboard path, given the selection's markdown instead of the wrapped screen rows.
+const tui = new TuiAltScreen(new ProcessTerminal(), undefined, undefined, {
+  copySelection: async text => {
+    try { await copyToClipboard(app.copyText(text)); return true; } catch (error) { return error instanceof Error ? error.message : String(error); }
+  },
+});
 const app = new AgentsApp(source, tui, theme, { exit: () => process.exit(0), cmux: true });
 tui.addChild(app); tui.setFocus(app);
 const close = () => { app.dispose(); tui.stop(); };

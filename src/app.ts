@@ -10,6 +10,7 @@ import type { AgentSummary } from "./protocol.ts";
 import { workerSource, type HostSource } from "./source.ts";
 import { ChatView, statusRow } from "./ui.ts";
 import { cmuxTab } from "./cmux.ts";
+import { markdownForSelection } from "./copy.ts";
 
 /** Screen-local selection and drafts only; all agent state comes from the host. */
 export class AgentsApp implements Component, Focusable {
@@ -349,5 +350,7 @@ export class AgentsApp implements Component, Focusable {
     this.tui.requestRender();
   }
   invalidate() { this.view?.invalidate(); this.editor.invalidate(); }
+  /** What copy-on-select puts on the clipboard: the markdown behind the selected text in the open chat. */
+  copyText(selected: string) { return markdownForSelection(selected, this.view?.markdown() ?? []); }
   dispose() { this.life.abort(); this.view?.dispose(); clearInterval(this.ticker); this.removeInput(); this.cmux?.dispose(); }
 }
