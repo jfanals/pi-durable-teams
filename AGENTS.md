@@ -6,12 +6,31 @@ web app (`src/web/`, served by the host) are views onto it. See README.md for th
 ## Two checkouts
 
 - `~/Desktop/src/pi-durable-teams` is LIVE (branch `stable`). The running host and Pi's extension
-  load from it. Do not edit it.
+  load from it. Never edit files there; it changes only through a release (below).
 - `~/Desktop/src/pi-durable-teams-dev` is for development (branch `dev`). Work here.
 
 You may be running inside the live host you are changing. Never restart, kill, or signal the host
-yourself, and never touch `~/.pi/agent/durable-teams/`. If a change needs a host restart, say so and
-let the human do it.
+yourself, and never touch `~/.pi/agent/durable-teams/` (live runtime state and databases). If a
+change needs a host restart, say so and let the human do it.
+
+## Releasing
+
+Agents may commit on `dev`. Release to `stable` only when the human explicitly authorizes that
+release in the current conversation; finishing a task, a passing test run, or an earlier release is
+not authorization. When authorized:
+
+1. Inspect both checkouts (`git status`, `git log stable..dev`). Commit only your own changes; leave
+   anyone else's uncommitted work as it is and keep it out of the release.
+2. `npm run check` and the test command below must pass on exactly the commit being released, with
+   no other uncommitted changes in the tree being tested.
+3. From the live checkout, `git merge --ff-only dev`. Nothing else: no edits, resets, stashes, or
+   checkouts there.
+4. Stop and ask the human if either checkout has changes you can't account for, the live checkout
+   is not clean, `stable` has commits not in `dev`, the merge is not a fast-forward, or anything
+   conflicts.
+5. Report what was released and whether it needs a host restart (the human does it).
+
+Never push to a remote without separate, explicit authorization.
 
 ## Seeing changes
 
@@ -19,8 +38,8 @@ let the human do it.
   every save, so screen changes in `src/app.ts`, `src/status.ts`, etc. show up immediately.
 - Web app: files under `src/web/` are read from disk on each request; a page refresh shows them once
   released to the live checkout.
-- Host changes (`src/host.ts`, `src/teams.ts`, `src/chat.ts`, routes, push) need a release and a host
-  restart, which only the human does.
+- Host changes (`src/host.ts`, `src/teams.ts`, `src/chat.ts`, routes, push) need a release
+  (authorized, above) and a host restart, which only the human does.
 
 ## Verify
 
