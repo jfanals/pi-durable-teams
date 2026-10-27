@@ -1,10 +1,11 @@
 // Terminal presentation only. Nothing here changes delivery, acknowledgement or worker execution.
 import { homedir } from "node:os";
 
-import { getMarkdownTheme, getSelectListTheme, keyText, type Theme } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, getSelectListTheme, keyText, ToolExecutionComponent, type Theme, type ThemeBg } from "@earendil-works/pi-coding-agent";
+import { builtInRenderers, loadToolRenderers } from "./presentation.ts";
 import {
-  Box, Editor, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi,
-  type Component, type Focusable, type TUI, type TuiMouseEvent,
+  Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth,
+  type Component, type DefaultTextStyle, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import { clean, firstLine, textOf, liveStatus, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, type WorkerStatus } from "./status.ts";
 import type { ChatItem } from "./chat.ts";
@@ -267,44 +268,56 @@ export function renderTeamResult(result: { content: any[]; details?: unknown }, 
   return new Text([theme.fg("success", head!), ...rest.map(line => theme.fg("muted", truncateToWidth(line, 200)))].join("\n"), 0, 0);
 }
 
-/** Worker transcript as terminal lines, oldest first. Tool calls are paired with their results by call ID. */
-export function renderTranscript(items: ChatItem[], worker: string, width: number, theme: Theme, showThinking = false): string[] {
+export type TranscriptOptions = { showThinking?: boolean; expanded?: boolean; tui?: TUI; cwd?: string };
+
+/** Worker transcript as terminal lines, oldest first, drawn like Pi's chat: inputs on Pi's message
+ * backgrounds, tool calls by Pi's own tool component and renderers, replies plain. */
+export function renderTranscript(items: ChatItem[], worker: string, width: number, theme: Theme, { showThinking = false, expanded = false, tui, cwd = process.cwd() }: TranscriptOptions = {}): string[] {
   const results = new Map(items.filter(item => item.kind === "result").map(item => [item.callId, item]));
   const md = getMarkdownTheme();
   const out: string[] = [];
-  let speaker: string | undefined;
-  const block = (lines: string[], who?: string) => {
-    if (who && who === speaker) { out.push(...lines.slice(1)); return; }
-    if (out.length) out.push("");
-    out.push(...lines); speaker = who;
+  const block = (lines: string[]) => { if (lines.length) out.push("", ...lines); };
+  const card = (bg: ThemeBg, ...children: Component[]) => {
+    const box = new Box(1, 1, text => theme.bg(bg, text));
+    for (const child of children) box.addChild(child);
+    return box.render(width);
   };
-  const markdown = (text: string, color?: (t: string) => string) => new Markdown(clean(text), 0, 0, md, color ? { color } : undefined).render(width);
-  const wrap = (text: string) => wrapTextWithAnsi(text, width);
+  const markdown = (text: string, style?: DefaultTextStyle) => new Markdown(clean(text), 1, 0, md, style);
   const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const ui = tui ?? ({ requestRender() {} } as unknown as TUI);
   for (const item of [...items].sort((a, b) => Number(a.id) - Number(b.id))) {
     if (item.kind === "input") {
-      block([...wrap(theme.fg("accent", theme.bold(`${clean(item.from)} → ${worker}`)) + (item.report ? theme.fg("dim", " · report") : "")), ...markdown(item.text)]);
+      // Pi's user message; reports take Pi's custom-message colours.
+      const [bg, label, text] = item.report ? ["customMessageBg", "customMessageLabel", "customMessageText"] as const : ["userMessageBg", "accent", "userMessageText"] as const;
+      block(card(bg, new Text(theme.fg(label, theme.bold(`${clean(item.from)} → ${worker}`)) + (item.report ? theme.fg("dim", " · report") : ""), 0, 0),
+        new Markdown(clean(item.text), 0, 0, md, { color: t => theme.fg(text, t) })));
     } else if (item.kind === "reply") {
-      const lines: string[] = [];
       for (const part of item.parts) {
-        if (part.type === "text") { if (part.text.trim()) lines.push(...markdown(part.text)); }
+        if (part.type === "text") { if (part.text.trim()) block(markdown(part.text).render(width)); }
         else if (part.type === "thinking") {
-          if (part.text.trim()) lines.push(...(showThinking ? markdown(part.text, t => theme.fg("thinkingText", t)) : wrap(theme.fg("dim", `▸ thinking · ${part.text.split("\n").length} lines`))));
+          if (part.text.trim()) block((showThinking ? markdown(part.text, { color: t => theme.fg("thinkingText", t), italic: true })
+            : new Text(theme.italic(theme.fg("thinkingText", `Thinking · ${part.text.split("\n").length} lines`)), 1, 0)).render(width));
         } else {
+          // Pi's own tool component. An empty definition gives unknown tools Pi's bounded generic preview.
+          const renderers = part.name === "team" ? { renderCall: renderTeamCall, renderResult: renderTeamResult } : builtInRenderers(part.name) ?? {};
+          // A host older than tool args sends only the subject: the path, or the command for shells.
+          const args = part.args ?? { [["bash", "powershell"].includes(part.name) ? "command" : "path"]: part.subject };
+          const tool = new ToolExecutionComponent(part.name, part.id, args, { showImages: false }, renderers as any, ui, cwd);
+          tool.setExpanded(expanded);
           const result = results.get(part.id);
-          const outcome = !result ? theme.fg("dim", " · no result") : !result.ok ? theme.fg("error", ` ✗ ${result.error ?? ""}`) : theme.fg("success", " ✓");
-          lines.push(truncateToWidth(theme.fg("muted", `▸ ${clean(part.name)} `) + clean(part.subject) + outcome, width));
+          if (result) tool.updateResult({ content: result.content ?? (result.error ? [{ type: "text", text: result.error }] : []),
+            details: result.details, isError: !result.ok, ...(result.durationMs === undefined ? {} : { durationMs: result.durationMs }) });
+          out.push(...tool.render(width)); // starts with its own blank line
         }
       }
-      if (item.error) lines.push(...wrap(theme.fg("error", item.error)));
+      if (item.error) block(new Text(theme.fg("error", item.error), 1, 0).render(width));
       if (item.turn) {
         const parts = [item.at !== undefined && clock(item.at), item.turn.ms !== undefined && formatDuration(item.turn.ms), item.turn.tokens && `${formatTokens(item.turn.tokens)} tok`, formatCost(item.turn.cost)];
-        lines.push(theme.fg("dim", parts.filter(Boolean).join(" · ")));
+        block(new Text(theme.fg("dim", parts.filter(Boolean).join(" · ")), 1, 0).render(width));
       }
-      if (lines.length) block([theme.fg("customMessageLabel", theme.bold(worker)), ...lines], worker);
-    } else if (item.kind === "notice") block(wrap(theme.fg("dim", item.text)));
+    } else if (item.kind === "notice") block(new Text(theme.fg("dim", item.text), 1, 0).render(width));
   }
-  return out;
+  return out[0] === "" ? out.slice(1) : out;
 }
 
 export type WorkerSource = {
@@ -328,6 +341,7 @@ class Transcript implements Component {
   offset = 0; // lines scrolled up from the bottom; 0 follows live activity
   unseen = false;
   showThinking = false;
+  expanded = false; // Pi's ctrl+o: full tool output
   private cache?: { width: number; version: number; lines: string[] };
   version = 0;
   private lastLength?: { width: number; length: number };
@@ -349,6 +363,7 @@ class Transcript implements Component {
     this.parent = parent;
     parent.addEventListener("abort", this.onParentAbort, { once: true });
     void this.refresh().then(() => this.attach());
+    void loadToolRenderers().then(() => { this.version++; this.changed(); });
   }
   attach() {
     if (this.life.signal.aborted) return;
@@ -403,9 +418,17 @@ class Transcript implements Component {
     this.changed();
   }
   changed() { this.cache = undefined; this.tui.requestRender(); }
+  toggleThinking() { this.showThinking = !this.showThinking; this.version++; this.changed(); }
+  /** Pi's keys: ctrl+o expands tool output, ctrl+t shows thinking. */
+  toggle(data: string) {
+    const keys = getKeybindings();
+    if (keys.matches(data, "app.tools.expand")) { this.expanded = !this.expanded; this.version++; this.changed(); return true; }
+    if (keys.matches(data, "app.thinking.toggle")) { this.toggleThinking(); return true; }
+    return false;
+  }
   lines(width: number) {
     if (this.cache?.width !== width || this.cache.version !== this.version) {
-      this.cache = { width, version: this.version, lines: renderTranscript([...this.entries.values()], this.name, width, this.theme, this.showThinking) };
+      this.cache = { width, version: this.version, lines: renderTranscript([...this.entries.values()], this.name, width, this.theme, { showThinking: this.showThinking, expanded: this.expanded, tui: this.tui, cwd: this.status?.cwd }) };
     }
     const lines = this.cache.lines;
     // Keep a scrolled-up view anchored when activity is appended; prepending older pages needs no shift.
@@ -465,7 +488,7 @@ export class WorkerView implements Component {
     const header = `${t.fg("accent", t.bold(this.transcript.name))}${t.fg("dim", " · ")}${t.fg(color, word)}${t.fg("dim", " · ")}${connection}${top}`;
     const rule = t.fg("borderMuted", "─".repeat(Math.max(0, width)));
     const hints = [this.transcript.unseen && t.fg("accent", "↓ new activity · end"), this.transcript.note && t.fg("warning", this.transcript.note),
-      t.fg("dim", "esc back · f follow-up · s steer · x stop · ↑↓ pgup/pgdn scroll · o older · t thinking · r refresh")].filter(Boolean).join(t.fg("dim", " · "));
+      t.fg("dim", `esc back · f follow-up · s steer · x stop · ↑↓ pgup/pgdn scroll · o older · t thinking · ${keyText("app.tools.expand")} expand · r refresh`)].filter(Boolean).join(t.fg("dim", " · "));
     const empty = this.transcript.entries.size ? [] : [t.fg("muted", this.transcript.note ? "" : "Loading transcript…")];
     const filled = [...Array(Math.max(0, height - visible.length - empty.length)).fill(""), ...empty, ...visible];
     const body = height ? filled.slice(-height) : [];
@@ -480,7 +503,7 @@ export class WorkerView implements Component {
     if (data === "x") return this.done({ type: "stop" });
     if (data === "o") return void this.transcript.older();
     if (data === "r") { if (this.transcript.connection === "stale") this.transcript.attach(); return void this.transcript.refresh(); }
-    if (data === "t") { this.transcript.showThinking = !this.transcript.showThinking; this.transcript.version++; return this.transcript.changed(); }
+    if (data === "t" || this.transcript.toggle(data)) { if (data === "t") this.transcript.toggleThinking(); return; }
     if (matchesKey(data, Key.up) || data === "k") this.transcript.offset += 1;
     else if (matchesKey(data, Key.down) || data === "j") this.transcript.offset -= 1;
     else if (matchesKey(data, Key.pageUp)) this.transcript.offset += page;
@@ -528,7 +551,7 @@ export class ChatView implements Component, Focusable {
       const room = width - visibleWidth(right) - 2;
       const left = truncateToWidth(stats, right && room >= 24 ? room : width);
       const statsLine = right && room >= 24 ? left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right : left;
-      const hints = `${s?.name ?? name} · ${s?.id ?? "…"} · ← back · esc stop · alt+enter follow-up`;
+      const hints = `${s?.name ?? name} · ${s?.id ?? "…"} · ← back · esc stop · alt+enter follow-up · ${keyText("app.tools.expand")} ${this.transcript.expanded ? "collapse" : "expand"} · ${keyText("app.thinking.toggle")} thinking`;
       return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
     }, invalidate() {} };
     const working = { render: (width: number) => this.transcript.workingLine(width), invalidate() {} };
@@ -551,6 +574,7 @@ export class ChatView implements Component, Focusable {
     if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasWorkers) { this.panel.enter(this.editor); return; }
     if (matchesKey(data, Key.escape)) { void this.actions.stop().catch(error => { this.transcript.note = String(error); this.transcript.changed(); }); return; }
     if (matchesKey(data, "alt+enter")) return this.submit(this.editor.getExpandedText(), "followUp");
+    if (this.transcript.toggle(data)) return;
     this.editor.handleInput(data);
   }
   invalidate() { this.transcript.invalidate(); this.editor.invalidate(); }

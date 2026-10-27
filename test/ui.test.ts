@@ -11,9 +11,10 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { openTeams } from "../src/teams.ts";
+import { loadToolRenderers } from "../src/presentation.ts";
 import { renderDelivery, renderTeamResult, renderTranscript, TeamPanel, WorkerView, type ViewResult } from "../src/ui.ts";
 
-initTheme("dark");
+initTheme("dark"); await loadToolRenderers();
 const theme = { fg: (_: string, t: string) => t, bg: (_: string, t: string) => t, bold: (t: string) => t } as unknown as Theme;
 const plain = (lines: string[]) => lines.map(line => stripTerminalSequences(line).trimEnd());
 
@@ -105,8 +106,10 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     const page = await service.action(main, { action: "inspect", target: "reader", transcript: true }, "") as any;
     const lines = plain(renderTranscript(chatItems(page.entries), "reader", 50, theme));
     const text = lines.join("\n");
-    assert.ok(text.indexOf("Main → reader") < text.indexOf("▸ read missing.txt ✗"), text);
-    assert.ok(text.indexOf("▸ read missing.txt ✗") < text.indexOf("The file is missing."), text);
+    // Pi's read renderer: title and path, then the error inside the tool box.
+    assert.ok(text.indexOf("Main → reader") < text.indexOf("read missing.txt"), text);
+    assert.ok(text.indexOf("read missing.txt") < text.indexOf("ENOENT"), text);
+    assert.ok(text.indexOf("ENOENT") < text.indexOf("The file is missing."), text);
     assert.doesNotMatch(text, /toolsAdded|harness|pi\.system/);
 
     // Worker view: fills the screen, fits the width, follows live until scrolled, never yanks a scrolled view.
@@ -160,8 +163,8 @@ test("chat items are plain JSON with clean text, tool subjects, notices and comp
   ]);
   assert.deepEqual(items[0], { id: "2", kind: "input", from: "Lead", text: "Read this", at: 1000 });
   const call = items[1]; assert.ok(call?.kind === "reply");
-  assert.deepEqual(call.parts, [{ type: "thinking", text: "Reasoning" }, { type: "tool", id: "call", name: "bash", subject: "ls -la" }]); assert.equal(call.turn, undefined);
-  assert.deepEqual(items[2], { id: "4", kind: "result", callId: "call", ok: false, error: "Not found" });
+  assert.deepEqual(call.parts, [{ type: "thinking", text: "Reasoning" }, { type: "tool", id: "call", name: "bash", subject: "ls -la", args: { command: "\n ls -la\nignored" } }]); assert.equal(call.turn, undefined);
+  assert.deepEqual(items[2], { id: "4", kind: "result", callId: "call", ok: false, error: "Not found", content: [{ type: "text", text: "[error] Not found" }] });
   const answer = items[3]; assert.ok(answer?.kind === "reply");
   assert.deepEqual(answer.parts, [{ type: "text", text: "Done" }]); assert.equal(answer.turn?.ms, 1500); assert.equal(answer.turn?.tokens, 39);
   assert.ok(Math.abs(answer.turn!.cost - 0.3) < 1e-10);
@@ -188,8 +191,8 @@ test("reply parts render in original thinking, text, tool, text order", () => {
   ] }] }]);
   const reply = items[0]; assert.ok(reply?.kind === "reply");
   assert.deepEqual(reply.parts.map(part => part.type), ["thinking", "text", "tool", "text"]);
-  const rendered = plain(renderTranscript(items, "worker", 80, theme, true)).join("\n");
-  const offsets = ["First reasoning", "Before tool", "bash pwd", "After tool"].map(text => rendered.indexOf(text));
+  const rendered = plain(renderTranscript(items, "worker", 80, theme, { showThinking: true })).join("\n");
+  const offsets = ["First reasoning", "Before tool", "$ pwd", "After tool"].map(text => rendered.indexOf(text));
   assert.ok(offsets.every((offset, i) => offset >= 0 && (i === 0 || offset > offsets[i - 1]!)), rendered);
 });
 
