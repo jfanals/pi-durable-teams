@@ -35,4 +35,4 @@ model; stop only that process.
 ## Style
 
 Simple, boring, smallest change; prefer subtraction. Clients render what the host computes
-(`src/chat.ts`, `src/status.ts`) and never duplicate that logic. Don't commit; the human releases.
+(`src/chat.ts`, `src/status.ts`) and never duplicate that logic.
