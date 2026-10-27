@@ -110,6 +110,7 @@ export async function startHost(directory: string, socket: string, options: Team
         const all = async () => modelChoices(await (typeof options.models === "function" ? options.models() : options.models).getAvailable());
         return reply(res, 200, await (options.availableModels ?? all)());
       }
+      if (pathname === "/agents/defaults") return reply(res, 200, await options.agentModel?.() ?? null);
       if (pathname === "/agents/dirs") {
         if (body.path !== undefined && typeof body.path !== "string") throw new Error("path must be a string");
         return reply(res, 200, await listDirectories(body.path));

@@ -48,6 +48,7 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
       { provider: "faux", modelId: "faux-1", thinkingLevels: ["off"] },
       { provider: "faux", modelId: "faux-2", thinkingLevels: ["off"] },
     ]);
+    assert.deepEqual(await source.defaults(), model);
     observe(source.roster(life.signal, rows => { roster = rows; frames.push(rows); }));
     await until(() => frames.length > 0);
     const created = await source.newAgent({ name: "lead", cwd: directory }, { requestId: "create" });
@@ -179,6 +180,10 @@ test("phone primitives: directory listings, remote config, token auth and socket
     await client.call("register", { ...identity, name: "Pi", cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
     assert.deepEqual(await (await call("/agents", { headers: { authorization: `Bearer ${token}` } })).json(), [], "external sessions are absent from the human roster");
     const source = new SocketHostSource(client);
+    assert.equal(await source.defaults(), null);
+    const remoteDefaults = await call("/agents/defaults", { headers: { authorization: `Bearer ${token}` }, method: "POST", body: "{}" });
+    assert.equal(remoteDefaults.status, 200); assert.equal(await remoteDefaults.json(), null);
+    assert.equal((await call("/agents/defaults", { method: "POST", body: "{}" })).status, 401);
     assert.deepEqual((await source.page(identity.sessionId)).items, [{ id: "publication", kind: "notice", text: "This Pi session has no hosted transcript." }]);
     await client.call("publish", { ...identity, latest: "Latest \x1b[31mpublication\x1b[0m\x07" });
     assert.deepEqual((await source.page(identity.sessionId)).items, [{ id: "publication", kind: "reply", parts: [{ type: "text", text: "Latest publication" }] }]);

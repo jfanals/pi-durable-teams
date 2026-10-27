@@ -312,13 +312,20 @@ theme; the app uses public TUI keybindings, so your `keybindings.json` is not
 loaded yet.
 
 - List: **↑↓** select, **Enter/→** open, **n** create, **r** rename, **d** remove (confirm with **y**), **q** quit, **x** disable (confirm with **y**).
-- New agent: enter a unique name, then pick an existing working directory.
+- New agent: review the launch directory, suggested name and visible model/thinking
+  defaults, then choose **Create agent**. Change any setting from review.
+  The first chat message is the task.
   Folder picker: **↑↓** move, **→** enter folder, **←** parent, **Enter** choose,
-  typing filters, **Backspace** edits, **Esc** back. Recent directories appear first;
+  typing filters, **Backspace** edits, **Esc** returns to review. Recent directories appear first;
   paste an existing directory path to jump there. Wide terminals show a preview.
-  Model filter matches any part of `provider/modelId` or name, ignoring case; **↑↓/Enter** pick a model and supported thinking level.
-  Model defaults to `config.json`'s `agentModel`; thinking uses its level, else medium if supported.
-  **Esc** goes back one step; on the name step it cancels. Validation errors stay inline.
+  Review: **↑↓/Enter** create or edit name, folder, model, or thinking.
+  The name is suggested from the folder with a suffix when needed; it stays editable.
+  Model defaults to the host's configured `agentModel`; if missing or unavailable,
+  choose a model explicitly. Thinking uses its supported configured level, else medium
+  if supported, else the first supported level.
+  Model filtering matches `provider/modelId` or name, ignoring case.
+  **Esc** returns from an edit to review, or cancels from review.
+  Validation errors stay inline.
 - Chat: **Enter** send/steer, **Alt+Enter** queue follow-up, **Esc** stop current run,
   **↓/Enter** on an empty editor select/open a sub-agent, **←** goes back
   to its parent or the list, **PgUp/PgDn** scroll.
@@ -356,7 +363,9 @@ Open the pairing URL on your phone in Chrome to use the web app. In Chrome's men
 choose **Install app** (sometimes under **Add to Home screen**) to install Pi Agents.
 Launch the installed app for a standalone window without an address bar. The app keeps the token on that
 phone and removes it from the address bar. You can read chats, send or steer messages,
-stop agents, and create agents with a folder, model and thinking level.
+stop agents, and create agents with a folder, model and thinking level. Creation opens
+on review using the most recent top-level agent’s folder; if none exists, choose a
+folder first. The browser never silently uses the host process’s working directory.
 The shell is available offline; agent data and actions always require the host.
 
 

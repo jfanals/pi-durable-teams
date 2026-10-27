@@ -2,8 +2,9 @@ import { notifications, notificationState, toggleNotifications } from "./push.ts
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
 import { escape as e, info, footerInfo, transcript } from "./render.ts";
 import { formatCost, formatDuration, statusWord } from "../status.ts";
-import { agentNameError } from "../agent-name.ts";
+import { agentNameError, suggestedAgentName } from "../agent-name.ts";
 import type { ChatItem } from "../chat.ts";
+import type { WorkerModel } from "../config.ts";
 
 const root = document.querySelector<HTMLElement>("#app")!;
 let agents: Agent[] = [];
@@ -262,12 +263,18 @@ function selectors(models: Model[], index: number) {
         `<option value="${i}" ${i === index ? "selected" : ""}>${e(m.provider)}/${e(m.modelId)}</option>`,
     )
     .join("");
-  return `<label>Model<select name="model" id="model">${options}</select></label>
+  return `<label>Model<select name="model" id="model" required>${index < 0 ? '<option value="" selected disabled>Choose a model…</option>' : ""}${options}</select></label>
 <label>Thinking<select name="thinking" id="thinking"></select></label>`;
 }
 function thinking(container: HTMLElement, models: Model[], preferred?: string) {
   const model = container.querySelector<HTMLSelectElement>("#model")!;
   const update = () => {
+    const thinking = container.querySelector<HTMLSelectElement>("#thinking")!;
+    thinking.disabled = model.value === "";
+    if (thinking.disabled) {
+      thinking.innerHTML = "";
+      return;
+    }
     const levels = models[Number(model.value)]!.thinkingLevels;
     const value =
       preferred && levels.includes(preferred) ? preferred : levels.includes("medium") ? "medium" : levels[0];
@@ -290,7 +297,8 @@ async function browse(path?: string) {
   }>("/dirs", { path });
   if (screen !== "new" || request !== folderRequest) return;
   folder = listing.path;
-  const el = document.querySelector("#folders")!;
+  const el = document.querySelector("#folders");
+  if (!el) return;
   const error = listing.error ? `<p class="error">${e(listing.error)}</p>` : "";
   const parent = listing.parent
     ? `<button type="button" data-dir="${e(listing.parent)}">↑ Parent folder</button>`
@@ -306,57 +314,137 @@ async function browse(path?: string) {
 ${button("Go", "folder-go", 'type="button"')}<div class="directory">${error}${parent}${dirs}</div>`;
 }
 async function newAgent() {
-  const { models, index } = await modelFields();
   screen = "new";
   history.pushState({ screen: "new", stack: [] }, "", "/");
-  generation++;
+  const version = ++generation;
   watchLife.abort();
   stack = [];
-  const recent = [...new Set(all().flatMap((a) => (a.cwd ? [a.cwd] : [])))]
+  const recent = [...new Set(agents.flatMap((a) => (a.cwd ? [a.cwd] : [])))]
     .map((path) => `<option>${e(path)}</option>`)
     .join("");
-  base(
-    `<header>${button("←", "back", 'aria-label="Back"')}<h1>New agent</h1>
-</header>
-<main class="new">
-<form id="new-form">
-<label>Name<input name="name" required maxlength="64" autocomplete="off" placeholder="my-agent">
-</label>
-<label>Recent folders<select id="recent">
-<option value="">Choose recent folder…</option>${recent}</select>
-</label>
-<section id="folders">
-</section>${selectors(models, index)}<button>Create agent</button>
-</form>
-</main>`,
-  );
-  thinking(root, models);
-  await browse(all().find((a) => a.cwd)?.cwd);
-  document.querySelector<HTMLSelectElement>("#recent")!.onchange = (event) => {
-    const value = (event.target as HTMLSelectElement).value;
-    if (value) void browse(value).catch(fail);
-  };
-  document.querySelector<HTMLFormElement>("#new-form")!.onsubmit = async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget as HTMLFormElement);
-    const name = String(form.get("name")).trim();
+  let nameEdited = false;
+  let draftName = "";
+  let draftModel: WorkerModel | null | undefined;
+  const review = async (cwd: string) => {
+    base(
+      `<header>${button("←", "back", 'aria-label="Back"')}<h1>New agent</h1></header>
+<main class="new"><p role="status">Loading agent settings…</p></main>`,
+    );
+    let settings: [{ models: Model[]; index: number }, WorkerModel | null];
     try {
-      const error = agentNameError(name);
-      if (error) throw new Error(error);
-      if (agents.some((a) => a.name === name)) throw new Error("Name already exists");
-      const model = models[Number(form.get("model"))]!;
-      const result = await mutate("/new", {
-        name,
-        cwd: (document.querySelector("#folder") as HTMLInputElement).value,
-        model: { provider: model.provider, modelId: model.modelId },
-        thinking: form.get("thinking"),
-      });
-      agents = await api<Agent[]>("");
-      await open(String(result.id));
+      settings = await Promise.all([modelFields(), api<WorkerModel | null>("/defaults")]);
     } catch (error) {
+      if (version !== generation) return;
+      base(
+        `<header>${button("←", "back", 'aria-label="Back"')}<h1>New agent</h1></header>
+<main class="new"><button id="retry-settings">Retry loading settings</button></main>`,
+      );
       fail(error);
+      document.querySelector<HTMLButtonElement>("#retry-settings")!.onclick = () => {
+        void review(cwd);
+      };
+      return;
     }
+    const [{ models }, defaults] = settings;
+    if (version !== generation) return;
+    const selectedModel = draftModel === undefined ? defaults : draftModel;
+    const index = selectedModel ? models.findIndex(
+      (m) => m.provider === selectedModel.provider && m.modelId === selectedModel.modelId,
+    ) : -1;
+    base(
+      `<header>${button("←", "back", 'aria-label="Back"')}<h1>New agent</h1></header>
+<main class="new"><form id="new-form">
+<label>Working directory<input value="${e(cwd)}" readonly></label>
+<button type="button" id="change-folder">Change folder</button>
+<label>Name<input name="name" required maxlength="64" autocomplete="off" value="${e(nameEdited ? draftName : suggestedAgentName(cwd, agents.map((a) => a.name)))}"></label>
+${index < 0 ? '<p>No configured model is available. Choose a model to continue.</p>' : ""}
+${selectors(models, index)}<button>Create agent</button>
+</form></main>`,
+    );
+    thinking(root, models, selectedModel?.thinking);
+    const nameInput = document.querySelector<HTMLInputElement>('[name="name"]')!;
+    nameInput.oninput = () => { nameEdited = true; };
+    document.querySelector<HTMLButtonElement>("#change-folder")!.onclick = () => {
+      draftName = nameInput.value;
+      const form = new FormData(document.querySelector<HTMLFormElement>("#new-form")!);
+      const selected = form.get("model");
+      const model = selected === null || selected === "" ? undefined : models[Number(selected)];
+      draftModel = model ? {
+        provider: model.provider, modelId: model.modelId,
+        thinking: String(form.get("thinking")) as WorkerModel["thinking"],
+      } : null;
+      void chooseFolder(cwd, cwd).catch(fail);
+    };
+    document.querySelector<HTMLFormElement>("#new-form")!.onsubmit = async (event) => {
+      event.preventDefault();
+      const element = event.currentTarget as HTMLFormElement;
+      const form = new FormData(element);
+      const create = element.querySelector<HTMLButtonElement>('button:not([type="button"])')!;
+      create.disabled = true;
+      try {
+        const name = String(form.get("name")).trim();
+        const error = agentNameError(name);
+        if (error) throw new Error(error);
+        if (agents.some((a) => a.name === name)) throw new Error("Name already exists");
+        const selected = form.get("model");
+        const model = selected === null || selected === "" ? undefined : models[Number(selected)];
+        if (!model) throw new Error("Choose a model");
+        const result = await mutate("/new", {
+          name, cwd,
+          model: { provider: model.provider, modelId: model.modelId },
+          thinking: form.get("thinking"),
+        });
+        agents = await api<Agent[]>("");
+        await open(String(result.id));
+      } catch (error) {
+        fail(error);
+      } finally {
+        create.disabled = false;
+      }
+    };
+    document.querySelector<HTMLInputElement>('[name="name"]')!.focus();
   };
+  const chooseFolder = async (path?: string, returnCwd?: string) => {
+    base(
+      `<header>${button("←", "back", 'aria-label="Back"')}<h1>New agent</h1></header>
+<main class="new"><form id="folder-form">
+<label>Recent folders<select id="recent">
+<option value="">Choose recent folder…</option>${recent}</select></label>
+<section id="folders"></section>
+${returnCwd ? '<button type="button" id="cancel-folder">Cancel</button>' : ""}<button>Use this folder</button>
+</form></main>`,
+    );
+    if (returnCwd) {
+      document.querySelector<HTMLButtonElement>("#cancel-folder")!.onclick = () => {
+        void review(returnCwd);
+      };
+    }
+    document.querySelector<HTMLSelectElement>("#recent")!.onchange = (event) => {
+      const value = (event.target as HTMLSelectElement).value;
+      if (value) void browse(value).catch(fail);
+    };
+    document.querySelector<HTMLFormElement>("#folder-form")!.onsubmit = async (event) => {
+      event.preventDefault();
+      const form = event.currentTarget as HTMLFormElement;
+      const submit = form.querySelector<HTMLButtonElement>('button:not([type="button"])')!;
+      submit.disabled = true;
+      try {
+        // Resolve typed paths through the folder picker before suggesting a name.
+        await browse(document.querySelector<HTMLInputElement>("#folder")!.value);
+        if (version !== generation || document.querySelector("#folder-form") !== form) return;
+        if (document.querySelector("#folders .error")) return;
+        await review(folder);
+      } catch (error) {
+        fail(error);
+      } finally {
+        submit.disabled = false;
+      }
+    };
+    await browse(path);
+  };
+  const cwd = agents.find((a) => a.cwd)?.cwd;
+  if (cwd) await review(cwd);
+  else await chooseFolder();
 }
 root.addEventListener("click", async (event) => {
   const el = (event.target as HTMLElement).closest<HTMLElement>("button");

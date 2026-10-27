@@ -1,3 +1,4 @@
+import type { WorkerModel } from "./config.ts";
 import type { ChatItem } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import { randomUUID } from "node:crypto";
@@ -12,6 +13,7 @@ export type RequestOptions = { requestId?: string; signal?: AbortSignal };
 export type MutationResult = { id?: string; taskId?: number; workerId?: string; delivery?: string; aborted?: string[]; stopped?: string[]; model?: ModelRef; thinking?: ModelThinkingLevel };
 export interface HostSource {
   models(signal?: AbortSignal): Promise<ModelChoice[]>;
+  defaults(signal?: AbortSignal): Promise<WorkerModel | null>;
   list(signal?: AbortSignal): Promise<AgentSummary[]>;
   roster(signal: AbortSignal, receive: (agents: AgentSummary[]) => void | Promise<void>): Promise<void>;
   page(target: string, cursor?: string, signal?: AbortSignal): Promise<TranscriptPage>;
@@ -30,6 +32,7 @@ export class SocketHostSource implements HostSource {
   readonly client: Client;
   constructor(client = new Client()) { this.client = client; }
   models(signal?: AbortSignal) { return this.client.call<ModelChoice[]>("agents/models", {}, signal); }
+  defaults(signal?: AbortSignal) { return this.client.call<WorkerModel | null>("agents/defaults", {}, signal); }
   list(signal?: AbortSignal) { return this.client.call<AgentSummary[]>("agents", {}, signal); }
   async roster(signal: AbortSignal, receive: (agents: AgentSummary[]) => void | Promise<void>) {
     await this.client.ensureHost(signal);

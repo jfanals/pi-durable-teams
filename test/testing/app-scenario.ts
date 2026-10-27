@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -33,13 +33,13 @@ export async function appScenario(width: number, height: number, print?: (name: 
   const terminal = new VirtualTerminal(width, height); const tui = new TuiAltScreen(terminal);
   initTheme("dark", false); const { theme } = await piPresentation();
   let exited = false;
-  const app = new AgentsApp(source, tui, theme, { agentModel: { provider: "faux", modelId: "faux-1" }, exit: () => { exited = true; } });
+  const app = new AgentsApp(source, tui, theme, { cwd: directory, exit: () => { exited = true; } });
   async function frame() { await terminal.waitForRender(); const lines = await terminal.flushAndGetViewport(); for (const columns of [40, width]) assert.ok(app.render(columns).every(line => visibleWidth(line) <= columns)); return lines.join("\n"); }
-  async function wait(text: string) { for (let i = 0; i < 300; i++) { const screen = await frame(); if (screen.includes(text)) return screen; await delay(10); } throw new Error(`Missing ${text}\n${await frame()}`); }
+  async function wait(text: string) { for (let i = 0; i < 300; i++) { const screen = await frame(); if (screen.includes(text) && (text === "Loading settings…" || !screen.includes("Loading settings…"))) return screen; await delay(10); } throw new Error(`Missing ${text}\n${await frame()}`); }
   async function until(predicate: () => Promise<boolean>) { for (let i = 0; i < 300; i++) { if (await predicate()) return; await delay(10); } assert.fail("Timed out waiting for host state"); }
   async function key(data: string) { terminal.sendInput(data); await delay(50); }
   try {
-    const alphaId = (await source.newAgent({ name: "alpha", cwd: directory })).id!; await source.newAgent({ name: "beta", cwd: directory });
+    const alphaId = (await source.newAgent({ name: "alpha", cwd: directory })).id!; await source.newAgent({ name: "beta", cwd: tmpdir() });
     const alpha = async () => (await source.list()).find(agent => agent.id === alphaId);
     tui.addChild(app); tui.setFocus(app); tui.start();
     const list = await wait("beta"); assert.match(list, /alpha/); print?.("list", list);
@@ -74,20 +74,35 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[6~");
 
     await key("\x1b[D"); await wait("n new");
-    await key("n"); await wait("New agent");
-    await key("main"); const invalid = await wait("Use a unique");
-    await key("\r"); assert.match(await frame(), /Name/); assert.match(await frame(), /main/); print?.("form invalid name", invalid);
+    await key("n");
+    const review = await wait("Review ·"); print?.("form review", review);
+    assert.doesNotMatch(review, /Recent ·|choose current directory/);
+    assert.match(review, new RegExp(basename(directory)));
+    assert.match(review, /faux\/faux-1/);
+    assert.match(review, /Thinking: medium/);
+    assert.equal((await source.list()).length, 2, "review starts no agent");
+    assert.notEqual((await source.list())[0]!.cwd, directory, "most recent agent is in a different folder");
+    assert.ok(app.render(240).join("\n").includes(directory), "review defaults to the launch folder, not another agent's folder");
+    await key("\x1b[B"); await key("\r"); await wait("Name ·");
+    await key("\x15"); await key("main"); const invalid = await wait("Use a unique");
+    await key("\r"); assert.match(await frame(), /Name/); print?.("form invalid name", invalid);
     await key("\x15"); await key("alpha"); await key("\r"); await wait("Name already exists");
-    assert.match(await frame(), /alpha/);
-    await key("\x15"); await key("gamma"); await key("\r");
-    const cwd = await wait("Working directory"); print?.("form cwd", cwd);
-    await key("\x1b"); await wait("Name"); await key("\r");
-    assert.match(await frame(), /Recent/);
-    await key("\r"); // First recent is alpha/beta's working directory.
-    const picker = await wait("type to filter"); print?.("form model", picker);
-    await key("\x1b"); await wait("Working directory");
-    assert.ok((await frame()).includes(basename(directory)), "back from model starts at chosen cwd");
-    await key("\r"); await wait("Model ·");
+    await key("\x15"); await key("gamma"); await key("\r"); await wait("Review ·");
+    // Cancelling a folder edit preserves the review draft.
+    await key("\x1b[B"); await key("\x1b[B"); await key("\r"); await wait("Working directory");
+    await key("\x1b"); await wait("Review ·"); assert.match(await frame(), /Name: gamma/);
+    // Choosing another folder keeps an explicitly edited name.
+    await key("\x1b[B"); await key("\x1b[B"); await key("\r");
+    await key("\x1b[D"); await key("\r"); await wait("Review ·");
+    assert.match(await frame(), /Name: gamma/);
+    await key("\x1b[B"); await key("\x1b[B"); await key("\r");
+    await key(`\x1b[200~${directory}\x1b[201~`); await key("\r"); await wait("Review ·");
+    // Optional model and thinking edits return to review, not immediate creation.
+    for (let i = 0; i < 3; i++) await key("\x1b[B");
+    await key("\r"); const picker = await wait("type to filter"); print?.("form model", picker);
+    await key("\x1b"); await wait("Review ·");
+    for (let i = 0; i < 3; i++) await key("\x1b[B");
+    await key("\r");
     for (const char of "OpUs") await key(char);
     assert.match(await frame(), /faux\/faux-opus-2/);
     assert.doesNotMatch(await frame(), /faux\/faux-1/);
@@ -95,26 +110,58 @@ export async function appScenario(width: number, height: number, print?: (name: 
     for (const char of "fancy") await key(char);
     assert.match(await frame(), /faux\/faux-opus-2/);
     assert.doesNotMatch(await frame(), /faux\/faux-1/);
-    await key("\x15"); await key("\x1b[B"); await key("\r");
-    const thinking = await wait("Thinking ·"); print?.("form thinking", thinking);
-    await key("\x1b[B"); await key("\r");
+    await key("\r"); await wait("Review ·");
+    for (let i = 0; i < 4; i++) await key("\x1b[B");
+    await key("\r"); const thinking = await wait("Thinking ·"); print?.("form thinking", thinking);
+    await key("\x1b[B"); await key("\r"); await wait("Review ·");
+    assert.equal((await source.list()).length, 2);
+    await key("\r");
     const created = await wait("No messages yet"); print?.("created", created);
     assert.match(created, /gamma/);
     await key("first task"); await key("\r"); await wait("Hello from the faux agent.");
     await key("\x1b[D"); await wait("n new");
     const gamma = (await source.list()).find(agent => agent.name === "gamma");
     assert.ok(gamma); assert.equal(gamma.cwd, await realpath(directory)); assert.equal(gamma.model, "faux-opus-2"); assert.equal(gamma.thinking, "high");
-    // A model fetch completing after Esc must not advance the name screen.
+    // A model fetch completing after cancellation must not resurrect the form.
     const fetchModels = source.models.bind(source);
     let releaseModels!: () => void;
     const modelGate = new Promise<void>(resolve => { releaseModels = resolve; });
     source.models = async signal => { await modelGate; return fetchModels(signal); };
-    await key("n"); await key("race"); await key("\r"); await wait("Working directory");
-    await key("\r"); await key("\x1b"); await wait("Name");
-    releaseModels(); await delay(100);
-    assert.match(await frame(), /Name/); assert.doesNotMatch(await frame(), /Model ·/);
-    source.models = fetchModels;
+    await key("n"); await wait("Loading settings…");
     await key("\x1b"); await wait("n new");
+    releaseModels(); await delay(100);
+    assert.doesNotMatch(await frame(), /Review ·|Model ·/);
+    source.models = fetchModels;
+    // One confirmation creates directly in the launch folder, without a picker.
+    await key("n"); await wait("Review ·"); await key("\r"); await wait("No messages yet");
+    const quick = (await source.list()).find(agent => agent.name === basename(directory));
+    assert.ok(quick); assert.equal(quick.cwd, await realpath(directory));
+    assert.equal(quick.model, "faux-1"); assert.equal(quick.thinking, "medium");
+    await key("\x1b[D"); await wait("n new"); await source.remove(quick.id);
+    await until(async () => (await source.list()).length === 3);
+    // The short path uses the suggested name and displayed configured defaults.
+    await key("n"); await wait("Review ·");
+    await key("\x1b[B"); await key("\x1b[B"); await key("\r");
+    await key("\x1b[D"); await key("\r"); await wait("Review ·");
+    assert.ok((await frame()).includes(`Name: ${basename(dirname(await realpath(directory)))}`), "untouched name follows the folder");
+    await key("\x1b[B"); await key("\x1b[B"); await key("\r");
+    await key(`\x1b[200~${directory}\x1b[201~`); await key("\r"); await wait("Review ·");
+    await key("\r"); await wait("No messages yet");
+    const suggested = (await source.list()).find(agent => agent.name === basename(directory));
+    assert.ok(suggested); assert.equal(suggested.model, "faux-1"); assert.equal(suggested.thinking, "medium");
+    await key("\x1b[D"); await wait("n new");
+    await source.remove(suggested.id);
+    await until(async () => (await source.list()).length === 3);
+    // Missing or unavailable defaults require an explicit model choice.
+    const fetchDefaults = source.defaults.bind(source);
+    for (const defaults of [null, { provider: "missing", modelId: "gone" }]) {
+      source.defaults = async () => defaults;
+      await key("n"); await wait("Review ·");
+      await key("\r"); await wait("Choose a model before creating");
+      assert.equal((await source.list()).length, 3);
+      await key("\x1b"); await wait("n new");
+    }
+    source.defaults = fetchDefaults;
     const lead = (await alpha())!;
     await source.send(lead.id, "DELEGATE");
     await until(async () => (await alpha())!.children.length > 0);

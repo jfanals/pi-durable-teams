@@ -1,7 +1,7 @@
 import { formatCost } from "./status.ts";
 import { execFile } from "node:child_process";
 import { DirPicker } from "./dir-picker.ts";
-import { agentNameError } from "./agent-name.ts";
+import { agentNameError, suggestedAgentName } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import { Editor, Key, SelectList, matchesKey, truncateToWidth, type Component, type Focusable, type TuiAltScreen } from "@earendil-works/pi-tui";
 import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent";
@@ -16,7 +16,7 @@ export class AgentsApp implements Component, Focusable {
   get focused() { return this.hasFocus; }
   set focused(value: boolean) { this.hasFocus = value; this.updateFocus(); }
   private updateFocus() {
-    this.editor.focused = this.hasFocus && (!!this.renaming || (!!this.form && this.form.step !== 3));
+    this.editor.focused = this.hasFocus && (!!this.renaming || (!!this.form && (this.form.step === 0 || this.form.step === 2)));
     if (this.view) this.view.focused = this.hasFocus && !this.form && !this.confirming;
   }
   private source: HostSource; private tui: TuiAltScreen; private theme: Theme;
@@ -34,17 +34,18 @@ export class AgentsApp implements Component, Focusable {
   private renaming?: { agent: AgentSummary; error?: string };
   private selected = 0; private view?: ChatView;
   private note = "Connecting…"; private editor: Editor;
-  private form?: { step: number; name: string; cwd: string; model?: WorkerModel; choices: ModelChoice[]; error?: string };
+  private form?: { step: number; name: string; cwd: string; nameEdited?: boolean; model?: WorkerModel; choices: ModelChoice[]; error?: string; creating?: boolean; loading?: boolean; folderRequest?: number };
   private picker?: SelectList;
   private dirPicker?: DirPicker;
   private confirming?: { agent: AgentSummary; remove?: boolean };
   private ticker?: ReturnType<typeof setInterval>;
   private frame = 0;
-  private model?: WorkerModel;
+  private launchCwd: string;
   private exit: () => void;
   private removeInput: () => void;
-  constructor(source: HostSource, tui: TuiAltScreen, theme: Theme, options: { agentModel?: WorkerModel; exit?: () => void } = {}) {
+  constructor(source: HostSource, tui: TuiAltScreen, theme: Theme, options: { cwd?: string; exit?: () => void } = {}) {
     this.source = source; this.tui = tui; this.theme = theme;
+    this.launchCwd = options.cwd ?? process.cwd();
     this.editor = new Editor(tui, { borderColor: text => theme.fg("accent", text), selectList: getSelectListTheme() });
     this.editor.onSubmit = text => void (this.renaming ? this.rename(text) : this.advance(text));
     this.editor.onChange = text => {
@@ -53,7 +54,7 @@ export class AgentsApp implements Component, Focusable {
       else if (this.form?.step === 2) this.filterModels(text);
       else if (this.form) this.form.error = undefined;
     };
-    this.model = options.agentModel; this.exit = options.exit ?? (() => {});
+    this.exit = options.exit ?? (() => {});
     this.removeInput = tui.addInputListener(data => {
       // Kitty's keyboard protocol (on in Ghostty/cmux) sends ctrl+c as an escape sequence, not \x03.
       if (!matchesKey(data, Key.ctrl("c"))) return;
@@ -153,17 +154,19 @@ export class AgentsApp implements Component, Focusable {
     this.picker.onSelect = item => {
       const model = choices.find(model => `${model.provider}/${model.modelId}` === item.value)!;
       form.model = { provider: model.provider, modelId: model.modelId, thinking: form.model?.thinking };
-      this.formStep(3); this.tui.requestRender();
+      this.normalizeThinking(); this.formStep(4); this.tui.requestRender();
     };
   }
   private formStep(step: number) {
     const form = this.form; if (!form) return;
+    form.folderRequest = (form.folderRequest ?? 0) + 1;
+    form.loading = false;
     form.step = step; form.error = undefined; this.picker = undefined; this.dirPicker = undefined;
     if (step === 1) this.dirPicker = new DirPicker({
       cwd: form.cwd || undefined,
       recent: this.rows().flatMap(({ agent }) => agent.cwd ? [agent.cwd] : []),
       height: () => Math.max(6, this.tui.terminal.rows - 4),
-      onChoose: path => void this.advance(path), onCancel: () => this.formStep(0),
+      onChoose: path => void this.advance(path), onCancel: () => this.formStep(4),
     });
     this.editor.setText(step === 0 ? form.name : "");
     if (step === 2) {
@@ -176,32 +179,77 @@ export class AgentsApp implements Component, Focusable {
       const preferred = form.model?.thinking;
       this.picker.setSelectedIndex(Math.max(0, levels.indexOf(preferred && levels.includes(preferred) ? preferred : levels.includes("medium") ? "medium" : levels[0]!)));
       this.picker.onSelect = item => void this.advance(item.value);
+    } else if (step === 4) {
+      this.picker = new SelectList([
+        { value: "create", label: "Create agent" },
+        { value: "0", label: `Name: ${form.name} · edit` },
+        { value: "1", label: "Working folder · change" },
+        { value: "2", label: `Model: ${form.model ? `${form.model.provider}/${form.model.modelId}` : "Choose a model"} · change` },
+        { value: "3", label: `Thinking: ${form.model?.thinking ?? "Choose a model first"} · change` },
+      ], 6, getSelectListTheme());
+      this.picker.onSelect = item => {
+        if (item.value === "create") void this.createAgent();
+        else if (item.value === "3" && !form.model) this.formStep(2);
+        else this.formStep(Number(item.value));
+        this.tui.requestRender();
+      };
     }
     this.updateFocus();
+  }
+  private normalizeThinking() {
+    const form = this.form!;
+    const levels = form.choices.find(choice => choice.provider === form.model?.provider && choice.modelId === form.model?.modelId)?.thinkingLevels;
+    if (form.model && levels) form.model.thinking = form.model.thinking && levels.includes(form.model.thinking) ? form.model.thinking : levels.includes("medium") ? "medium" : levels[0];
+  }
+  private async createAgent() {
+    const form = this.form; if (!form || form.creating || form.loading) return;
+    form.error = this.nameError(form.name);
+    if (!form.error && !form.model) form.error = "Choose a model before creating the agent";
+    if (!form.error) {
+      form.creating = true;
+      try {
+        const { id } = await this.source.newAgent({ name: form.name, cwd: form.cwd, model: form.model, thinking: form.model?.thinking });
+        if (this.form !== form) return;
+        this.form = undefined; this.note = "";
+        // The first chat message is the task; creation itself starts no work.
+        this.open({ id: id!, name: form.name, cwd: form.cwd, enabled: true, hosted: true, children: [] });
+      } catch (error) { form.error = String(error); }
+      finally { form.creating = false; }
+    }
+    this.tui.requestRender();
+  }
+  private async loadReview(cwd: string) {
+    const form = this.form; if (!form) return;
+    const request = (form.folderRequest ?? 0) + 1;
+    form.folderRequest = request;
+    form.loading = true;
+    try {
+      const [choices, defaults] = await Promise.all([this.source.models(this.life.signal), this.source.defaults(this.life.signal)]);
+      if (this.form !== form || form.folderRequest !== request) return;
+      form.choices = choices;
+      form.cwd = cwd;
+      if (!form.nameEdited) form.name = suggestedAgentName(form.cwd, this.agents.map(agent => agent.name));
+      const available = (model: WorkerModel | null | undefined) => choices.some(choice => choice.provider === model?.provider && choice.modelId === model?.modelId);
+      const model = available(form.model) ? form.model : defaults;
+      form.model = available(model) ? model ?? undefined : undefined;
+      this.normalizeThinking();
+      this.formStep(4);
+      if (!choices.length) form.error = "No models available; log in or configure models first";
+    } catch (error) { if (this.form !== form || form.folderRequest !== request) return; form.loading = false; form.error = String(error); }
+    this.tui.requestRender();
   }
   private async advance(text: string) {
     const form = this.form; if (!form) return;
     if (form.step === 0) {
       form.error = this.nameError(text.trim());
-      if (!form.error) { form.name = text.trim(); this.formStep(1); }
+      if (!form.error) { form.name = text.trim(); form.nameEdited = true; this.formStep(4); }
     } else if (form.step === 1) {
-      form.cwd = text.trim();
-      try {
-        form.choices = await this.source.models(this.life.signal);
-        if (this.form !== form || form.step !== 1) return;
-        if (!form.choices.length) throw new Error("No models available; log in or configure models first");
-        this.formStep(2);
-      } catch (error) { if (this.form !== form || form.step !== 1) return; form.error = String(error); }
+      await this.loadReview(text.trim());
     } else if (form.step === 3) {
       form.model = { ...form.model!, thinking: text as WorkerModel["thinking"] };
-      try {
-        const { id } = await this.source.newAgent({ name: form.name, cwd: form.cwd, model: form.model, thinking: form.model.thinking });
-        this.form = undefined; this.note = "";
-        // Open the new agent's chat: its first message is the task. The roster may not list it yet.
-        this.open({ id: id!, name: form.name, cwd: form.cwd, enabled: true, hosted: true, children: [] });
-      } catch (error) { form.error = String(error); }
+      this.formStep(4);
     }
-    if (form.error) { const error = form.error; this.editor.setText(text); form.error = error; }
+    if (form.error && form.step === 0) { const error = form.error; this.editor.setText(text); form.error = error; }
     this.tui.requestRender();
   }
   private list(width: number): string[] {
@@ -229,9 +277,10 @@ export class AgentsApp implements Component, Focusable {
     if (this.renaming) return ["Rename agent · enter save · esc cancel", ...this.editor.render(width), this.renaming.error ?? ""].map(line => truncateToWidth(line, width));
     if (this.form) {
       const form = this.form;
-      const breadcrumb = [form.step > 0 ? form.name : "", form.step > 1 ? form.cwd : "", form.step > 2 ? `${form.model!.provider}/${form.model!.modelId}` : ""].filter(Boolean).join(" › ");
-      return ["New agent · esc back · esc on name cancels", breadcrumb, ["Name", "Working directory", "Model · type to filter · ↑↓ select · enter choose", "Thinking · ↑↓ select · enter create"][form.step]!,
-        ...(form.step === 1 ? this.dirPicker!.render(width) : form.step < 3 ? this.editor.render(width) : []), ...(this.picker?.render(width) ?? []), form.error ? this.theme.fg("error", form.error) : ""].map(line => truncateToWidth(line, width));
+      return [`New agent · esc ${form.step === 4 ? "cancel" : "review"}`, form.cwd,
+        ({ 0: "Name · enter save", 1: "Working directory", 2: "Model · type to filter · ↑↓ select · enter choose", 3: "Thinking · ↑↓ select · enter choose", 4: "Review · ↑↓ select · enter choose" } as Record<number, string>)[form.step]!,
+        ...(form.step === 1 ? this.dirPicker!.render(width) : form.step === 0 || form.step === 2 ? this.editor.render(width) : []),
+        ...(this.picker?.render(width) ?? []), form.creating ? "Creating…" : form.loading ? "Loading settings…" : "", form.error ? this.theme.fg("error", form.error) : ""].map(line => truncateToWidth(line, width));
     }
     if (this.confirming) return [this.confirming.remove ? `Remove ${this.confirming.agent.name}${this.confirming.agent.children.length ? ` and ${this.confirming.agent.children.length} sub-agent${this.confirming.agent.children.length === 1 ? "" : "s"}` : ""}? y/n` : `Disable ${this.confirming.agent.name}? y / n`].map(line => truncateToWidth(line, width));
     return this.view ? this.view.render(width).map(line => truncateToWidth(line, width)) : this.list(width);
@@ -242,13 +291,14 @@ export class AgentsApp implements Component, Focusable {
       else this.editor.handleInput(data);
     }
     else if (this.form) {
-      if (this.form.step === 1) this.dirPicker!.handleInput(data);
+      if (this.form.creating) return;
+      if (this.form.loading && this.form.step === 4) {
+        if (matchesKey(data, Key.escape)) this.form = undefined;
+      } else if (this.form.step === 1) this.dirPicker!.handleInput(data);
       else if (matchesKey(data, Key.escape)) {
-        if (this.form.step === 0) this.form = undefined;
-        else {
-          this.formStep(this.form.step - 1);
-        }
-      } else if (this.picker && (this.form.step === 3 || matchesKey(data, Key.up) || matchesKey(data, Key.down) || matchesKey(data, Key.enter))) this.picker.handleInput(data);
+        if (this.form.step === 4) this.form = undefined;
+        else this.formStep(4);
+      } else if (this.picker && (this.form.step === 3 || this.form.step === 4 || matchesKey(data, Key.up) || matchesKey(data, Key.down) || matchesKey(data, Key.enter))) this.picker.handleInput(data);
       else this.editor.handleInput(data);
     }
     else if (this.confirming) { const target = this.confirming; this.confirming = undefined; if (data === "y") void (target.remove ? this.source.remove(target.agent.id) : this.source.disable(target.agent.id)).catch(error => this.fail(error)); }
@@ -265,7 +315,10 @@ export class AgentsApp implements Component, Focusable {
       const agent = this.rows()[this.selected]?.agent;
       if (agent) this.confirming = { agent, remove: data === "d" };
     }
-    else if (data === "n") { this.form = { step: 0, name: "", cwd: "", model: this.model, choices: [] }; this.note = ""; this.formStep(0); }
+    else if (data === "n") {
+      this.form = { step: 4, name: suggestedAgentName(this.launchCwd, this.agents.map(agent => agent.name)), cwd: this.launchCwd, choices: [] };
+      this.note = ""; this.formStep(4); void this.loadReview(this.launchCwd);
+    }
     this.setScreen();
     this.tui.requestRender();
   }
