@@ -214,8 +214,8 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await until(async () => !(await alpha()));
     assert.ok(!(await source.list()).some(agent => agent.id === readerId));
     // Ctrl+C is global, including the editor and modal confirmation screens. As in Pi, one press clears the prompt and
-    // a second within 500 ms exits. Legacy \x03 and Kitty keyboard protocol ctrl+c (Ghostty, cmux) both count; q on
-    // the list exits at once.
+    // a second within 500 ms exits. Legacy \x03 and Kitty keyboard protocol ctrl+c (Ghostty, cmux) both count, and
+    // Kitty's key-release report after a press is not a second press; q on the list exits at once.
     for (const [screen, exitKey] of [["list", "\x03"], ["chat", "\x03"], ["form", "\x03"], ["confirm", "\x03"], ["list", "\x1b[99;5u"], ["chat", "\x1b[99;5u"], ["list", "q"]] as const) {
       const term = new VirtualTerminal(width, height); const screenTui = new TuiAltScreen(term);
       let didExit = false;
@@ -227,6 +227,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
         await delay(50);
         if (screen === "chat") { term.sendInput("draft"); await delay(20); }
         term.sendInput(exitKey); await delay(20);
+        if (exitKey.startsWith("\x1b[")) { term.sendInput("\x1b[99;5:3u"); await delay(20); }
         if (exitKey !== "q") {
           assert.equal(didExit, false, `${screen} ${JSON.stringify(exitKey)} first press`);
           if (screen === "chat") assert.ok(!(await term.flushAndGetViewport()).join("\n").includes("draft"), "first ctrl+c clears the prompt");

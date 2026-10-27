@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { DirPicker } from "./dir-picker.ts";
 import { agentNameError, suggestedAgentName } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
-import { Editor, Key, SelectList, matchesKey, truncateToWidth, type Component, type Focusable, type TuiAltScreen } from "@earendil-works/pi-tui";
+import { Editor, Key, SelectList, isKeyRelease, matchesKey, truncateToWidth, type Component, type Focusable, type TuiAltScreen } from "@earendil-works/pi-tui";
 import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { type WorkerModel } from "./config.ts";
 import type { AgentSummary } from "./protocol.ts";
@@ -61,8 +61,9 @@ export class AgentsApp implements Component, Focusable {
     };
     this.exit = options.exit ?? (() => {});
     this.removeInput = tui.addInputListener(data => {
-      // Kitty's keyboard protocol (on in Ghostty/cmux) sends ctrl+c as an escape sequence, not \x03.
-      if (!matchesKey(data, Key.ctrl("c"))) return;
+      // Kitty's keyboard protocol (on in Ghostty/cmux) sends ctrl+c as an escape sequence, not \x03, and also reports
+      // the key's release; input listeners see that before the TUI drops it, and it must not count as a second press.
+      if (isKeyRelease(data) || !matchesKey(data, Key.ctrl("c"))) return;
       // Pi's app.clear: one press clears the prompt, a second within 500 ms quits.
       const now = Date.now();
       if (now - this.lastCtrlC < 500) { this.dispose(); tui.stop(); this.exit(); return { consume: true }; }
