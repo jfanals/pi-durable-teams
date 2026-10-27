@@ -418,7 +418,8 @@ class Transcript implements Component {
     const s = this.status;
     if (!this.showWorking || (!s?.running && !this.pending)) { this.loader?.stop(); this.loader = undefined; return; }
     this.loader ??= new Loader(this.tui, text => this.theme.fg("accent", text), text => this.theme.fg("muted", text));
-    this.loader.setMessage(this.pending ?? `${s!.activity || "Working…"} · ${formatDuration(s!.since === undefined ? 0 : Date.now() - s!.since)} (esc to stop)`);
+    // As Pi: just "Working", since the transcript above already shows the running tool call.
+    this.loader.setMessage(this.pending ?? `Working · ${formatDuration(s!.since === undefined ? 0 : Date.now() - s!.since)} (esc to stop)`);
   }
   workingLine(width: number) { return this.loader?.render(width) ?? []; }
   async older() {
