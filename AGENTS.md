@@ -7,7 +7,7 @@ web app (`src/web/`, served by the host) are views onto it. See README.md for th
 
 - `~/Desktop/src/pi-durable-teams` is LIVE (branch `stable`). The running host and Pi's extension
   load from it. Do not edit it.
-- `~/Desktop/src/pi-durable-teams-mobile` is for development (branch `mobile`). Work here.
+- `~/Desktop/src/pi-durable-teams-mobile` is for development (branch `dev`). Work here.
 
 You may be running inside the live host you are changing. Never restart, kill, or signal the host
 yourself, and never touch `~/.pi/agent/durable-teams/`. If a change needs a host restart, say so and
