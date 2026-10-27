@@ -479,7 +479,7 @@ test("queued messages, /compact, /fork, /clone and Pi's cache-miss notices", { t
   } finally { await host.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("Pi's cache warming keeps a hosted agent's prompt cache warm during a long tool run", { timeout: 15000 }, async () => {
+test("Pi's cache warming keeps a hosted agent's prompt cache warm during a long tool run or its sub-agents' work", { timeout: 20000 }, async () => {
   const { Type } = await import("typebox");
   const { createRegistry, defineExtension, defineTool } = await import("@earendil-works/pi-durable");
   const directory = await mkdtemp(join(tmpdir(), "agents-warm-"));
@@ -510,5 +510,26 @@ test("Pi's cache warming keeps a hosted agent's prompt cache warm during a long 
     assert.deepEqual(lines, ["Cache warmed: $0.000"]);
     await delay(1500);
     assert.equal(warms.length, 1, "no warming after the run in streaming mode");
+
+    // A main agent that delegates and ends its turn stays warm while its sub-agent works, since the report will wake it.
+    warms.length = 0;
+    const text = (context: any) => JSON.stringify(context.messages);
+    // The sub-agent's conversation starts with its task; the main agent's with the human's "Delegate".
+    const first = (context: any) => JSON.stringify(context.messages.find((message: any) => message.role === "user")?.content ?? "");
+    fake.setResponses(Array.from({ length: 20 }, () => (context: any, options: any) => {
+      if (options?.maxTokens === 1) { warms.push(options.sessionId); return fauxAssistantMessage("w"); }
+      const last = context.messages.at(-1);
+      if (first(context).includes("Run slow")) return last?.role === "toolResult" ? fauxAssistantMessage("Slow done") : fauxAssistantMessage(fauxToolCall("slow", {}), { stopReason: "toolUse" });
+      if (last?.role === "toolResult") return fauxAssistantMessage("Waiting for the report");
+      if (text(context).includes("Slow done")) return fauxAssistantMessage("Thanks");
+      return fauxAssistantMessage(fauxToolCall("team", { action: "spawn", name: "kid", message: "Run slow" }), { stopReason: "toolUse" });
+    }));
+    const main = await source.newAgent({ name: "lead", cwd: directory });
+    await source.send(main.id!, "Delegate");
+    await until(async () => (await source.page(main.id!)).items.some(item => item.kind === "reply" && item.parts.some(part => part.type === "text" && part.text === "Thanks")));
+    assert.equal(new Set(warms).size, 2, "both the waiting main agent and its working sub-agent were warmed");
+    const settled = warms.length;
+    await delay(1500);
+    assert.equal(warms.length, settled, "no warming once the whole tree is idle");
   } finally { await host.close(); await rm(directory, { recursive: true, force: true }); }
 });

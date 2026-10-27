@@ -3,7 +3,7 @@
 import { realpath, stat } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
-  AgentDoc, AssistantEntry, ProviderDoc, UsageDoc, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool,
+  AgentDoc, AssistantEntry, LiveDoc, ProviderDoc, UsageDoc, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool,
   Harness, watchEvents,
   type AgentChange, type ConversationId, type Cursor, type EntryId, type HarnessOptions, type ModelRef,
   type Storage, type TaskId, type Tx,
@@ -501,6 +501,16 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       for (const agent of Object.values((await read()).agents)) if (agent.where.kind === "hosted"
         && (await harness.snapshot(ProviderDoc, agent.where.conversationId, context))?.sessionId === sessionId) return agent.where.conversationId;
       return undefined;
+    },
+    async lineage(conversationId) {
+      const agents = Object.values((await read()).agents).filter(agent => agent.where.kind === "hosted" && !agent.removed);
+      const conversation = (agent: Agent) => (agent.where as { conversationId: ConversationId }).conversationId;
+      const running = async (agent: Agent): Promise<boolean> => Boolean((await harness.snapshot(LiveDoc, conversation(agent), context))?.run)
+        || (await Promise.all(agents.filter(child => child.parent === agent.id).map(running))).some(Boolean);
+      const lineage: { conversationId: number; busy: boolean }[] = [];
+      for (let agent = agents.find(a => conversation(a) === conversationId); agent; agent = agents.find(a => a.id === agent!.parent))
+        lineage.push({ conversationId: conversation(agent), busy: await running(agent) });
+      return lineage;
     },
     record: (conversationId, warm) => harness.commit(async tx => {
       await tx.appendEntry(conversationId as ConversationId, { kind: CACHE_WARM_KIND, data: warm as any });

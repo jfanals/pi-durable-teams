@@ -1,7 +1,8 @@
 // Pi's cache warming for hosted agents. Durable sends every model request through `models`; each agent conversation's
 // requests drive one Pi CacheWarmer, which re-sends the last request with a one-token cap before its prompt cache
 // expires, when Pi's rule expects it to save money. Same setting (`cacheWarming`: off, streaming, idle), timing and
-// limits as Pi; each warm is an entry in the conversation, shown as Pi's "Cache warmed: $…" line.
+// limits as Pi; each warm is an entry in the conversation, shown as Pi's "Cache warmed: $…" line. One addition: an agent
+// counts as working while any of its sub-agents works, since their reports will wake it.
 import type { AssistantMessage, Models, Usage } from "@earendil-works/pi-ai";
 import type { CommitPublication } from "@earendil-works/pi-durable";
 import { piCacheWarming } from "./presentation.ts";
@@ -13,6 +14,8 @@ type Store = {
   /** The conversation whose provider session is `sessionId`, if it is a hosted agent's. */
   conversationOf(sessionId: string): Promise<number | undefined>;
   record(conversationId: number, warm: CacheWarmData): Promise<void>;
+  /** The conversation and its ancestors, nearest first, each with whether it or any sub-agent below it is running. */
+  lineage(conversationId: number): Promise<{ conversationId: number; busy: boolean }[]>;
 };
 
 export async function cacheWarming(getMode: () => string, store: Store, report: (error: unknown) => void) {
@@ -56,7 +59,10 @@ export async function cacheWarming(getMode: () => string, store: Store, report: 
   });
   return {
     models: (models: Models | (() => Models)) => typeof models === "function" ? () => wrap(models()) : wrap(models),
-    /** Commit listener: a settled run ends streaming warming; compaction, reset or an agent change ends the cached prefix. */
+    /**
+     * Commit listener: a settled run ends streaming warming for each agent from it upward whose whole subtree is now idle;
+     * compaction, reset or an agent change ends the cached prefix.
+     */
     onCommit(publication: CommitPublication) {
       for (const change of publication.changes) {
         const conversationId = change.type === "entry" ? change.value.conversationId : change.type === "document" ? change.conversationId : undefined;
@@ -65,7 +71,16 @@ export async function cacheWarming(getMode: () => string, store: Store, report: 
         if (!state) continue;
         if (change.type === "entry" && ["pi.compaction", "pi.reset"].includes(change.value.kind)) state.epoch++;
         if (change.type === "document" && change.record.kind === "pi.agent") state.epoch++;
-        if (change.type === "document" && change.record.kind === "pi.live" && "value" in change && change.value && !(change.value as { run?: unknown }).run) state.warmer.onAgentSettled();
+      }
+      for (const change of publication.changes) {
+        if (change.type !== "document" || change.record.kind !== "pi.live" || !("value" in change) || !change.value || (change.value as { run?: unknown }).run) continue;
+        store.lineage(change.conversationId!).then(lineage => {
+          for (const { conversationId, busy } of lineage) {
+            if (busy) break;
+            const sessionId = byConversation.get(conversationId);
+            if (sessionId !== undefined) sessions.get(sessionId)?.warmer.onAgentSettled();
+          }
+        }, report);
       }
     },
     dispose() { for (const { warmer } of sessions.values()) warmer.cancel(); sessions.clear(); },
