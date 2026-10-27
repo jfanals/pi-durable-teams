@@ -337,7 +337,7 @@ Enable the loopback API in `~/.pi/agent/durable-teams/config.json` (or your
 ```
 
 Run `pi-agents pair` to print the pairing URL and, if `qrencode` is installed, a QR
-code. Run the suggested `tailscale serve --bg 8787` command yourself to expose it
+code. Run the suggested `tailscale serve --bg 8787` command (`--https=8443` if port 443 is taken on the Mac) yourself to expose it
 with tailnet HTTPS. Without Tailscale the URL falls back to localhost.
 `pi-agents pair --rotate` revokes the old token and closes remote streams within one second.
 The host polls token-file metadata once per second, reloads only changes, and destroys remote

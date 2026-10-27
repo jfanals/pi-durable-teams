@@ -230,24 +230,26 @@ test("pair prints a tailnet URL, optional QR and serve instructions without runn
     await assert.rejects(pair(directory), /Set "remote".*"port"/);
     await writeFile(join(directory, "config.json"), JSON.stringify({ remote: { port: 8787 } }));
     const calls = join(directory, "calls");
-    await writeFile(join(directory, "tailscale"), `#!/bin/sh\necho "$*" >> '${calls}'\nif [ "$1" = status ]; then echo '{"Self":{"DNSName":"machine.tail.ts.net."}}'; fi\n`);
+    await writeFile(join(directory, "tailscale"), `#!/bin/sh\necho "$*" >> '${calls}'\nif [ "$1" = status ]; then echo '{"Self":{"DNSName":"machine.tail.ts.net."}}'; else echo '{}'; fi\n`);
     await writeFile(join(directory, "qrencode"), '#!/bin/sh\nprintf "QR %s" "$*"\n');
     await chmod(join(directory, "tailscale"), 0o700); await chmod(join(directory, "qrencode"), 0o700);
     process.env.PATH = directory;
     await pair(directory);
     const token = await remoteToken(directory);
-    assert.equal(output[0], `https://machine.tail.ts.net/?token=${token}`);
-    assert.equal(output[1], "Run: tailscale serve --bg 8787");
+    assert.match(output[0]!, /^Run: tailscale serve --bg 8787 /);
+    assert.equal(output[1], `https://machine.tail.ts.net/?token=${token}`);
     assert.match(output[2]!, /^QR -t ansiutf8 https:/);
-    assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n"), ["status --json", "serve status"]);
-    await writeFile(join(directory, "tailscale"), '#!/bin/sh\nif [ "$1" = status ]; then echo \'{"Self":{"DNSName":"machine.tail.ts.net"}}\'; else echo "http://127.0.0.1:8787"; fi\n');
+    assert.deepEqual((await readFile(calls, "utf8")).trim().split("\n"), ["serve status --json", "status --json"]);
+    // Serve already proxies this port on 8443: that exact address is printed, no setup hint.
+    await writeFile(join(directory, "tailscale"), `#!/bin/sh\necho '{"Web":{"machine.tail.ts.net:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:8787"}}}}}'\n`);
     output.length = 0; await pair(directory);
+    assert.equal(output[0], `https://machine.tail.ts.net:8443/?token=${token}`);
     assert.ok(!output.some(line => line.startsWith("Run:")));
     await rm(join(directory, "tailscale")); await rm(join(directory, "qrencode"));
     output.length = 0; await pair(directory, true);
     assert.match(output[0]!, /^http:\/\/127\.0\.0\.1:8787\/\?token=/);
     assert.notEqual(await remoteToken(directory), token);
-    assert.equal(output.length, 2);
+    assert.equal(output.length, 1); // no Tailscale, no QR tool: just the local URL
   } finally { console.log = log; process.env.PATH = oldPath; await rm(directory, { recursive: true, force: true }); }
 });
 

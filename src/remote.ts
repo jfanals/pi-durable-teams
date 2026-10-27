@@ -65,15 +65,21 @@ export async function pair(directory: string, rotate = false) {
   const port = (await readConfig(directory)).remote?.port;
   if (!port) throw new Error('Phone access is disabled. Set "remote": { "port": 8787 } in config.json and restart the host.');
   const token = await remoteToken(directory, rotate);
-  let base = `http://127.0.0.1:${port}`;
+  // Prefer the address Tailscale Serve actually proxies to this port (it may not be :443).
+  const run = (args: string[]) => execFileSync("tailscale", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  let served: string | undefined;
   try {
-    const status = JSON.parse(execFileSync("tailscale", ["status", "--json"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }));
-    if (status.Self?.DNSName) base = `https://${status.Self.DNSName.replace(/\.$/, "")}`;
-  } catch { /* Tailscale is optional for local pairing. */ }
+    const web = JSON.parse(run(["serve", "status", "--json"])).Web ?? {};
+    served = Object.keys(web).find(host => Object.values(web[host]?.Handlers ?? {}).some((h: any) => String(h?.Proxy).replace(/\/$/, "").endsWith(`127.0.0.1:${port}`)));
+  } catch { /* Serve not configured or Tailscale missing. */ }
+  let base = served ? `https://${served.replace(/:443$/, "")}` : `http://127.0.0.1:${port}`;
+  if (!served) {
+    try {
+      const name = JSON.parse(run(["status", "--json"])).Self?.DNSName;
+      if (name) { base = `https://${name.replace(/\.$/, "")}`; console.log(`Run: tailscale serve --bg ${port}   (if port 443 is taken on this Mac: tailscale serve --bg --https=8443 ${port})`); }
+    } catch { /* Tailscale is optional for local pairing. */ }
+  }
   const url = `${base}/?token=${encodeURIComponent(token)}`;
   console.log(url);
-  let served = false;
-  try { served = execFileSync("tailscale", ["serve", "status"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).includes(`127.0.0.1:${port}`); } catch { /* print setup below */ }
-  if (!served) console.log(`Run: tailscale serve --bg ${port}`);
   try { console.log(execFileSync("qrencode", ["-t", "ansiutf8", url], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })); } catch { /* QR is optional. */ }
 }
