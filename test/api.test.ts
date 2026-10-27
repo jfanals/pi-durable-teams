@@ -159,7 +159,7 @@ test("phone primitives: directory listings, remote config, token auth and socket
     for (const path of ["/web/manifest.webmanifest", "/web/icons/icon-192.png", "/web/icons/icon-512.png", "/web/sw.js"]) assert.equal((await call(path)).status, 200, path);
     assert.equal((await call("/web/main.ts", { method: "POST" })).status, 404, "shell files are GET only");
     assert.equal((await call(`/agents?token=${token}`, { headers: { cookie: `pi_shell=${token}` } })).status, 401, "API needs the Bearer header");
-    for (const path of ["/web/main.ts", "/status.ts", "/agent-name.ts"]) {
+    for (const path of ["/web/main.ts", "/status.ts", "/agent-name.ts", "/model-selection.ts"]) {
       const module = await call(path);
       assert.equal(module.status, 200); assert.match(module.headers.get("content-type")!, /javascript/);
       const code = await module.text(); assert.doesNotMatch(code, /export type |: WorkerStatus|: string/);

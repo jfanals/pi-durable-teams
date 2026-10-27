@@ -41,9 +41,9 @@ export async function loadToolRenderers() {
 export const builtInRenderers = (name: string): ToolRenderers | undefined => builtIn?.[name];
 
 /** Pi's keybindings (ctrl+o, ctrl+t, the user's keybindings.json). Its manager is a type-only public export. */
-export async function piKeybindings() {
+export async function piKeybindings(agentDir?: string) {
   const { KeybindingsManager } = await import(piModule("./core/keybindings.js"));
-  return KeybindingsManager.create();
+  return KeybindingsManager.create(agentDir);
 }
 
 type Usage = { input: number; cacheRead: number; cacheWrite: number; cost: { input: number; cacheRead: number; cacheWrite: number } };
@@ -70,4 +70,19 @@ export async function piCacheWarming(): Promise<{
   formatCacheWarmingUsage(entry: { usage: { cost: { total: number } }; note?: string }): string;
 }> {
   return import(piModule("./core/cache-warmer.js"));
+}
+
+/** Pi's selector over a host-owned model snapshot; refresh fetches the same authenticated host list. */
+export async function piModelSelector(tui: TUI, choices: import("./model-choices.ts").ModelChoice[], current: { provider?: string; modelId?: string }, reload: () => Promise<import("./model-choices.ts").ModelChoice[]>, select: (choice: import("./model-choices.ts").ModelChoice) => void, cancel: () => void) {
+  const { ModelSelectorComponent } = await import(piModule("./modes/interactive/components/model-selector.js"));
+  let snapshot = choices.map(choice => ({ ...choice, id: choice.modelId }));
+  const runtime = {
+    getAvailableSnapshot: () => snapshot,
+    getModel: (provider: string, id: string) => snapshot.find(m => m.provider === provider && m.id === id),
+    getError: () => undefined,
+    refresh: async () => { snapshot = (await reload()).map(choice => ({ ...choice, id: choice.modelId })); return { errors: new Map(), aborted: false }; },
+  };
+  return new ModelSelectorComponent(tui, runtime.getModel(current.provider ?? "", current.modelId ?? ""), runtime,
+    choices.some(choice => choice.scoped) ? snapshot.map(model => ({ model })) : [],
+    (model: { provider: string; id: string }) => select(snapshot.find(m => m.provider === model.provider && m.id === model.id)!), cancel);
 }

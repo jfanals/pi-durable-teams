@@ -2,13 +2,16 @@
 import { homedir } from "node:os";
 
 import { getMarkdownTheme, getSelectListTheme, keyText, ToolExecutionComponent, UserMessageSelectorComponent, type Theme, type ThemeBg } from "@earendil-works/pi-coding-agent";
-import { builtInRenderers, loadToolRenderers } from "./presentation.ts";
+import { builtInRenderers, loadToolRenderers, piModelSelector } from "./presentation.ts";
 import {
   Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth,
   type Component, type DefaultTextStyle, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import { clean, firstLine, textOf, liveStatus, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, type WorkerStatus } from "./status.ts";
 import type { ChatItem, Queued } from "./chat.ts";
+import type { ModelChoice } from "./model-choices.ts";
+import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { nextModel, modelThinking, modelNotice, thinkingSelection } from "./model-selection.ts";
 import type { Action, Delivery, Mode } from "./protocol.ts";
 
 export type ViewResult = { type: "back" } | { type: "send"; mode: Mode } | { type: "stop" };
@@ -329,6 +332,8 @@ export type WorkerSource = {
 export type ChatActions = {
   send(text: string, mode: Mode): Promise<unknown>; stop(): Promise<unknown>; back(): void;
   /** `/compact [instructions]` in the editor. */
+  models?(): Promise<ModelChoice[]>;
+  setModel?(model: ModelChoice, thinking: ModelThinkingLevel): Promise<unknown>;
   compact?(instructions: string): Promise<{ outcome: "compacted" | "nothing" | "running" | "failed"; error?: string }>;
   /** `/fork` and `/clone`, top-level agents only: the human's messages, and a fork before one of them or of everything. */
   inputs?(): Promise<{ id: string; text: string }[]>;
@@ -541,8 +546,10 @@ export class ChatView implements Component, Focusable {
   private transcript: Transcript;
   private editor: Editor;
   private actions: ChatActions;
+  private modelNote?: string;
+  private disposed = false;
   private panel?: TeamPanel;
-  private picker?: { component: Component; input(data: string): void };
+  private picker?: { component: Component; input(data: string): void; dispose?(): void };
   readonly layout: VStack;
   constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }, branch: () => string = () => "") {
     this.actions = actions;
@@ -570,7 +577,7 @@ export class ChatView implements Component, Focusable {
       const hints = `${s?.name ?? name} · ${s?.id ?? "…"} · ← back · esc stop · ${keyText("app.message.followUp")} follow-up · ${keyText("app.tools.expand")} ${this.transcript.expanded ? "collapse" : "expand"} · ${keyText("app.thinking.toggle")} thinking`;
       return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
     }, invalidate() {} };
-    const working = { render: (width: number) => [...this.transcript.queuedLines(width), ...this.transcript.workingLine(width)], invalidate() {} };
+    const working = { render: (width: number) => [...this.transcript.queuedLines(width), ...this.transcript.workingLine(width), ...(this.modelNote ? [truncateToWidth(theme.fg("muted", this.modelNote), width)] : [])], invalidate() {} };
     // Pi's selectors take the editor's place while open.
     const input = { render: (width: number) => (this.picker?.component ?? this.editor).render(width), invalidate: () => this.editor.invalidate() };
     this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, working, input, ...(this.panel ? [this.panel] : []), footer]);
@@ -602,11 +609,54 @@ export class ChatView implements Component, Focusable {
     this.picker = { component: selector, input: data => selector.getMessageList().handleInput(data) };
     this.transcript.changed();
   }
+  private async changeModel(command = "", backwards = false, thinking = false) {
+    const t = this.transcript;
+    try {
+      const choices = await this.actions.models!();
+      if (this.disposed) return;
+      const current: { provider?: string; modelId?: string; thinking?: string } = t.status ?? {};
+      const apply = async (model: ModelChoice, level = modelThinking(model, current.thinking), notice = modelNotice(model, level)) => {
+        await this.actions.setModel!(model, level as ModelThinkingLevel);
+        if (this.disposed) return;
+        this.modelNote = notice; t.changed(); void t.refresh();
+      };
+      if (thinking) {
+        const model = choices.find(m => m.provider === current.provider && m.modelId === current.modelId);
+        if (!model) throw new Error("Current model unavailable");
+        const level = thinkingSelection(model, current.thinking, command);
+        if (level) await apply(model, level, `Thinking level: ${level}`);
+        else { this.modelNote = "Current model does not support thinking"; t.changed(); }
+      } else if (command === "cycle") {
+        const model = nextModel(choices, current, backwards);
+        if (model) { const level = modelThinking(model, current.thinking, true); await apply(model, level, modelNotice(model, level, true)); }
+        else { this.modelNote = choices.some(m => m.scoped) ? "Only one model in scope" : "Only one model available"; t.changed(); }
+      } else if (command) {
+        const model = choices.find(m => `${m.provider}/${m.modelId}` === command || m.modelId === command);
+        if (!model) throw new Error(`Model not found: ${command}`);
+        await apply(model);
+      } else {
+        const close = () => { this.picker?.dispose?.(); this.picker = undefined; t.changed(); };
+        const selector = await piModelSelector(t.tui, choices, current, () => this.actions.models!(), model => {
+          close(); void apply(model).catch(error => { t.note = String(error); t.changed(); });
+        }, close);
+        if (this.disposed) { selector.dispose(); return; }
+        selector.focused = true;
+        this.picker = { component: selector, input: data => selector.handleInput(data), dispose: () => selector.dispose() };
+        t.changed();
+      }
+    } catch (error) { t.note = String(error); t.changed(); }
+  }
   setChildren(workers: WorkerStatus[]) { this.panel?.setWorkers(workers); }
   focusChild(target: string) { this.panel?.enter(this.editor, target); }
   private submit(text: string, mode: Mode) {
     if (!text.trim()) return;
+    this.modelNote = undefined;
     const command = text.trim();
+    if (this.actions.models && /^\/(model|thinking)(?:\s|$)/.test(command)) {
+      this.editor.setText(""); this.editor.addToHistory(text);
+      const thinking = command.startsWith("/thinking");
+      void this.changeModel(command.slice(thinking ? 9 : 6).trim(), false, thinking); return;
+    }
     if (this.actions.compact && /^\/compact(?:\s|$)/.test(command)) {
       this.editor.setText(""); this.editor.addToHistory(text);
       this.run("Compacting context…", this.actions.compact(command.slice("/compact".length).trim()), result =>
@@ -629,6 +679,13 @@ export class ChatView implements Component, Focusable {
   render(width: number) { return this.layout.render(width); }
   handleInput(data: string) {
     if (this.picker) { this.picker.input(data); this.transcript.changed(); return; }
+    if (this.actions.models) {
+      const kb = getKeybindings();
+      if (kb.matches(data, "app.model.select")) { void this.changeModel(); return; }
+      if (kb.matches(data, "app.model.cycleForward")) { void this.changeModel("cycle"); return; }
+      if (kb.matches(data, "app.model.cycleBackward")) { void this.changeModel("cycle", true); return; }
+      if (kb.matches(data, "app.thinking.cycle")) { void this.changeModel("", false, true); return; }
+    }
     if (matchesKey(data, Key.left) && !this.editor.getText()) return this.actions.back();
     if (this.panel?.focused) { this.panel.handleInput(data); return; }
     if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasWorkers) { this.panel.enter(this.editor); return; }
@@ -639,5 +696,5 @@ export class ChatView implements Component, Focusable {
     this.editor.handleInput(data);
   }
   invalidate() { this.transcript.invalidate(); this.editor.invalidate(); }
-  dispose() { this.transcript.dispose(); this.panel?.dispose(); }
+  dispose() { this.disposed = true; this.picker?.dispose?.(); this.transcript.dispose(); this.panel?.dispose(); }
 }

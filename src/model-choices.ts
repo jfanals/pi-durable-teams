@@ -1,11 +1,11 @@
-import { getSupportedThinkingLevels, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, getSupportedThinkingLevels, type Api, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 
-export type ModelChoice = { provider: string; modelId: string; name?: string; thinkingLevels: ModelThinkingLevel[] };
+export type ModelChoice = { provider: string; modelId: string; name?: string; thinkingLevels: ModelThinkingLevel[]; thinking?: ModelThinkingLevel; cycleThinking?: ModelThinkingLevel; scoped?: boolean; thinkingMap?: Record<string, ModelThinkingLevel> };
 
 /** Pi's scoped models take precedence; an empty scope means all available models. */
 export function selectableModels<T>(scoped: readonly { model: T }[], available: () => readonly T[]): readonly T[] {
   return scoped.length ? scoped.map(item => item.model) : available();
 }
 export function modelChoices(models: readonly Model<Api>[]): ModelChoice[] {
-  return models.map(model => ({ provider: model.provider, modelId: model.id, name: model.name, thinkingLevels: getSupportedThinkingLevels(model) }));
+  return models.map(model => ({ provider: model.provider, modelId: model.id, name: model.name, thinkingLevels: getSupportedThinkingLevels(model), thinkingMap: Object.fromEntries((["off", "minimal", "low", "medium", "high", "xhigh", "max"] as ModelThinkingLevel[]).map(level => [level, clampThinkingLevel(model, level)])) }));
 }

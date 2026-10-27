@@ -135,6 +135,8 @@ export class AgentsApp implements Component, Focusable {
     this.view = new ChatView(this.tui, this.theme, agent.name, bound, this.life.signal, {
       send: (text, mode) => this.source.send(agent.id, text, mode), stop: () => this.source.stop(agent.id),
       compact: instructions => this.source.compact(agent.id, instructions),
+      models: () => this.source.models(this.life.signal),
+      setModel: (model, thinking) => this.source.setModel(agent.id, model.provider, model.modelId, thinking),
       ...(this.stack.length === 1 ? {
         inputs: () => this.source.inputs(agent.id),
         // Pi jumps into the fork; the chosen message waits in its editor.
