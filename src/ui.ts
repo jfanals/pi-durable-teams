@@ -566,7 +566,7 @@ export class ChatView implements Component, Focusable {
       const room = width - visibleWidth(right) - 2;
       const left = truncateToWidth(stats, right && room >= 24 ? room : width);
       const statsLine = right && room >= 24 ? left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right : left;
-      const hints = `${s?.name ?? name} · ${s?.id ?? "…"} · ← back · esc stop · alt+enter follow-up · ${keyText("app.tools.expand")} ${this.transcript.expanded ? "collapse" : "expand"} · ${keyText("app.thinking.toggle")} thinking`;
+      const hints = `${s?.name ?? name} · ${s?.id ?? "…"} · ← back · esc stop · ${keyText("app.message.followUp")} follow-up · ${keyText("app.tools.expand")} ${this.transcript.expanded ? "collapse" : "expand"} · ${keyText("app.thinking.toggle")} thinking`;
       return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
     }, invalidate() {} };
     const working = { render: (width: number) => [...this.transcript.queuedLines(width), ...this.transcript.workingLine(width)], invalidate() {} };
@@ -632,7 +632,8 @@ export class ChatView implements Component, Focusable {
     if (this.panel?.focused) { this.panel.handleInput(data); return; }
     if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasWorkers) { this.panel.enter(this.editor); return; }
     if (matchesKey(data, Key.escape)) { void this.actions.stop().catch(error => { this.transcript.note = String(error); this.transcript.changed(); }); return; }
-    if (matchesKey(data, "alt+enter")) return this.submit(this.editor.getExpandedText(), "followUp");
+    // Pi's follow-up key (option+enter on a Mac, or the user's own binding in Pi's keybindings.json).
+    if (getKeybindings().matches(data, "app.message.followUp")) return this.submit(this.editor.getExpandedText(), "followUp");
     if (this.transcript.toggle(data)) return;
     this.editor.handleInput(data);
   }

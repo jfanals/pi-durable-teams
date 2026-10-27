@@ -60,6 +60,9 @@ export async function appScenario(width: number, height: number, print?: (name: 
     const workingIndex = working.split("\n").findIndex(line => line.includes("(esc to stop)"));
     assert.match(working.split("\n")[workingIndex + 1]!, /─/, "working line immediately above editor border");
     assert.match(working, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] .+ · \d+s \(esc to stop\)/);
+    // Option+Enter (Kitty protocol, as Ghostty and cmux send it) queues a follow-up, shown above the editor at once.
+    await key("LATER"); await key("\x1b[13;3u");
+    print?.("follow-up", await wait("Follow-up: LATER"));
     await key("\x1b");
     await until(async () => (await alpha())?.running === false);
     await until(async () => !(await frame()).includes("(esc to stop)"));
