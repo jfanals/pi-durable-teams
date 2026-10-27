@@ -28,7 +28,8 @@
     "@earendil-works/pi-durable": "1.4.0",
     "@earendil-works/pi-mcp": "1.4.0",
     "marked": "18.0.11",
-    "pi-web-access": "0.45.0"
+    "pi-web-access": "0.45.0",
+    "web-push": "3.6.7"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -41,6 +42,7 @@
     "@earendil-works/pi-coding-agent": "1.4.0",
     "@earendil-works/pi-tui": "1.4.0",
     "@types/node": "^24.0.0",
+    "@types/web-push": "^3.6.4",
     "@xterm/headless": "^6.0.0",
     "typescript": "^5.9.0"
   },

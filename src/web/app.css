@@ -383,3 +383,18 @@ a:focus-visible {
 .composer-footer {
   position: relative;
 }
+.notification-setting {
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.notification-setting label {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.notification-setting small {
+  display: block;
+  color: var(--muted);
+}

@@ -6,6 +6,7 @@ const files = new Map<string, URL>([
   ["/", new URL("./web/index.html", import.meta.url)],
   ...[
     "pair.ts",
+    "push.ts",
     "index.html",
     "app.css",
     "api.ts",
@@ -16,6 +17,7 @@ const files = new Map<string, URL>([
     "icons/icon.svg",
     "icons/icon-192.png",
     "icons/icon-512.png",
+    "icons/badge-96.png",
   ].map((name) => [`/web/${name}`, new URL(`./web/${name}`, import.meta.url)] as [string, URL]),
   ...["status.ts", "agent-name.ts"].map(
     (name) => [`/${name}`, new URL(`./${name}`, import.meta.url)] as [string, URL],

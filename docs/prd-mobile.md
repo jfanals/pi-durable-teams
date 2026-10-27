@@ -1,27 +1,24 @@
-# PRD: phone clients for durable agents (Android web app + native Android app)
+# PRD: installed web app for durable agents
 
-Status: approved by the owner 2026-10-26 (delegated: "finish both; good primitives first").
+Status: web-only decision approved by the owner 2026-10-27.
 
 ## Goal
 
-Use the agents from an Android phone over Tailscale: see every agent and its sub-agents, read
+Use the agents from a phone over Tailscale: see every agent and its sub-agents, read
 transcripts, send messages (follow-up or steer), stop, create, rename and change models — the
-same things the `pi-agents` terminal app does. Two clients on one host API:
-
-1. **Mobile web app** (installable PWA), served by the host.
-2. **Native Android app** (Kotlin, Jetpack Compose), with notifications when a top-level agent
-   finishes.
+same things the `pi-agents` terminal app does. One installable web app, served by the host,
+with opt-in Web Push notifications.
 
 ## Principles
 
 - **The host API is the single source of truth.** Clients never read the database and never
-  re-derive agent state. Anything two clients would compute (status, transcript structure, the
+  re-derive agent state. Anything multiple clients would compute (status, transcript structure, the
   external-session placeholder, folder listings) is computed once on the host.
 - **Primitives first.** Each primitive is a small pure function or one route, tested through the
   host. Clients are thin renderers.
 - Simple, boring code; no frameworks where the platform suffices. TypeScript on the host and web,
-  Kotlin on Android. The only duplication allowed is presentation formatting in Kotlin.
-- No audience-split paths: the terminal app, the Pi extension, the web app and the Android app
+  with shared presentation formatters.
+- No audience-split paths: the terminal app, the Pi extension, the installed web app
   use the same routes and the same transcript items.
 
 ## Primitives (phase M1)
@@ -103,15 +100,35 @@ their shapes.
 - PWA: manifest, icons, a service worker that caches only the app shell (never API responses),
   dark theme, safe-area insets, 44 px touch targets.
 
-## Native Android app (phase M3)
+## Decision 2026-10-27: web app only
 
-- `android/` Gradle project: Kotlin, Jetpack Compose (Material 3), OkHttp, kotlinx.serialization,
-  a Compose markdown renderer. minSdk 29, target/compile 35. No DI framework.
-- Same screens and the same routes as the web app. Settings: server URL + token (paste the
-  pairing URL or scan the QR).
-- **Notifications:** an opt-in "watch agents" foreground service keeps the roster stream open
-  and posts a notification when a top-level agent finishes or fails; tapping opens its chat.
-- Verified on an emulator against a test host (`adb reverse`), with screenshots.
+The native app lived in `android/` up to commit c0b3e5e (see git history).
+
+### Web Push design
+
+- `web-push` provides standard VAPID signing and RFC 8291 encryption. A stable key pair,
+  `mailto:` subject and endpoint-keyed subscriptions live in state-dir `push.json` (0600),
+  written atomically. The subject placeholder may be replaced with an operator contact.
+- Bearer-authenticated `POST /agents/push/key` returns `{ publicKey }`;
+  `POST /agents/push/subscribe` accepts `{ subscription }`;
+  `POST /agents/push/unsubscribe` accepts `{ endpoint }`. Shell cookies never authorize these.
+- The host reuses the existing commit subscription and `service.agents`, coalescing at 25 ms.
+  It reads no roster when there are no subscriptions. The first snapshot is only a baseline;
+  only top-level hosted running → idle transitions notify, never sub-agents or external Pi
+  sessions. Idle snapshots, browser reconnects and host startup do not replay finishes.
+- Encrypted payload: `{ title: "<name> finished", body: "<model> · <duration>", agent: id }`.
+  No transcript text. TTL is one hour; urgency is normal. HTTP 404/410 removes an expired
+  subscription. Delivery failures are logged and never interrupt the host.
+- The list's **Notify when agents finish** toggle requests permission and registers the browser
+  subscription with the host. Off removes it on both sides. Denied permission explains how
+  to enable it in browser site settings; failed subscriptions are not shown as enabled.
+- The service worker displays notifications tagged per agent. A tap focuses an existing app
+  window or opens `/#agent=<id>`; startup, hash changes and worker messages select that chat.
+- Standalone manifest with stable id, root scope/start URL, opaque maskable icons and dark
+  splash background. Chrome's **Install app** launches without browser chrome. History-based
+  back navigation and the existing missing-token pairing screen remain unchanged.
+- HTTPS is required (localhost is allowed for development). The host needs outbound access
+  to the browser's push service; phone delivery does not need a live roster connection.
 
 ## Testing
 
@@ -119,10 +136,11 @@ their shapes.
   ticks, dirs, remote auth and the route allowlist.
 - Web app: loaded in a real browser at a phone viewport against a test host; screenshots of list,
   chat, working state, new-agent form. No Playwright test suite.
-- Android: `./gradlew assembleDebug` plus unit tests for JSON decoding; installed and driven on an
-  emulator with screenshots.
+- Push: pure transition tests plus a faux-model API integration test using a local TLS push
+  endpoint: encrypted headers/body, persistence, no duplicate first-frame/sub-agent alerts,
+  bearer auth and 410 cleanup.
 
 ## Out of scope (for now)
 
-Web Push for the PWA, iOS, access from outside the tailnet, multiple users, editing files from the
+iOS, access from outside the tailnet, multiple users, editing files from the
 phone, streaming partial model text (the working line shows activity; text appears when committed).

@@ -347,7 +347,21 @@ Folder listings require absolute paths; macOS privacy restrictions may return EP
 
 Treat the pairing URL as a secret: the API requires its token even on your tailnet.
 Open the pairing URL on your phone in Chrome to use the web app. In Chrome's menu,
-choose **Add to Home screen** to install Pi Agents. The app keeps the token on that
+choose **Install app** (sometimes under **Add to Home screen**) to install Pi Agents.
+Launch the installed app for a standalone window without an address bar. The app keeps the token on that
 phone and removes it from the address bar. You can read chats, send or steer messages,
 stop agents, and create agents with a folder, model and thinking level.
 The shell is available offline; agent data and actions always require the host.
+
+
+Enable **Notify when agents finish** in the list header and allow notifications.
+Only top-level hosted agents going from running to idle notify; tapping an alert opens
+that agent's chat. Turn the toggle off to remove the subscription from both host and phone.
+If permission is denied, allow notifications in the browser's site settings and try again.
+Brave needs **Use Google services for push messaging** enabled in its settings.
+
+Web Push requires HTTPS (or localhost for development) and host access to the browser's
+push service. It works without keeping the app or a roster connection open. The host stores
+stable VAPID keys and endpoint-keyed subscriptions in private, atomically written `push.json`
+in its state directory. Notifications contain only agent name, model and duration, never
+transcript text; push-service HTTP 404/410 responses remove expired subscriptions.

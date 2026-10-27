@@ -4,6 +4,11 @@ import { readConfig } from "../src/config.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { request } from "node:http";
+import { createServer as httpsServer, globalAgent } from "node:https";
+import { createRequire } from "node:module";
+import { formatDuration } from "../src/status.ts";
+import { createECDH, randomBytes } from "node:crypto";
+import { finished, openPush } from "../src/push.ts";
 import { mkdtemp, realpath, rm, mkdir, writeFile, stat, chmod, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -140,6 +145,11 @@ test("phone primitives: directory listings, remote config, token auth and socket
     assert.equal((await stat(join(directory, "remote-token"))).mode & 0o777, 0o600);
     const call = async (path: string, options?: RequestInit) => fetch(`http://127.0.0.1:${port}${path}`, options);
     assert.equal((await call("/health")).status, 401);
+    assert.equal((await call("/agents/push/key")).status, 401);
+    assert.equal((await call(`/agents/push/key?token=${token}`)).status, 401);
+    const pushKey = await call("/agents/push/key", { method: "POST", headers: { authorization: `Bearer ${token}` } });
+    assert.equal(pushKey.status, 200);
+    assert.equal(typeof (await pushKey.json() as any).publicKey, "string");
     assert.equal((await call("/agents", { headers: { authorization: `Bearer ${"x".repeat(token.length)}` } })).status, 401);
     assert.equal((await call("/agents?token=wrong")).status, 401);
     assert.equal((await call("/agents", { headers: { authorization: token } })).status, 401);
@@ -326,4 +336,102 @@ test("busy remote listener identifies remote.port and its configured port", asyn
     const fake = fauxProvider(); const models = createModels(); models.setProvider(fake.provider);
     await assert.rejects(startHost(directory, join(directory, "s"), { models }), new RegExp(`remote.port ${port} in config.json`));
   } finally { await new Promise<void>(resolve => reservation.close(() => resolve())); await rm(directory, { recursive: true, force: true }); }
+});
+
+function pushSubscription(endpoint: string) {
+  const key = createECDH("prime256v1"); key.generateKeys();
+  return { privateKey: key, subscription: { endpoint, keys: { p256dh: key.getPublicKey().toString("base64url"), auth: randomBytes(16).toString("base64url") } } };
+}
+
+test("finished ignores initial frames, children, external agents, unchanged idle and missing rows", () => {
+  const row = (id: string, running: boolean, hosted = true, children: AgentSummary[] = []): AgentSummary => ({ id, name: id, running, hosted, children, enabled: true });
+  const before = [row("lead", true, true, [row("child", true)]), row("pi", true, false)];
+  const after = [row("lead", false, true, [row("child", false)]), row("pi", false, false)];
+  assert.deepEqual(finished(undefined, after), []);
+  assert.deepEqual(finished(before, after).map(a => a.id), ["lead"]);
+  assert.deepEqual(finished(after, after), []);
+  assert.deepEqual(finished(before, []), []);
+  assert.deepEqual(finished([row("lead", false, true, [row("child", true)])], after), []);
+});
+
+test("Web Push routes persist subscriptions and send encrypted notifications only for top-level finishes", { timeout: 20000 }, async () => {
+  const directory = await mkdtemp(join(tmpdir(), "agents-push-")); const socket = join(directory, "s");
+  const requests: { headers: import("node:http").IncomingHttpHeaders; body: Buffer }[] = [];
+  let status = 201;
+  const cert = await readFile(new URL("./fixtures/wp-test-cert.pem", import.meta.url));
+  const ca = globalAgent.options.ca; globalAgent.options.ca = cert;
+  const endpoint = httpsServer({ cert, key: await readFile(new URL("./fixtures/wp-test-key.pem", import.meta.url)) }, async (req, res) => {
+    const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(chunk);
+    requests.push({ headers: req.headers, body: Buffer.concat(chunks) });
+    res.writeHead(status); res.end();
+  });
+  await new Promise<void>(resolve => endpoint.listen(0, "127.0.0.1", resolve));
+  const { subscription, privateKey } = pushSubscription(`https://127.0.0.1:${(endpoint.address() as import("node:net").AddressInfo).port}/push`);
+  const fake = fauxProvider({ tokensPerSecond: 100 });
+  fake.setResponses(Array.from({ length: 50 }, () => req => {
+    const last = req.messages.findLast(m => m.role !== "system");
+    if (last?.role === "user" && JSON.stringify(last).includes("DELEGATE")) return fauxAssistantMessage(fauxToolCall("team", { action: "spawn", name: "reader", message: "Read and report" }), { stopReason: "toolUse" });
+    return fauxAssistantMessage("A private transcript answer. ".repeat(4));
+  }));
+  const models = createModels(); models.setProvider(fake.provider);
+  let host: Awaited<ReturnType<typeof startHost>> | undefined;
+  try {
+    host = await startHost(directory, socket, { models, agentModel: async () => ({ provider: "faux", modelId: "faux-1" }) });
+    const client = new Client(socket); const source = new SocketHostSource(client);
+    const key = await client.call("agents/push/key");
+    await assert.rejects(client.call("agents/push/subscribe", { subscription: { endpoint: subscription.endpoint } }), /keys/);
+    for (const endpoint of ["http://example.com/push", "https://user:pass@example.com/push"]) {
+      await assert.rejects(client.call("agents/push/subscribe", { subscription: { ...subscription, endpoint } }), /Invalid push endpoint/);
+    }
+    await client.call("agents/push/subscribe", { subscription });
+    await client.call("agents/push/subscribe", { subscription });
+    let stored = JSON.parse(await readFile(join(directory, "push.json"), "utf8"));
+    assert.equal(Object.keys(stored.subscriptions).length, 1);
+    assert.equal((await stat(join(directory, "push.json"))).mode & 0o777, 0o600);
+    assert.equal(openPush(directory).publicKey, key.publicKey);
+    assert.equal(openPush(directory).active, true);
+    const agent = await source.newAgent({ name: "lead", cwd: directory });
+    await delay(100); assert.equal(requests.length, 0, "initial idle snapshot is silent");
+    await source.send(agent.id!, "DELEGATE");
+    await until(() => requests.length === 1);
+    await until(async () => { const rows = await source.list(); return !rows[0]?.running && rows[0]?.children.length === 1 && !rows[0]?.children[0]?.running; });
+    await delay(150);
+    assert.equal(requests.length, 1, "child completion and later idle frames are silent");
+    assert.equal(requests[0]!.headers["content-encoding"], "aes128gcm");
+    assert.match(String(requests[0]!.headers.authorization), /^vapid t=.+, k=.+/);
+    assert.equal(requests[0]!.headers.ttl, "3600"); assert.equal(requests[0]!.headers.urgency, "normal");
+    assert.ok(requests[0]!.body.length > 86);
+    assert.ok(!requests[0]!.body.includes(Buffer.from("private transcript")));
+    // The fixture retains the receiver key; decrypt the real wire payload.
+    const ece = createRequire(import.meta.url)("http_ece");
+    const plaintext = ece.decrypt(requests[0]!.body, { version: "aes128gcm", privateKey, authSecret: subscription.keys.auth });
+    const completed = (await source.list()).find(row => row.id === agent.id)!;
+    assert.deepEqual(JSON.parse(plaintext.toString()), {
+      title: "lead finished",
+      body: [completed.model, formatDuration(completed.finishedAt! - completed.since!)].filter(Boolean).join(" · "),
+      agent: agent.id,
+    });
+    assert.ok(!plaintext.includes(Buffer.from("private transcript")));
+    await host.close(); host = undefined;
+    host = await startHost(directory, socket, { models, agentModel: async () => ({ provider: "faux", modelId: "faux-1" }) });
+    await delay(150); assert.equal(requests.length, 1, "host reconnect first snapshot is silent");
+    assert.deepEqual(await client.call("agents/push/key"), key);
+    status = 500;
+    await openPush(directory).send(completed);
+    assert.equal(requests.length, 2);
+    assert.equal(openPush(directory).active, true, "transient endpoint failures retain subscriptions");
+    status = 410;
+    await source.send(agent.id!, "Another request");
+    await until(() => requests.length === 3);
+    await until(async () => Object.keys(JSON.parse(await readFile(join(directory, "push.json"), "utf8")).subscriptions).length === 0);
+    await client.call("agents/push/subscribe", { subscription });
+    await client.call("agents/push/unsubscribe", { endpoint: subscription.endpoint });
+    stored = JSON.parse(await readFile(join(directory, "push.json"), "utf8"));
+    assert.deepEqual(stored.subscriptions, {});
+    assert.equal(openPush(directory).active, false);
+  } finally {
+    globalAgent.options.ca = ca;
+    await host?.close(); await new Promise<void>(resolve => endpoint.close(() => resolve()));
+    await rm(directory, { recursive: true, force: true });
+  }
 });

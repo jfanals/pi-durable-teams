@@ -1,3 +1,4 @@
+import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
 import { escape as e, info, footerInfo, transcript } from "./render.ts";
 import { isOffline, formatCost, formatDuration, statusWord } from "../status.ts";
@@ -62,6 +63,9 @@ function list() {
   base(
     `<header>
 <h1>Pi Agents</h1>${button("+", "new", 'aria-label="New agent"')}</header>
+<section class="notification-setting">
+<label><input type="checkbox" id="notify" ${notifications.enabled ? "checked" : ""} ${notifications.busy || !notifications.supported ? "disabled" : ""}> Notify when agents finish</label>
+<small role="status">${e(notifications.note)}</small></section>
 <main class="list">${agents.map((a) => row(a)).join("") || '<p class="notice">No agents yet. Tap + to create one.</p>'}</main>
 <footer>
 <label>
@@ -96,7 +100,7 @@ function status(clockOnly = false) {
 async function open(id: string, push = true) {
   if (push) {
     stack.push(id);
-    history.pushState({ stack: [...stack], screen: "chat" }, "");
+    history.pushState({ stack: [...stack], screen: "chat" }, "", `/#agent=${encodeURIComponent(id)}`);
   }
   screen = "chat";
   items = [];
@@ -314,7 +318,7 @@ ${button("Go", "folder-go", 'type="button"')}<div class="directory">${error}${pa
 async function newAgent() {
   const { models, index } = await modelFields();
   screen = "new";
-  history.pushState({ screen: "new", stack: [] }, "");
+  history.pushState({ screen: "new", stack: [] }, "", "/");
   generation++;
   watchLife.abort();
   stack = [];
@@ -458,6 +462,11 @@ root.addEventListener("click", async (event) => {
   }
 });
 root.addEventListener("change", (event) => {
+  if ((event.target as HTMLElement).id === "notify") {
+    const enabled = (event.target as HTMLInputElement).checked;
+    void toggleNotifications(enabled).catch(() => {}).finally(() => { if (screen === "list") list(); });
+    list();
+  }
   if ((event.target as HTMLElement).id === "offline") {
     offline = (event.target as HTMLInputElement).checked;
     list();
@@ -498,7 +507,16 @@ document.addEventListener("visibilitychange", () => {
     startWatch();
   }
 });
-history.replaceState({ screen: "list", stack: [] }, "");
+const initialAgent = new URLSearchParams(location.hash.slice(1)).get("agent");
+history.replaceState({ screen: "list", stack: [] }, "", "/");
+function openFromLink() {
+  const id = new URLSearchParams(location.hash.slice(1)).get("agent");
+  if (id && token() && (screen !== "chat" || stack.at(-1) !== id)) void open(id);
+}
+window.addEventListener("hashchange", openFromLink);
+navigator.serviceWorker?.addEventListener("message", (event) => {
+  if (event.data?.type === "open-agent" && typeof event.data.agent === "string" && token()) void open(event.data.agent);
+});
 window.addEventListener("popstate", (event) => {
   generation++;
   watchLife.abort();
@@ -517,6 +535,6 @@ setInterval(() => {
 if (token()) {
   list();
   startRoster();
-  if ("serviceWorker" in navigator)
-    void navigator.serviceWorker.register("/web/sw.js", { scope: "/" }).catch(() => {});
+  void notificationState().catch(error => { notifications.note = error instanceof Error ? error.message : String(error); }).finally(() => { if (screen === "list") list(); });
+  if (initialAgent) void open(initialAgent);
 } else unpair();

@@ -1,4 +1,5 @@
 import { pairing } from "./web/pair.ts";
+import { openPush, watchPush } from "./push.ts";
 import { readConfig } from "./config.ts";
 import { remoteToken, remoteAllowed, tokenMatches, tokenCache } from "./remote.ts";
 import { shellFile, shellCsp, shellPath } from "./web-shell.ts";
@@ -32,6 +33,8 @@ export async function startHost(directory: string, socket: string, options: Team
   try { owner.exec("BEGIN EXCLUSIVE"); }
   catch { owner.close(); throw new Error("A Durable teams host already owns this directory"); }
   let service: Awaited<ReturnType<typeof openTeams>> | undefined;
+  let push: ReturnType<typeof openPush> | undefined;
+  let pushWatch: ReturnType<typeof watchPush> | undefined;
   const streams = new Map<string, ServerResponse>();
   const workerStreams = new Set<ServerResponse>();
   const remoteStreams = new Set<ServerResponse>();
@@ -96,6 +99,19 @@ export async function startHost(directory: string, socket: string, options: Team
       }
       const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
       if (pathname === "/register") return reply(res, 200, await service.register(body));
+      if (pathname.startsWith("/agents/push/")) {
+        if (!push) return reply(res, 503, { error: "Web Push unavailable; see host log" });
+        if (pathname === "/agents/push/key" && req.method === "POST") return reply(res, 200, { publicKey: push.publicKey });
+        if (pathname === "/agents/push/subscribe" && req.method === "POST") {
+          push.subscribe(body.subscription); pushWatch?.schedule();
+          return reply(res, 200, { subscribed: true });
+        }
+        if (pathname === "/agents/push/unsubscribe" && req.method === "POST") {
+          push.unsubscribe(body.endpoint); pushWatch?.schedule();
+          return reply(res, 200, { subscribed: false });
+        }
+        return reply(res, 404, { error: "Unknown push operation" });
+      }
       // Local human clients are authenticated by the private socket directory.
       if (pathname === "/agents/models") {
         const all = async () => modelChoices(await (typeof options.models === "function" ? options.models() : options.models).getAvailable());
@@ -264,6 +280,11 @@ export async function startHost(directory: string, socket: string, options: Team
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(socket, resolve); });
     chmodSync(socket, 0o600);
     service = await openTeams(await openNodeSqliteStorage(join(directory, "teams.sqlite")), options);
+    try {
+      push = openPush(directory);
+      pushWatch = watchPush(push, service, id => streams.has(id));
+      cleanups.add(pushWatch.close);
+    } catch (error) { console.error("Web Push disabled:", error); }
     if (remoteServer) {
       // A corrupt stored token disables remote requests, not the trusted socket.
       await remoteToken(directory).catch(() => {});
