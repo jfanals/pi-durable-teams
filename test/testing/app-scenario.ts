@@ -1,17 +1,17 @@
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
-import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { initTheme } from "@earendil-works/pi-coding-agent";
-import { TuiAltScreen, visibleWidth } from "@earendil-works/pi-tui";
+import { TuiAltScreen, visibleWidth, setKeybindings } from "@earendil-works/pi-tui";
 import { AgentsApp } from "../../src/app.ts";
 import { Client } from "../../src/client.ts";
 import { startHost } from "../../src/host.ts";
-import { piPresentation } from "../../src/presentation.ts";
+import { piKeybindings, piPresentation } from "../../src/presentation.ts";
 import { SocketHostSource } from "../../src/source.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -31,6 +31,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
   const host = await startHost(directory, join(directory, "s"), { models, agentModel: async () => ({ provider: "faux", modelId: "faux-1" }) });
   const source = new SocketHostSource(new Client(join(directory, "s")));
   const terminal = new VirtualTerminal(width, height); const tui = new TuiAltScreen(terminal);
+  setKeybindings(await piKeybindings());
   initTheme("dark", false); const { theme } = await piPresentation();
   let exited = false;
   const app = new AgentsApp(source, tui, theme, { cwd: directory, exit: () => { exited = true; } });
@@ -47,6 +48,24 @@ export async function appScenario(width: number, height: number, print?: (name: 
     assert.match(list, /0 running · 2 idle · total \$/);
     assert.match(list, /r rename.*x disable.*q quit/);
     await key("\x1b[B"); await key("\r"); await wait(`alpha · ${alphaId}`); // alpha is second: beta is newer.
+    // Pi's slash list, Tab insertion, Escape dismissal, and cwd-relative @ paths.
+    await key("/cl"); await wait("Clone this conversation");
+    await key("\t"); assert.match(await frame(), /\/clone/);
+    await key("\x15"); // Ctrl+U clears the completed command without submitting it.
+    await key("/co"); await wait("Compact conversation context"); await key("\x1b");
+    assert.doesNotMatch(await frame(), /Compact conversation context/);
+    await key("\x15");
+    await writeFile(join(directory, "completion-proof.txt"), "hello");
+    await key("@completion-proof"); await wait("completion-proof.txt");
+    await key("\t"); assert.match(await frame(), /@completion-proof\.txt/);
+    await key("\x15");
+    // The actual Pi external editor helper runs, then our TUI resumes with the edited draft.
+    await mkdir(join(directory, ".pi"), { recursive: true });
+    const editorScript = join(directory, "editor.cjs");
+    await writeFile(editorScript, `require("node:fs").writeFileSync(process.argv[2], "external draft\\n");`);
+    await writeFile(join(directory, ".pi", "settings.json"), JSON.stringify({ externalEditor: `${process.execPath} ${editorScript}` }));
+    await key("initial draft"); await key("\x07"); await wait("external draft");
+    await key("\x15");
     await key("Hello"); await key("\r"); const chat = await wait("Hello from the faux agent."); print?.("chat", chat);
     assert.doesNotMatch(chat, /pi-agents|beta/);
     assert.match(chat, /↑.*↓/);

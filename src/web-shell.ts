@@ -6,6 +6,7 @@ const files = new Map<string, URL>([
   ["/", new URL("./web/index.html", import.meta.url)],
   ...[
     "pair.ts",
+    "autocomplete.ts",
     "push.ts",
     "index.html",
     "app.css",

@@ -409,3 +409,7 @@ a:focus-visible {
   display: block;
   color: var(--muted);
 }
+
+.autocomplete { max-height: 12rem; overflow-y: auto; border: 1px solid var(--line); }
+.autocomplete button { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; }
+.autocomplete [aria-selected="true"] { outline: 2px solid currentColor; outline-offset: -2px; }

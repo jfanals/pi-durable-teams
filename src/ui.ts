@@ -1,8 +1,11 @@
 // Terminal presentation only. Nothing here changes delivery, acknowledgement or worker execution.
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { promptAutocomplete } from "./autocomplete.ts";
+import { agentDir } from "./paths.ts";
 import { homedir } from "node:os";
 
 import { getMarkdownTheme, getSelectListTheme, keyText, ToolExecutionComponent, UserMessageSelectorComponent, type Theme, type ThemeBg } from "@earendil-works/pi-coding-agent";
-import { builtInRenderers, loadToolRenderers } from "./presentation.ts";
+import { builtInRenderers, loadToolRenderers, piExternalEditor } from "./presentation.ts";
 import {
   Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth,
   type Component, type DefaultTextStyle, type Focusable, type TUI, type TuiMouseEvent,
@@ -543,11 +546,15 @@ export class ChatView implements Component, Focusable {
   private actions: ChatActions;
   private panel?: TeamPanel;
   private picker?: { component: Component; input(data: string): void };
+  private editingExternally = false;
+  private tui: TUI;
   readonly layout: VStack;
   constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }, branch: () => string = () => "") {
     this.actions = actions;
+    this.tui = tui;
     this.transcript = new Transcript(tui, theme, name, source, parent, true);
     this.editor = new Editor(tui, { borderColor: text => theme.fg("accent", text), selectList: getSelectListTheme() });
+    this.editor.setAutocompleteProvider(promptAutocomplete(() => this.transcript.status?.cwd ?? homedir()));
     this.editor.onSubmit = text => this.submit(text, "steer");
     if (children) this.panel = new TeamPanel(tui, theme, children.open, { compact: true, focus: component => {
       this.panel!.focused = component === this.panel;
@@ -602,6 +609,19 @@ export class ChatView implements Component, Focusable {
     this.picker = { component: selector, input: data => selector.getMessageList().handleInput(data) };
     this.transcript.changed();
   }
+  private async openExternalEditor() {
+    if (this.editingExternally) return;
+    this.editingExternally = true;
+    const content = this.editor.getExpandedText();
+    this.tui.stop();
+    try {
+      const command = SettingsManager.create(this.transcript.status?.cwd ?? homedir(), agentDir).getExternalEditorCommand();
+      const result = await piExternalEditor(command, content);
+      if (result.status === "complete") this.editor.setText(result.content);
+      else this.transcript.note = "External editor failed";
+    } catch (error) { this.transcript.note = String(error); }
+    finally { this.editingExternally = false; this.tui.start(); this.tui.requestRender(true); }
+  }
   setChildren(workers: WorkerStatus[]) { this.panel?.setWorkers(workers); }
   focusChild(target: string) { this.panel?.enter(this.editor, target); }
   private submit(text: string, mode: Mode) {
@@ -628,10 +648,13 @@ export class ChatView implements Component, Focusable {
   }
   render(width: number) { return this.layout.render(width); }
   handleInput(data: string) {
+    if (this.editingExternally) return;
     if (this.picker) { this.picker.input(data); this.transcript.changed(); return; }
     if (matchesKey(data, Key.left) && !this.editor.getText()) return this.actions.back();
     if (this.panel?.focused) { this.panel.handleInput(data); return; }
     if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasWorkers) { this.panel.enter(this.editor); return; }
+    if (getKeybindings().matches(data, "app.editor.external")) { void this.openExternalEditor(); return; }
+    if (this.editor.isShowingAutocomplete()) { this.editor.handleInput(data); return; }
     if (matchesKey(data, Key.escape)) { void this.actions.stop().catch(error => { this.transcript.note = String(error); this.transcript.changed(); }); return; }
     // Pi's follow-up key (option+enter on a Mac, or the user's own binding in Pi's keybindings.json).
     if (getKeybindings().matches(data, "app.message.followUp")) return this.submit(this.editor.getExpandedText(), "followUp");

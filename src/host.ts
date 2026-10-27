@@ -1,3 +1,4 @@
+import { promptAutocomplete } from "./autocomplete.ts";
 import { openPush, watchPush } from "./push.ts";
 import { readConfig } from "./config.ts";
 import { remoteToken, remoteAllowed, tokenMatches, tokenCache } from "./remote.ts";
@@ -155,6 +156,31 @@ export async function startHost(directory: string, socket: string, options: Team
         if (typeof body.target !== "string" || !body.target) throw new Error("target is required");
         if (typeof body.requestId !== "string" || !body.requestId) throw new Error("requestId is required");
         return reply(res, 200, await service.remove(body.target, body.requestId));
+      }
+      if (pathname === "/agents/complete") {
+        if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
+        if (typeof body.target !== "string" || typeof body.text !== "string" || !Number.isInteger(body.cursor)
+          || body.cursor < 0 || body.cursor > body.text.length) throw new Error("Invalid completion request");
+        const find = (rows: import("./protocol.ts").AgentSummary[]): string | undefined => {
+          for (const row of rows) {
+            if (row.id === body.target) return row.cwd;
+            const cwd = find(row.children); if (cwd) return cwd;
+          }
+        };
+        const cwd = find(await service.agents());
+        if (!cwd) throw new Error("Unknown agent cwd");
+        const provider = promptAutocomplete(() => cwd);
+        const lines = body.text.split("\n");
+        const before = body.text.slice(0, body.cursor).split("\n");
+        const line = before.length - 1, col = before[line]!.length;
+        if (body.force === true && !provider.shouldTriggerFileCompletion?.(lines, line, col)) return reply(res, 200, null);
+        const controller = new AbortController();
+        res.once("close", () => controller.abort());
+        const suggestions = await provider.getSuggestions(lines, line, col, { signal: controller.signal, force: body.force === true });
+        return reply(res, 200, suggestions ? {
+          ...suggestions,
+          items: suggestions.items.map(item => ({ ...item, edit: provider.applyCompletion(lines, line, col, item, suggestions.prefix) })),
+        } : null);
       }
       if (pathname === "/agents/compact") {
         if (req.method !== "POST") return reply(res, 405, { error: "POST required" });

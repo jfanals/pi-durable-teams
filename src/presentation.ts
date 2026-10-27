@@ -71,3 +71,14 @@ export async function piCacheWarming(): Promise<{
 }> {
   return import(piModule("./core/cache-warmer.js"));
 }
+
+// Pi's managed fd (or PATH fd), installed on first completion just as Pi does at startup.
+let completionTool: Promise<string | null> | undefined;
+export function piCompletionTool(): Promise<string | null> {
+  return completionTool ??= import(piModule("./utils/tools-manager.js")).then(async tools => tools.getToolPath("fd") ?? await tools.ensureTool("fd") ?? null);
+}
+
+/** Pi's temp-file editor lifecycle, including BOM/newline handling and cleanup. */
+export async function piExternalEditor(command: string, content: string): Promise<{ status: "complete"; content: string } | { status: "failed" }> {
+  return (await import(piModule("./modes/interactive/external-editor.js"))).editInExternalEditor({ command, content });
+}

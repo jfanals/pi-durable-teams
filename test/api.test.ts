@@ -59,6 +59,22 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
     assert.equal(roster[0]!.model, "faux-1");
     assert.equal(roster[0]!.contextWindow, 123456);
     assert.equal(roster[0]!.subscription, true);
+    // Browser completion uses the same Pi provider as the terminal, rooted in the agent's cwd.
+    const complete = (text: string, cursor = text.length, force = false) => client.call("agents/complete", { target, text, cursor, force });
+    const commands = await complete("/cl");
+    assert.equal(commands.items[0].value, "clone");
+    assert.deepEqual(commands.items[0].edit, { lines: ["/clone "], cursorLine: 0, cursorCol: 7 });
+    await mkdir(join(directory, "folder with spaces"));
+    await writeFile(join(directory, "folder with spaces", "file.txt"), "hello");
+    const paths = await complete('@folder');
+    const folder = paths.items.find((item: { label: string }) => item.label.includes("folder with spaces"));
+    assert.ok(folder, JSON.stringify(paths));
+    assert.match(folder.edit.lines[0], /^@"folder with spaces\//);
+    const files = await complete('first line\n@"folder with spaces/fi" trailing', 'first line\n@"folder with spaces/fi'.length);
+    assert.match(files.items[0].edit.lines[1], /file\.txt" +trailing$/);
+    assert.equal(await complete("ordinary words"), null);
+    await assert.rejects(complete("/", 99), /Invalid completion/);
+    await assert.rejects(client.call("agents/complete", { target: "missing", text: "/", cursor: 1 }), /Unknown agent/);
     let ticks = 0;
     observe(source.watch(target, life.signal, frame => { assert.deepEqual(frame, { changed: true }); ticks++; }));
     await until(() => ticks > 0);

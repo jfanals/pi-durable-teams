@@ -1,3 +1,4 @@
+import { attachAutocomplete } from "./autocomplete.ts";
 import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
 import { escape as e, info, footerInfo, transcript } from "./render.ts";
@@ -132,6 +133,7 @@ async function open(id: string, push = true) {
 </form>
 </footer>`,
   );
+  attachAutocomplete(document.querySelector<HTMLTextAreaElement>("#message")!, id);
   document.querySelector("#messages")!.addEventListener("scroll", () => {
     const view = document.querySelector("#messages")!;
     if (view.scrollHeight - view.scrollTop - view.clientHeight < 70)
