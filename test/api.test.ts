@@ -98,6 +98,8 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
     await until(() => roster.some(row => row.id === identity.sessionId && row.connected));
     assert.ok((await source.send(identity.sessionId, "Hello Pi")).delivery);
     assert.match(JSON.stringify(await source.page(identity.sessionId)), /Published observation/);
+    assert.deepEqual(await client.call("page", { ...identity, target: identity.sessionId }), await source.page(identity.sessionId));
+    await assert.rejects(client.call("action", { ...identity, args: { action: "inspect", target: identity.sessionId, transcript: true } }), /External Pi sessions do not have hosted transcripts/);
     await assert.rejects(source.rename(identity.sessionId, "no"), /cannot be renamed/);
     for (const route of ["agents/watch", "watch"] as const) {
       let tick = false;
@@ -176,7 +178,7 @@ test("phone primitives: directory listings, remote config, token auth and socket
       assert.equal((await call(`${path}?token=${token}`)).status, 404, path);
     }
     const allowed = await call("/agents", { headers: { authorization: `Bearer ${token}` } }); assert.equal(allowed.status, 200); assert.deepEqual(await allowed.json(), []);
-    for (const path of ["/register", "/action", "/events", "/ack", "/publish", "/resume", "/watch", "/agents-other"]) {
+    for (const path of ["/register", "/action", "/events", "/ack", "/publish", "/resume", "/watch", "/page", "/agents-other"]) {
       assert.equal((await call(`${path}?token=${token}`, { method: "POST", body: "{}" })).status, 404, path);
     }
     const client = new Client(socket);
@@ -284,10 +286,26 @@ test("host reads prefix chunks to complete a turn spanning transcript pages", { 
     await until(async () => JSON.stringify(await source.page(agent.id!)).includes("Complete request"));
     const raw = await host.service.action(human, { action: "inspect", target: agent.id, transcript: true }, "") as any;
     assert.equal(raw.entries.length, 40);
-    assert.ok(raw.prefix.length > 40);
-    assert.ok(raw.prefix.some((entry: any) => entry.kind === "teams.message"));
-    const items = (await source.page(agent.id!)).items;
-    const expected = chatItems([...raw.entries, ...raw.prefix]);
+    assert.equal(Object.hasOwn(raw, "prefix"), false);
+    assert.ok(raw.next);
+    const entries = [...raw.entries];
+    let cursor = raw.next;
+    while (cursor) {
+      const older = await host.service.action(human, { action: "inspect", target: agent.id, transcript: true, cursor }, "") as any;
+      assert.equal(Object.hasOwn(older, "prefix"), false);
+      assert.ok(older.entries.every((entry: any) => !entries.some(previous => previous.id === entry.id)));
+      entries.push(...older.entries);
+      cursor = older.next;
+    }
+    assert.ok(entries.length > 80);
+    const client = new Client(socket);
+    const identity = { sessionId: "reader", secret: "s".repeat(36) };
+    await client.call("register", { ...identity, name: "Reader", cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
+    await assert.rejects(client.call("page", { ...identity, secret: "bad", target: agent.id }), /identity\/secret/);
+    const page = await client.call("page", { ...identity, target: agent.id });
+    assert.deepEqual(page, await source.page(agent.id!));
+    const items = page.items as Awaited<ReturnType<typeof source.page>>["items"];
+    const expected = chatItems(entries);
     const terminal = items.find(item => item.kind === "reply" && item.turn);
     assert.ok(terminal?.kind === "reply");
     assert.deepEqual(terminal.turn, expected.find(item => item.id === terminal.id && item.kind === "reply")?.kind === "reply"

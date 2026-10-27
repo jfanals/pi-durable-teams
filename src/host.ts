@@ -1,7 +1,6 @@
 import { pairing } from "./web/pair.ts";
 import { readConfig } from "./config.ts";
 import { remoteToken, remoteAllowed, tokenMatches, tokenCache } from "./remote.ts";
-import { chatItems } from "./chat.ts";
 import { shellFile, shellCsp, shellPath } from "./web-shell.ts";
 import { listDirectories } from "./directories.ts";
 import { randomUUID } from "node:crypto";
@@ -153,8 +152,7 @@ export async function startHost(directory: string, socket: string, options: Team
           thinking: body.thinking, cursor: body.cursor, ...(route === "page" ? { transcript: true } : {}) };
         if (!Value.Check(HumanActionSchema, args)) throw new Error("Invalid agent action arguments");
         if (route === "page") {
-          const page = await service.action(human, args as Action, "") as any;
-          return reply(res, 200, { items: chatItems(page.entries, page.prefix), next: page.next });
+          return reply(res, 200, await service.page(human, body.target, body.cursor));
         }
         return reply(res, 200, await service.action(human, args as Action, body.requestId ?? randomUUID()));
       }
@@ -171,6 +169,11 @@ export async function startHost(directory: string, socket: string, options: Team
           return reply(res, 200, body.args.action === "list" && Array.isArray(result)
             ? result.map(agent => agent.role === "main" && !agent.hosted ? { ...agent, connected: streams.has(agent.id) } : agent)
             : result);
+        }
+        case "/page": {
+          if (typeof body.target !== "string") throw new Error("target is required");
+          if (body.cursor !== undefined && typeof body.cursor !== "string") throw new Error("cursor must be a string");
+          return reply(res, 200, await service.page(actor, body.target, body.cursor));
         }
         case "/ack": await service.ack(actor, body.id); return reply(res, 200, { acknowledged: body.id });
         case "/publish": await service.publish(actor, String(body.latest)); return reply(res, 200, { published: true });

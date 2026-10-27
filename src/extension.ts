@@ -1,5 +1,4 @@
 import { textOf, liveStatus, statusWord, type WorkerStatus } from "./status.ts";
-import { chatItems } from "./chat.ts";
 import { selectableModels } from "./model-choices.ts";
 import { randomUUID } from "node:crypto";
 import { realpath, mkdir, writeFile } from "node:fs/promises";
@@ -216,10 +215,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
   });
   async function openWorker(current: Current, ctx: ExtensionContext, worker: WorkerStatus): Promise<"back" | "close"> {
     const source = {
-      page: async (cursor?: string) => {
-        const page = await call(current, { action: "inspect", target: worker.id, transcript: true, ...(cursor ? { cursor } : {}) }) as any;
-        return { items: chatItems(page.entries, page.prefix), next: page.next };
-      },
+      page: (cursor?: string) => current.client.call("page", { ...credentials(current), target: worker.id, cursor }),
       status: async () => liveStatus({ ...worker, ...await call(current, { action: "inspect", target: worker.id }) }),
       watch: (signal: AbortSignal, onFrame: () => void) => current.client.stream("watch", { ...credentials(current), target: worker.id }, signal, () => onFrame()),
     };

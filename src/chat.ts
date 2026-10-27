@@ -1,6 +1,6 @@
 import { clean, firstLine, textOf, replyTokens } from "./status.ts";
 
-export type TranscriptEntry = { id: number | string; kind: string; model?: any[]; data?: any };
+export type TranscriptEntry = { id: number | string; kind: string; model?: readonly any[]; data?: any };
 export type ToolCall = { id: string; name: string; subject: string };
 export type ChatItem =
   | { id: string; kind: "input"; from: string; text: string; report?: boolean; at?: number }
@@ -8,7 +8,7 @@ export type ChatItem =
   | { id: string; kind: "result"; callId: string; ok: boolean; error?: string }
   | { id: string; kind: "notice"; text: string };
 /** Committed entries only. Prefix entries complete the oldest request without appearing in the returned page. */
-export function chatItems(entries: TranscriptEntry[], prefix: TranscriptEntry[] = []): ChatItem[] {
+export function chatItems(entries: readonly TranscriptEntry[], prefix: readonly TranscriptEntry[] = []): ChatItem[] {
   const items: ChatItem[] = [];
   let start: number | undefined; let tokens = 0; let cost = 0;
   for (const entry of [...prefix, ...entries].sort((a, b) => Number(a.id) - Number(b.id))) {

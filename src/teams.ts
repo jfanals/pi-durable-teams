@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { WorkerModel } from "./config.ts";
+import { chatItems } from "./chat.ts";
 import { agentNameError } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import { liveStatus, textOf } from "./status.ts";
@@ -309,27 +310,13 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         return inspectRequest(actor, args.request);
       }
       if (target!.where.kind === "external") {
-        if (args.transcript) return { entries: [{ id: "publication", kind: target!.where.session.latest ? "pi.assistant" : "teams.placeholder",
-          ...(target!.where.session.latest ? { model: [{ content: target!.where.session.latest }] } : { data: { text: "This Pi session has no hosted transcript." } }) }] };
+        if (args.transcript) throw new Error("External Pi sessions do not have hosted transcripts");
         return { ...actorOf(target!), latest: target!.where.session.latest, observed: "last main publication; may be stale/offline" };
       }
       const conversation = await conversationOf(target!);
       if (args.transcript) {
         const page = await conversation.entries({ order: "descending" }, 40, args.cursor ? JSON.parse(args.cursor) : undefined, context);
-        // Read backwards in bounded chunks only when the page begins mid-request.
-        const prefix: (typeof page.items)[number][] = [];
-        const input = (entry: { kind: string }) => ["teams.message", "teams.report", "pi.user"].includes(entry.kind);
-        let oldest: (typeof page.items)[number] | undefined = [...page.items].sort((a, b) => Number(a.id) - Number(b.id))[0];
-        while (oldest && !input(oldest)) {
-          const before = await conversation.entries({ order: "descending", maxEntryId: (Number(oldest.id) - 1) as EntryId }, 40, undefined, context);
-          if (!before.items.length) break;
-          const ordered = [...before.items].sort((a, b) => Number(b.id) - Number(a.id));
-          const boundary = ordered.findIndex(input);
-          prefix.push(...(boundary < 0 ? ordered : ordered.slice(0, boundary + 1)));
-          if (boundary >= 0) break;
-          oldest = ordered.at(-1);
-        }
-        return { ...actorOf(target!), entries: page.items, prefix, next: page.next ? JSON.stringify(page.next) : undefined };
+        return { ...actorOf(target!), entries: page.items, next: page.next ? JSON.stringify(page.next) : undefined };
       }
       const v = await conversation.viewState(context);
       try {
@@ -498,6 +485,30 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   const unsubscribeCommits = harness.subscribeCommits(() => queueMicrotask(notify));
   return {
     harness, action,
+    async page(actor: Actor, target: string, cursor?: string) {
+      const destination = resolveTarget(await read(), actor, target);
+      if (destination.where.kind === "external") {
+        const latest = destination.where.session.latest;
+        return { items: chatItems([{ id: "publication", kind: latest ? "pi.assistant" : "teams.placeholder",
+          ...(latest ? { model: [{ content: latest }] } : { data: { text: "This Pi session has no hosted transcript." } }) }]) };
+      }
+      const conversation = await conversationOf(destination);
+      const page = await conversation.entries({ order: "descending" }, 40, cursor ? JSON.parse(cursor) : undefined, context);
+      // Read backwards in bounded chunks only when the page begins mid-request.
+      const prefix: (typeof page.items)[number][] = [];
+      const input = (entry: { kind: string }) => ["teams.message", "teams.report", "pi.user"].includes(entry.kind);
+      let oldest: (typeof page.items)[number] | undefined = [...page.items].sort((a, b) => Number(a.id) - Number(b.id))[0];
+      while (oldest && !input(oldest)) {
+        const before = await conversation.entries({ order: "descending", maxEntryId: (Number(oldest.id) - 1) as EntryId }, 40, undefined, context);
+        if (!before.items.length) break;
+        const ordered = [...before.items].sort((a, b) => Number(b.id) - Number(a.id));
+        const boundary = ordered.findIndex(input);
+        prefix.push(...(boundary < 0 ? ordered : ordered.slice(0, boundary + 1)));
+        if (boundary >= 0) break;
+        oldest = ordered.at(-1);
+      }
+      return { items: chatItems([...page.items], prefix), next: page.next ? JSON.stringify(page.next) : undefined };
+    },
     async agents(connected: (id: string) => boolean): Promise<AgentSummary[]> {
       const state = await read();
       const rows = await Promise.all(Object.values(state.agents).map(async agent => {
