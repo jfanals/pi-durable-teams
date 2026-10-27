@@ -210,8 +210,9 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("d"); await wait("Remove renamed"); await key("y");
     await until(async () => !(await alpha()));
     assert.ok(!(await source.list()).some(agent => agent.id === readerId));
-    // Raw Ctrl+C is global, including the editor and modal confirmation screens.
-    // Legacy \x03, Kitty keyboard protocol ctrl+c (Ghostty, cmux), and q on the list all exit.
+    // Ctrl+C is global, including the editor and modal confirmation screens. As in Pi, one press clears the prompt and
+    // a second within 500 ms exits. Legacy \x03 and Kitty keyboard protocol ctrl+c (Ghostty, cmux) both count; q on
+    // the list exits at once.
     for (const [screen, exitKey] of [["list", "\x03"], ["chat", "\x03"], ["form", "\x03"], ["confirm", "\x03"], ["list", "\x1b[99;5u"], ["chat", "\x1b[99;5u"], ["list", "q"]] as const) {
       const term = new VirtualTerminal(width, height); const screenTui = new TuiAltScreen(term);
       let didExit = false;
@@ -220,10 +221,17 @@ export async function appScenario(width: number, height: number, print?: (name: 
         screenTui.addChild(screenApp); screenTui.setFocus(screenApp); screenTui.start();
         await delay(100);
         if (screen !== "list") term.sendInput(screen === "chat" ? "\r" : screen === "form" ? "n" : "x");
-        await delay(50); term.sendInput(exitKey); await delay(20);
+        await delay(50);
+        if (screen === "chat") { term.sendInput("draft"); await delay(20); }
+        term.sendInput(exitKey); await delay(20);
+        if (exitKey !== "q") {
+          assert.equal(didExit, false, `${screen} ${JSON.stringify(exitKey)} first press`);
+          if (screen === "chat") assert.ok(!(await term.flushAndGetViewport()).join("\n").includes("draft"), "first ctrl+c clears the prompt");
+          term.sendInput(exitKey); await delay(20);
+        }
         assert.equal(didExit, true, `${screen} ${JSON.stringify(exitKey)}`);
       } finally { screenApp.dispose(); screenTui.stop(); }
     }
-    await key("\x03"); assert.equal(exited, true);
+    await key("\x03"); assert.equal(exited, false); await key("\x03"); assert.equal(exited, true);
   } finally { app.dispose(); tui.stop(); await host.close(); await rm(directory, { recursive: true, force: true }); }
 }

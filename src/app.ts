@@ -35,6 +35,7 @@ export class AgentsApp implements Component, Focusable {
   private renaming?: { agent: AgentSummary; error?: string };
   private selected = 0; private view?: ChatView;
   private note = "Connecting…"; private editor: Editor;
+  private lastCtrlC = 0;
   private form?: { step: number; name: string; cwd: string; nameEdited?: boolean; model?: WorkerModel; choices: ModelChoice[]; error?: string; creating?: boolean; loading?: boolean; folderRequest?: number };
   private picker?: SelectList;
   private dirPicker?: DirPicker;
@@ -61,7 +62,12 @@ export class AgentsApp implements Component, Focusable {
     this.removeInput = tui.addInputListener(data => {
       // Kitty's keyboard protocol (on in Ghostty/cmux) sends ctrl+c as an escape sequence, not \x03.
       if (!matchesKey(data, Key.ctrl("c"))) return;
-      this.dispose(); tui.stop(); this.exit(); return { consume: true };
+      // Pi's app.clear: one press clears the prompt, a second within 500 ms quits.
+      const now = Date.now();
+      if (now - this.lastCtrlC < 500) { this.dispose(); tui.stop(); this.exit(); return { consume: true }; }
+      this.lastCtrlC = now;
+      if (this.view && !this.form && !this.renaming) this.view.setDraft(""); else this.editor.setText("");
+      tui.requestRender(); return { consume: true };
     });
     this.setScreen();
     void this.roster();
