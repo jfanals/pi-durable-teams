@@ -183,7 +183,7 @@ export class AgentsApp implements Component, Focusable {
       this.picker = new SelectList([
         { value: "create", label: "Create agent" },
         { value: "0", label: `Name: ${form.name} · edit` },
-        { value: "1", label: "Working folder · change" },
+        { value: "1", label: `Working folder: ${form.cwd} · change` },
         { value: "2", label: `Model: ${form.model ? `${form.model.provider}/${form.model.modelId}` : "Choose a model"} · change` },
         { value: "3", label: `Thinking: ${form.model?.thinking ?? "Choose a model first"} · change` },
       ], 6, getSelectListTheme());

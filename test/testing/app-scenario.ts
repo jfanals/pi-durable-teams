@@ -82,7 +82,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     assert.match(review, /Thinking: medium/);
     assert.equal((await source.list()).length, 2, "review starts no agent");
     assert.notEqual((await source.list())[0]!.cwd, directory, "most recent agent is in a different folder");
-    assert.ok(app.render(240).join("\n").includes(directory), "review defaults to the launch folder, not another agent's folder");
+    assert.ok(app.render(240).join("\n").includes(`Working folder: ${directory} · change`), "folder row previews the launch folder, not another agent's folder");
     await key("\x1b[B"); await key("\r"); await wait("Name ·");
     await key("\x15"); await key("main"); const invalid = await wait("Use a unique");
     await key("\r"); assert.match(await frame(), /Name/); print?.("form invalid name", invalid);
@@ -144,6 +144,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[B"); await key("\x1b[B"); await key("\r");
     await key("\x1b[D"); await key("\r"); await wait("Review ·");
     assert.ok((await frame()).includes(`Name: ${basename(dirname(await realpath(directory)))}`), "untouched name follows the folder");
+    assert.ok(app.render(240).join("\n").includes(`Working folder: ${dirname(directory)} · change`), "folder preview follows the chosen directory");
     await key("\x1b[B"); await key("\x1b[B"); await key("\r");
     await key(`\x1b[200~${directory}\x1b[201~`); await key("\r"); await wait("Review ·");
     await key("\r"); await wait("No messages yet");
