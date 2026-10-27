@@ -24,17 +24,14 @@ const files = new Map<string, URL>([
   ),
   ["/web/marked.js", new URL(import.meta.resolve("marked"))],
 ]);
-const cache = new Map<string, string | Buffer>();
 export const shellPath = (path: string) => files.has(path);
+// Read from disk on every request (the files are small), so a page refresh shows edits
+// without a host restart. Only the import map's CSP hash below is fixed at startup.
 export async function shellFile(path: string) {
   const file = files.get(path);
   if (!file) return;
-  let body = cache.get(path);
-  if (body === undefined) {
-    body = await readFile(file);
-    if (path.endsWith(".ts")) body = stripTypeScriptTypes(body.toString(), { mode: "strip" });
-    cache.set(path, body);
-  }
+  let body: string | Buffer = await readFile(file);
+  if (path.endsWith(".ts")) body = stripTypeScriptTypes(body.toString(), { mode: "strip" });
   const extension = file.pathname.split(".").pop()!;
   const type = (
     {
