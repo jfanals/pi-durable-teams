@@ -87,9 +87,11 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x10");
     await until(async () => (await alpha())?.modelId === "faux-1" && (await alpha())?.thinking === "high");
     await wait("Switched to faux-1 (thinking: high)");
-    source.models = async signal => (await unscopedModels(signal)).filter(model => model.modelId === "faux-1").map(model => ({ ...model, scoped: true }));
+    source.models = async signal => (await unscopedModels(signal)).map(model => ({ ...model, scoped: model.modelId === "faux-1" }));
     await key("\x10"); await wait("Only one model in scope");
     source.models = unscopedModels;
+    await key("/model opus"); await key("\r"); await wait("configured providers");
+    await key("\r"); await until(async () => (await alpha())?.modelId === "faux-opus-2");
     await key("/model faux/faux-1"); await key("\r");
     await until(async () => (await alpha())?.modelId === "faux-1");
     await key("/thinking low"); await key("\r");
@@ -98,6 +100,9 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[Z");
     await until(async () => (await alpha())?.thinking === "medium");
     await wait("Thinking level: medium");
+    await key("/thinking"); await key("\r"); await wait("Thinking Level");
+    await key("high"); await key("\r");
+    await until(async () => (await alpha())?.thinking === "high");
     await key("SLOW"); await key("\r");
     await until(async () => (await alpha())?.running === true);
     const working = await wait("(esc to stop)"); print?.("working", working);

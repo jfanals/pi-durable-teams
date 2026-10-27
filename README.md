@@ -20,6 +20,7 @@ is the only human-route authentication: any process running as the user (includi
 - `POST /agents/stop`: abort the current run; `/agents/disable`: disable the subtree.
 - `POST /agents/tree`: `{target}` reads the session tree; `{target, entryId, requestId}` navigates it while idle with an empty inbox.
 - `POST /agents/page`: `{target, cursor?}` transcript page; external sessions have no transcript.
+- `POST /agents/images`: `{target, entryId}` loads an entry’s images on demand; pages contain only image MIME types.
 - `POST /agents/watch`: `{target}` NDJSON snapshots/events for any hosted agent.
 - `POST /agents/roster`: NDJSON full-list frames, initially and on status changes.
 

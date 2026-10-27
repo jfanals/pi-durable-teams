@@ -72,7 +72,7 @@ export async function piCacheWarming(): Promise<{
   return import(piModule("./core/cache-warmer.js"));
 }
 
-// Pi's managed fd (or PATH fd), installed on first completion just as Pi does at startup.
+// Pi's managed fd (or PATH fd), ensured at startup.
 let completionTool: Promise<string | null> | undefined;
 export function piCompletionTool(): Promise<string | null> {
   return completionTool ??= import(piModule("./utils/tools-manager.js")).then(async tools => tools.getToolPath("fd") ?? await tools.ensureTool("fd") ?? null);
@@ -84,7 +84,7 @@ export async function piExternalEditor(command: string, content: string): Promis
 }
 
 /** Pi's selector over a host-owned model snapshot; refresh fetches the same authenticated host list. */
-export async function piModelSelector(tui: TUI, choices: import("./model-choices.ts").ModelChoice[], current: { provider?: string; modelId?: string }, reload: () => Promise<import("./model-choices.ts").ModelChoice[]>, select: (choice: import("./model-choices.ts").ModelChoice) => void, cancel: () => void) {
+export async function piModelSelector(tui: TUI, choices: import("./model-choices.ts").ModelChoice[], current: { provider?: string; modelId?: string }, reload: () => Promise<import("./model-choices.ts").ModelChoice[]>, select: (choice: import("./model-choices.ts").ModelChoice) => void, cancel: () => void, search = "") {
   const { ModelSelectorComponent } = await import(piModule("./modes/interactive/components/model-selector.js"));
   let snapshot = choices.map(choice => ({ ...choice, id: choice.modelId }));
   const runtime = {
@@ -94,8 +94,8 @@ export async function piModelSelector(tui: TUI, choices: import("./model-choices
     refresh: async () => { snapshot = (await reload()).map(choice => ({ ...choice, id: choice.modelId })); return { errors: new Map(), aborted: false }; },
   };
   return new ModelSelectorComponent(tui, runtime.getModel(current.provider ?? "", current.modelId ?? ""), runtime,
-    choices.some(choice => choice.scoped) ? snapshot.map(model => ({ model })) : [],
-    (model: { provider: string; id: string }) => select(snapshot.find(m => m.provider === model.provider && m.id === model.id)!), cancel);
+    snapshot.filter(model => model.scoped).map(model => ({ model })),
+    (model: { provider: string; id: string }) => select(snapshot.find(m => m.provider === model.provider && m.id === model.id)!), cancel, search);
 }
 
 /** Pi's clipboard readers and prompt-image normalization, kept behind the deep-import boundary. */
@@ -109,4 +109,10 @@ export async function piProcessImage(bytes: Uint8Array, mimeType: string) {
 /** Pi's session-tree selector: keep its rendering, filtering, folding and navigation keys. */
 export async function piTreeSelector() {
   return (await import(piModule("./modes/interactive/components/tree-selector.js"))).TreeSelectorComponent;
+}
+
+/** Pi's thinking-level picker, with levels supplied by the host. */
+export async function piThinkingSelector(current: string, levels: string[], select: (level: string) => void, cancel: () => void) {
+  const { ThinkingSelectorComponent } = await import(piModule("./modes/interactive/components/thinking-selector.js"));
+  return new ThinkingSelectorComponent(current, levels, select, cancel);
 }

@@ -2,6 +2,7 @@
 export type Choice = { provider: string; modelId: string; name?: string; thinkingLevels: readonly string[]; thinking?: string; cycleThinking?: string; scoped?: boolean; thinkingMap?: Record<string, string> };
 export type CurrentModel = { provider?: string; modelId?: string; thinking?: string };
 export function nextModel<T extends Choice>(models: T[], current: CurrentModel, backwards = false): T | undefined {
+  if (models.some(model => model.scoped)) models = models.filter(model => model.scoped);
   if (models.length <= 1) return undefined;
   const index = Math.max(0, models.findIndex(m => m.provider === current.provider && m.modelId === current.modelId));
   return models[(index + (backwards ? models.length - 1 : 1)) % models.length];

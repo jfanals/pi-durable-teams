@@ -24,6 +24,7 @@ let generation = 0;
 /** What the human just started and the host has not finished: shown at once in the working line. */
 let pending = "";
 let attachments: ImageContent[] = [];
+const imageCache = new Map<string, Promise<ImageContent[]>>();
 const reconnecting = new Set<string>();
 const all = (): Agent[] => agents.flatMap((a) => [a, ...a.children]);
 const current = () => all().find((a) => a.id === stack.at(-1));
@@ -38,13 +39,17 @@ function banner(key: string, retrying: boolean) {
     el.textContent = "Host disconnected — reconnecting…";
   }
 }
+function notice(text: string) {
+  const el = document.querySelector("#notice");
+  if (el) el.textContent = text;
+}
 function fail(error: unknown) {
   const el = document.querySelector<HTMLElement>("#error");
   if (el) el.textContent = error instanceof Error ? error.message : String(error);
 }
 function base(content: string) {
   root.innerHTML = `<div id="connection" role="status" ${reconnecting.size ? "" : "hidden"}>
-Host disconnected — reconnecting…</div>${content}<div id="error" role="alert"></div>`;
+Host disconnected — reconnecting…</div>${content}<div id="notice" role="status"></div><div id="error" role="alert"></div>`;
 }
 function list() {
   const scroll = document.querySelector(".list")?.scrollTop ?? 0;
@@ -97,6 +102,7 @@ function status(clockOnly = false) {
 }
 async function open(id: string, push = true) {
   attachments = [];
+  imageCache.clear();
   if (push) {
     stack.push(id);
     history.pushState({ stack: [...stack], screen: "chat" }, "", `/#agent=${encodeURIComponent(id)}`);
@@ -162,6 +168,25 @@ function drawChat(older = false) {
   );
   document.querySelector("#history")!.innerHTML =
     `${next ? button("Load older", "older") : ""}${transcript(items) || '<p class="notice">Send a message to get started.</p>'}`;
+  const target = stack.at(-1)!;
+  view.querySelectorAll<HTMLElement>("[data-images]").forEach(el => {
+    const entryId = el.dataset.images!;
+    const key = `${target}:${conversationId}:${entryId}`;
+    let images = imageCache.get(key);
+    if (!images) {
+      images = api<ImageContent[]>("/images", { target, entryId });
+      imageCache.set(key, images);
+    }
+    void images.then(images => {
+      if (!el.isConnected) return;
+      el.replaceChildren(...images.map(image => {
+        const img = document.createElement("img");
+        img.className = "attachment"; img.alt = "Attached image";
+        img.src = `data:${image.mimeType};base64,${image.data}`;
+        return img;
+      }));
+    }).catch(() => { imageCache.delete(key); });
+  });
   view.querySelectorAll<HTMLDetailsElement>("details").forEach((el) => {
     el.open = expanded.includes(el.dataset.thinking);
   });
@@ -279,7 +304,7 @@ async function pickModel(agent: Agent) {
     const model = models[Number(form.get("model"))]!;
     const level = String(form.get("thinking"));
     await mutate("/model", { target: agent.id, provider: model.provider, modelId: model.modelId, thinking: level });
-    fail(modelNotice(model, level));
+    notice(modelNotice(model, level));
   });
   thinking(d, models, agent.thinking);
 }
@@ -665,14 +690,14 @@ root.addEventListener("submit", async (event) => {
       const isThinking = message.startsWith("/thinking");
       const arg = message.slice(isThinking ? 9 : 6).trim();
       input.value = "";
-      if (!isThinking && !arg) { await pickModel(agent); return; }
+      if (!arg) { await pickModel(agent); return; }
       const models = await api<Model[]>("/models");
       const model = models.find(m => isThinking ? m.provider === agent.provider && m.modelId === agent.modelId : `${m.provider}/${m.modelId}` === arg || m.modelId === arg);
-      if (!model) throw new Error(`Model not found: ${arg}`);
+      if (!model) { await pickModel(agent); return; }
       const level = isThinking ? thinkingSelection(model, agent.thinking, arg) : modelThinking(model, agent.thinking);
       if (!level) { fail("Current model does not support thinking"); return; }
       await mutate("/model", { target, provider: model.provider, modelId: model.modelId, thinking: level });
-      fail(isThinking ? `Thinking level: ${level}` : modelNotice(model, level));
+      notice(isThinking ? `Thinking level: ${level}` : modelNotice(model, level));
       await refresh(); return;
     }
     if (/^\/compact(?:\s|$)/.test(message)) {

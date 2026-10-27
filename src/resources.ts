@@ -8,7 +8,7 @@ import { DefaultResourceLoader, discoverAndLoadExtensions, formatSkillsForPrompt
 import { Teams, type TeamsOptions } from "./teams.ts";
 import { readConfig, workerModelFor } from "./config.ts";
 import { withContextLimits } from "./limits.ts";
-import { modelChoices, selectableModels } from "./model-choices.ts";
+import { modelChoices } from "./model-choices.ts";
 import { openWebTools } from "./web.ts";
 import { agentDir, stateDir } from "./paths.ts";
 export { socketPath, stateDir } from "./paths.ts";
@@ -72,8 +72,10 @@ export async function productionOptions(): Promise<TeamsOptions> {
       const patterns = settings.getEnabledModels() ?? [];
       const scoped = patterns.length ? (await resolveModelScopeWithDiagnostics(patterns, runtime)).scopedModels : [];
       const available = await runtime.getAvailable();
-      return modelChoices(selectableModels(scoped, () => available).filter(model => available.some(item => item.provider === model.provider && item.id === model.id))).map(choice => ({
-        ...choice, scoped: scoped.length > 0,
+      const inScope = (model: { provider: string; id: string }) => scoped.some(item => item.model.provider === model.provider && item.model.id === model.id);
+      const ordered = [...scoped.map(item => item.model), ...available.filter(model => !inScope(model))];
+      return modelChoices(ordered.filter(model => available.some(item => item.provider === model.provider && item.id === model.id))).map(choice => ({
+        ...choice, scoped: inScope({ provider: choice.provider, id: choice.modelId }),
         cycleThinking: scoped.find(item => item.model.provider === choice.provider && item.model.id === choice.modelId)?.thinkingLevel,
         thinking: settings.getModelThinkingLevel(choice.provider, choice.modelId) ?? settings.getDefaultThinkingLevel(),
       }));
