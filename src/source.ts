@@ -9,7 +9,7 @@ import type { AgentSummary, Mode } from "./protocol.ts";
 import type { WorkerSource } from "./ui.ts";
 
 export type TranscriptPage = { items: ChatItem[]; queued?: Queued[]; next?: string };
-export type RequestOptions = { requestId?: string; signal?: AbortSignal };
+export type RequestOptions = { requestId?: string; signal?: AbortSignal; images?: import("@earendil-works/pi-ai").ImageContent[] };
 export type CompactResult = { taskId: number; outcome: "compacted" | "nothing" | "running" | "failed"; error?: string };
 export type MutationResult = { id?: string; taskId?: number; workerId?: string; delivery?: string; aborted?: string[]; stopped?: string[]; model?: ModelRef; thinking?: ModelThinkingLevel };
 export interface HostSource {
@@ -52,7 +52,7 @@ export class SocketHostSource implements HostSource {
   private mutate(route: string, body: object, options: RequestOptions = {}) {
     return this.client.call<MutationResult>(`agents/${route}`, { ...body, requestId: options.requestId ?? randomUUID() }, options.signal);
   }
-  send(target: string, message: string, mode: Mode = "followUp", options?: RequestOptions) { return this.mutate("send", { target, message, mode }, options); }
+  send(target: string, message: string, mode: Mode = "followUp", options?: RequestOptions) { return this.mutate("send", { target, message, mode, images: options?.images }, options); }
   stop(target: string, options?: RequestOptions) { return this.mutate("stop", { target }, options); }
   disable(target: string, options?: RequestOptions) { return this.mutate("disable", { target }, options); }
   newAgent(agent: { name: string; cwd: string; model?: ModelRef; thinking?: ModelThinkingLevel }, options?: RequestOptions) { return this.mutate("new", agent, options); }

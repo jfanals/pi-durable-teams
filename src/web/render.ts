@@ -64,6 +64,7 @@ export function transcript(items: ChatItem[]) {
         return `<article class="input">
 <small>${escape(item.from)}${item.report ? " · report" : ""}</small>
 <div class="markdown">${markdown(item.text, true)}</div>
+${(item.images ?? []).map(image => `<img class="attachment" alt="Attached image" src="data:${escape(image.mimeType)};base64,${escape(image.data)}">`).join("")}
 </article>`;
       const parts = item.parts
         .map((part, index) => {

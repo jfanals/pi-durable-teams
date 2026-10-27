@@ -1,4 +1,5 @@
 import { attachAutocomplete } from "./autocomplete.ts";
+import type { ImageContent } from "@earendil-works/pi-ai";
 import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
 import { escape as e, info, footerInfo, transcript } from "./render.ts";
@@ -21,6 +22,7 @@ let dirty = false;
 let generation = 0;
 /** What the human just started and the host has not finished: shown at once in the working line. */
 let pending = "";
+let attachments: ImageContent[] = [];
 const reconnecting = new Set<string>();
 const all = (): Agent[] => agents.flatMap((a) => [a, ...a.children]);
 const current = () => all().find((a) => a.id === stack.at(-1));
@@ -93,6 +95,7 @@ function status(clockOnly = false) {
     .join("");
 }
 async function open(id: string, push = true) {
+  attachments = [];
   if (push) {
     stack.push(id);
     history.pushState({ stack: [...stack], screen: "chat" }, "", `/#agent=${encodeURIComponent(id)}`);
@@ -125,6 +128,8 @@ async function open(id: string, push = true) {
 <form id="composer">
 <textarea id="message" rows="2" placeholder="Message agent…" aria-label="Message">
 </textarea>
+<div id="attachments"></div>
+<label class="attach">Attach image<input id="attach" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label>
 <div class="row">
 <label>
 <input id="steer" type="checkbox"> Steer</label>
@@ -566,12 +571,56 @@ root.addEventListener("change", (event) => {
     list();
   }
 });
+function showAttachments() {
+  const container = document.querySelector("#attachments");
+  if (!container) return;
+  container.innerHTML = attachments.map((image, index) => `<button type="button" data-remove-image="${index}" aria-label="Remove image ${index + 1}"><img class="attachment" alt="Pending image" src="data:${image.mimeType};base64,${image.data}"> ×</button>`).join("");
+}
+async function attachImages(files: File[]) {
+  const current = generation;
+  try {
+    for (const file of files) {
+      if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) continue;
+      if (attachments.length >= 4) throw new Error("Attach at most four images");
+      if (file.size > 4 * 1024 * 1024) throw new Error("Image exceeds 4 MiB");
+      const data = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(",")[1]!);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+      if (generation !== current || screen !== "chat") return;
+      attachments.push({ type: "image", mimeType: file.type, data });
+    }
+  } catch (error) { fail(error); }
+  showAttachments();
+}
+root.addEventListener("change", event => {
+  const input = event.target as HTMLInputElement;
+  if (input.id === "attach") { void attachImages(Array.from(input.files ?? [])); input.value = ""; }
+});
+root.addEventListener("click", event => {
+  const button = (event.target as HTMLElement).closest<HTMLElement>("[data-remove-image]");
+  if (button) { attachments.splice(Number(button.dataset.removeImage), 1); showAttachments(); }
+});
+root.addEventListener("paste", event => {
+  if (!(event.target as HTMLElement).closest("#composer")) return;
+  const files = Array.from(event.clipboardData?.files ?? []);
+  if (files.some(file => file.type.startsWith("image/"))) { event.preventDefault(); void attachImages(files); }
+});
+root.addEventListener("dragover", event => {
+  if ((event.target as HTMLElement).closest("#composer")) event.preventDefault();
+});
+root.addEventListener("drop", event => {
+  if (!(event.target as HTMLElement).closest("#composer")) return;
+  event.preventDefault(); void attachImages(Array.from(event.dataTransfer?.files ?? []));
+});
 root.addEventListener("submit", async (event) => {
   if ((event.target as HTMLElement).id !== "composer") return;
   event.preventDefault();
   const input = document.querySelector<HTMLTextAreaElement>("#message")!;
   const message = input.value.trim();
-  if (!message) return;
+  if (!message && !attachments.length) return;
   const submit = document.querySelector<HTMLButtonElement>('#composer button[type="submit"]')!;
   submit.disabled = true;
   const target = stack.at(-1)!;
@@ -623,12 +672,18 @@ root.addEventListener("submit", async (event) => {
         async (form) => { const before = String(form.get("before")); await fork(before, inputs.find((m) => m.id === before)?.text); });
       return;
     }
+    const images = attachments.slice();
+    const queued = document.querySelector("#queued")!;
+    queued.textContent = `Sending: ${message}${images.length ? " [image]" : ""}`;
     await mutate("/send", {
       target,
       message,
+      images,
       mode: (document.querySelector("#steer") as HTMLInputElement).checked ? "steer" : "followUp",
     });
     input.value = "";
+    attachments = [];
+    showAttachments();
     const view = document.querySelector("#messages")!;
     view.scrollTop = view.scrollHeight;
     await refresh();

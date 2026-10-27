@@ -97,3 +97,11 @@ export async function piModelSelector(tui: TUI, choices: import("./model-choices
     choices.some(choice => choice.scoped) ? snapshot.map(model => ({ model })) : [],
     (model: { provider: string; id: string }) => select(snapshot.find(m => m.provider === model.provider && m.id === model.id)!), cancel);
 }
+
+/** Pi's clipboard readers and prompt-image normalization, kept behind the deep-import boundary. */
+export async function piClipboard() {
+  return { ...await import(piModule("./utils/clipboard.js")), ...await import(piModule("./utils/clipboard-image.js")) };
+}
+export async function piProcessImage(bytes: Uint8Array, mimeType: string) {
+  return (await import(piModule("./utils/image-process.js"))).processImage(bytes, mimeType);
+}

@@ -20,10 +20,11 @@ export type Action = Omit<ToolAction, "action"> & {
   action: ToolAction["action"] | "newAgent" | "model" | "rename";
   model?: { provider: string; modelId: string };
   thinking?: ModelThinkingLevel;
+  images?: { type: "image"; data: string; mimeType: string }[];
 };
 export type Mode = "steer" | "followUp";
 export type Actor = { id: string; teamId: string; role: "main" | "worker"; name: string };
-export type Delivery = { id: string; from: Actor; text: string; mode: Mode; request?: string };
+export type Delivery = { id: string; from: Actor; text: string; mode: Mode; request?: string; images?: { type: "image"; data: string; mimeType: string }[] };
 export const TOOL_NAME = "team";
 export const TOOL_DESCRIPTION = "Manage durable agents: spawn children, list reachable agents, send, wait for answers, inspect transcripts/results, stop or abort children. Reports arrive asynchronously. Read the durable-teams skill for workflow and limits.";
 export const MESSAGE_TYPE = "durable-team-message";
