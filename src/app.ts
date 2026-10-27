@@ -9,6 +9,7 @@ import { type WorkerModel } from "./config.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { workerSource, type HostSource } from "./source.ts";
 import { ChatView, statusRow } from "./ui.ts";
+import { cmuxTab } from "./cmux.ts";
 
 /** Screen-local selection and drafts only; all agent state comes from the host. */
 export class AgentsApp implements Component, Focusable {
@@ -43,8 +44,10 @@ export class AgentsApp implements Component, Focusable {
   private launchCwd: string;
   private exit: () => void;
   private removeInput: () => void;
-  constructor(source: HostSource, tui: TuiAltScreen, theme: Theme, options: { cwd?: string; exit?: () => void } = {}) {
+  private cmux?: ReturnType<typeof cmuxTab>;
+  constructor(source: HostSource, tui: TuiAltScreen, theme: Theme, options: { cwd?: string; exit?: () => void; cmux?: boolean } = {}) {
     this.source = source; this.tui = tui; this.theme = theme;
+    if (options.cmux) this.cmux = cmuxTab();
     this.launchCwd = options.cwd ?? process.cwd();
     this.editor = new Editor(tui, { borderColor: text => theme.fg("accent", text), selectList: getSelectListTheme() });
     this.editor.onSubmit = text => void (this.renaming ? this.rename(text) : this.advance(text));
@@ -78,6 +81,7 @@ export class AgentsApp implements Component, Focusable {
           const running = this.rows().some(row => row.agent.running);
           if (running && !this.ticker) this.ticker = setInterval(() => { this.frame++; this.tui.requestRender(); }, 100);
           if (!running && this.ticker) { clearInterval(this.ticker); this.ticker = undefined; }
+          this.updateCmux();
           this.tui.requestRender();
         });
       } catch { /* retry read-only subscription below */ }
@@ -90,8 +94,11 @@ export class AgentsApp implements Component, Focusable {
       delay = Math.min(5000, delay * 2);
     }
   }
+  private updateCmux() {
+    this.cmux?.update(this.agents, this.view ? this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent : undefined);
+  }
   private setScreen() {
-    this.updateFocus();
+    this.updateFocus(); this.updateCmux();
     const list = { render: (width: number) => this.list(width), invalidate() {} };
     const root = this.form || this.confirming || this.renaming ? this : this.view?.layout ?? list;
     this.tui.setLayoutRoot(root);
@@ -120,6 +127,18 @@ export class AgentsApp implements Component, Focusable {
     this.view = new ChatView(this.tui, this.theme, agent.name, bound, this.life.signal, {
       send: (text, mode) => this.source.send(agent.id, text, mode), stop: () => this.source.stop(agent.id),
       compact: instructions => this.source.compact(agent.id, instructions),
+      ...(this.stack.length === 1 ? {
+        inputs: () => this.source.inputs(agent.id),
+        // Pi jumps into the fork; the chosen message waits in its editor.
+        fork: async (before?: string, draft?: string) => {
+          const { id } = await this.source.fork(agent.id, before);
+          const rows = await this.source.list();
+          const created = rows.find(row => row.id === id);
+          if (!created) throw new Error("Fork created but not in the roster yet; open it from the list");
+          this.agents = rows; this.stack = []; this.open(created);
+          if (draft) this.view?.setDraft(draft);
+        },
+      } : {}),
       back: () => {
         const child = this.stack.pop();
         const parent = this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent;
@@ -324,5 +343,5 @@ export class AgentsApp implements Component, Focusable {
     this.tui.requestRender();
   }
   invalidate() { this.view?.invalidate(); this.editor.invalidate(); }
-  dispose() { this.life.abort(); this.view?.dispose(); clearInterval(this.ticker); this.removeInput(); }
+  dispose() { this.life.abort(); this.view?.dispose(); clearInterval(this.ticker); this.removeInput(); this.cmux?.dispose(); }
 }

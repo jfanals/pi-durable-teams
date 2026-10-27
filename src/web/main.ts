@@ -17,6 +17,8 @@ let watchLife = new AbortController();
 let refreshing = false;
 let dirty = false;
 let generation = 0;
+/** What the human just started and the host has not finished: shown at once in the working line. */
+let pending = "";
 const reconnecting = new Set<string>();
 const all = (): Agent[] => agents.flatMap((a) => [a, ...a.children]);
 const current = () => all().find((a) => a.id === stack.at(-1));
@@ -79,9 +81,9 @@ function status(clockOnly = false) {
     document.querySelector("#status")!.textContent = statusWord(a);
     document.querySelector("#info")!.textContent = footerInfo(a);
   }
-  document.querySelector("#working")!.textContent = a.running
+  document.querySelector("#working")!.textContent = pending || (a.running
     ? `${a.activity ?? "working"} · ${a.since ? formatDuration(Date.now() - a.since) : ""}`
-    : "";
+    : "");
   if (clockOnly) return;
   (document.querySelector("#stop") as HTMLButtonElement).hidden = !a.running;
   document.querySelector("#children")!.innerHTML = a.children
@@ -567,11 +569,41 @@ root.addEventListener("submit", async (event) => {
   if (!message) return;
   const submit = document.querySelector<HTMLButtonElement>('#composer button[type="submit"]')!;
   submit.disabled = true;
+  const target = stack.at(-1)!;
+  // A forked agent opens with the chosen message waiting in its composer, as in Pi.
+  const fork = async (before?: string, draft = "") => {
+    const { id } = await mutate("/fork", { target, before }) as { id: string };
+    stack = [];
+    await open(id);
+    document.querySelector<HTMLTextAreaElement>("#message")!.value = draft;
+  };
+  const busy = async (label: string, work: () => Promise<void>) => {
+    pending = label; status();
+    try { await work(); } finally { pending = ""; status(); }
+  };
   try {
-    const compact = /^\/compact(?:\s|$)/.test(message);
-    if (compact) await api("/compact", { target: stack.at(-1), instructions: message.slice("/compact".length).trim() });
-    else await mutate("/send", {
-      target: stack.at(-1),
+    if (/^\/compact(?:\s|$)/.test(message)) {
+      input.value = "";
+      await busy("Compacting context…", async () => {
+        const result = await api<{ outcome: string; error?: string }>("/compact", { target, instructions: message.slice("/compact".length).trim() });
+        if (result.outcome === "failed") throw new Error(`Compaction failed: ${result.error}`);
+        if (result.outcome === "nothing") fail("Nothing to compact yet");
+      });
+      await refresh();
+      return;
+    }
+    if (message === "/clone") { input.value = ""; await busy("Cloning…", () => fork()); return; }
+    if (message === "/fork") {
+      input.value = "";
+      const inputs = await api<{ id: string; text: string }[]>("/inputs", { target });
+      if (!inputs.length) throw new Error("No messages to fork from");
+      showDialog("Fork from message", `<label>Copy the conversation up to this message into a new agent
+<select name="before">${inputs.map((m, i) => `<option value="${e(m.id)}" ${i === inputs.length - 1 ? "selected" : ""}>${e(m.text.replace(/\s+/g, " ").slice(0, 120))}</option>`).join("")}</select></label>`,
+        async (form) => { const before = String(form.get("before")); await fork(before, inputs.find((m) => m.id === before)?.text); });
+      return;
+    }
+    await mutate("/send", {
+      target,
       message,
       mode: (document.querySelector("#steer") as HTMLInputElement).checked ? "steer" : "followUp",
     });

@@ -18,7 +18,7 @@ setKeybindings(await piKeybindings());
 const source = new SocketHostSource();
 await source.client.ensureHost();
 const tui = new TuiAltScreen(new ProcessTerminal());
-const app = new AgentsApp(source, tui, theme, { exit: () => process.exit(0) });
+const app = new AgentsApp(source, tui, theme, { exit: () => process.exit(0), cmux: true });
 tui.addChild(app); tui.setFocus(app);
 const close = () => { app.dispose(); tui.stop(); };
 process.once("SIGINT", () => { close(); process.exit(0); });

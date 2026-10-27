@@ -10,6 +10,7 @@ import type { WorkerSource } from "./ui.ts";
 
 export type TranscriptPage = { items: ChatItem[]; queued?: Queued[]; next?: string };
 export type RequestOptions = { requestId?: string; signal?: AbortSignal };
+export type CompactResult = { taskId: number; outcome: "compacted" | "nothing" | "running" | "failed"; error?: string };
 export type MutationResult = { id?: string; taskId?: number; workerId?: string; delivery?: string; aborted?: string[]; stopped?: string[]; model?: ModelRef; thinking?: ModelThinkingLevel };
 export interface HostSource {
   models(signal?: AbortSignal): Promise<ModelChoice[]>;
@@ -25,7 +26,11 @@ export interface HostSource {
   newAgent(agent: { name: string; cwd: string; model?: ModelRef; thinking?: ModelThinkingLevel }, options?: RequestOptions): Promise<MutationResult>;
   rename(target: string, name: string, options?: RequestOptions): Promise<MutationResult>;
   setModel(target: string, provider: string, modelId: string, thinking?: ModelThinkingLevel, options?: RequestOptions): Promise<MutationResult>;
-  compact(target: string, instructions?: string): Promise<MutationResult>;
+  compact(target: string, instructions?: string): Promise<CompactResult>;
+  /** The human's messages to `target`, oldest first: what `/fork` offers. */
+  inputs(target: string): Promise<{ id: string; text: string }[]>;
+  /** A new top-level agent from `target`'s history: all of it, or what came before input `before`. */
+  fork(target: string, before?: string, options?: RequestOptions): Promise<MutationResult>;
 }
 
 /** No implicit retries. Supply the same requestId when retrying a mutation. */
@@ -54,7 +59,9 @@ export class SocketHostSource implements HostSource {
   remove(target: string, options?: RequestOptions) { return this.mutate("remove", { target }, options); }
   rename(target: string, name: string, options?: RequestOptions) { return this.mutate("rename", { target, name }, options); }
   setModel(target: string, provider: string, modelId: string, thinking?: ModelThinkingLevel, options?: RequestOptions) { return this.mutate("model", { target, provider, modelId, thinking }, options); }
-  compact(target: string, instructions?: string) { return this.client.call<MutationResult>("agents/compact", { target, instructions }); }
+  compact(target: string, instructions?: string) { return this.client.call<CompactResult>("agents/compact", { target, instructions }); }
+  inputs(target: string) { return this.client.call<{ id: string; text: string }[]>("agents/inputs", { target }); }
+  fork(target: string, before?: string, options?: RequestOptions) { return this.mutate("fork", { target, before }, options); }
 }
 
 /** Bind the shared chat inspector to one agent without database access. */

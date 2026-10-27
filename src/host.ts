@@ -162,6 +162,18 @@ export async function startHost(directory: string, socket: string, options: Team
         if (body.instructions !== undefined && typeof body.instructions !== "string") throw new Error("instructions must be a string");
         return reply(res, 200, await service.compact(body.target, body.instructions));
       }
+      if (pathname === "/agents/inputs") {
+        if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
+        if (typeof body.target !== "string" || !body.target) throw new Error("target is required");
+        return reply(res, 200, await service.inputs(body.target));
+      }
+      if (pathname === "/agents/fork") {
+        if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
+        if (typeof body.target !== "string" || !body.target) throw new Error("target is required");
+        if (typeof body.requestId !== "string" || !body.requestId) throw new Error("requestId is required");
+        if (body.before !== undefined && (typeof body.before !== "string" || !/^\d+$/.test(body.before))) throw new Error("before must be an entry ID");
+        return reply(res, 200, await service.fork(body.target, body.requestId, body.before));
+      }
       if (pathname.startsWith("/agents/") && pathname !== "/agents/watch") {
         const verbs: Record<string, Action["action"]> = { new: "newAgent", send: "send", stop: "abort", disable: "stop", model: "model", rename: "rename", page: "inspect" };
         const route = pathname.slice("/agents/".length);

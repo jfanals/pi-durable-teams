@@ -5,7 +5,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
   AgentDoc, AssistantEntry, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool,
   Harness, watchEvents,
-  type AgentChange, type ConversationId, type EntryId, type HarnessOptions, type ModelRef,
+  type AgentChange, type ConversationId, type Cursor, type EntryId, type HarnessOptions, type ModelRef,
   type Storage, type TaskId, type Tx,
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -555,11 +555,66 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       } finally { view.dispose(); }
       return { items, queued, next: page.next ? JSON.stringify(page.next) : undefined };
     },
-    /** Human-only `/compact [instructions]`: Durable's manual compaction, which summarizes when there is enough history. */
+    /**
+     * Human-only `/compact [instructions]`: Durable's manual compaction. Waits a while for the outcome, so the client can
+     * say "compacted", "nothing to compact" or the error; a longer one stays visible as the agent's `compacting` status.
+     */
     async compact(target: string, instructions?: string) {
       const agent = resolveTarget(await read(), human, target);
       const taskId = await (await conversationOf(agent)).compact(instructions || undefined, context);
-      return { taskId };
+      notify();
+      const settled = await Promise.race([harness.waitForTask(taskId, context), new Promise<undefined>(resolve => { const timer = setTimeout(resolve, 45_000) as unknown as { unref?: () => void }; timer.unref?.(); })]);
+      if (!settled) return { taskId, outcome: "running" as const };
+      const outcome = settled.state.outcome;
+      if (outcome.status !== "completed") return { taskId, outcome: "failed" as const, error: outcome.error?.message ?? outcome.status };
+      return { taskId, outcome: outcome.result.entryId || outcome.result.submissionId ? "compacted" as const : "nothing" as const };
+    },
+    /** The human's messages to an agent, oldest first: what `/fork` offers, as Pi's user-message selector does. */
+    async inputs(target: string) {
+      const conversation = await conversationOf(resolveTarget(await read(), human, target));
+      const inputs: { id: string; text: string }[] = [];
+      let cursor: Cursor | undefined;
+      do {
+        const page = await conversation.entries({ order: "descending" }, 200, cursor, context);
+        for (const item of chatItems(page.items)) if (item.kind === "input" && !item.report && item.from === human.name) inputs.push({ id: item.id, text: item.text });
+        cursor = page.next;
+      } while (cursor && inputs.length < 500);
+      return inputs.sort((a, b) => Number(a.id) - Number(b.id));
+    },
+    /**
+     * Human-only fork of a top-level agent into a new top-level agent: `/clone` copies the whole conversation, `/fork`
+     * stops just before input `before`, whose text the client puts back in the editor. Sub-agents are not copied.
+     */
+    async fork(target: string, requestId: string, before?: string) {
+      if (!requestId) throw new Error("A stable request ID is required");
+      const requestKey = `human:fork:${requestId}`;
+      const state = await read();
+      if (state.requests[requestKey]) return state.requests[requestKey]!;
+      const source = resolveTarget(state, human, target);
+      if (source.where.kind !== "hosted" || source.parent) throw new Error("Only top-level hosted agents can be forked");
+      const from = source.where.conversationId;
+      const conversation = await conversationOf(source);
+      const last = (await conversation.entries({ order: "descending", ...(before ? { maxEntryId: (Number(before) - 1) as EntryId } : {}) }, 1, undefined, context)).items[0];
+      if (!last) throw new Error("Nothing to fork before the first entry");
+      const result = await (await root()).commit(async tx => {
+        const doc = await tx.doc(Teams);
+        if (doc.requests[requestKey]) return { ...doc.requests[requestKey]! };
+        const taken = new Set(Object.values(doc.agents).filter(agent => !agent.removed && !agent.parent).map(agent => agent.name));
+        const base = `${source.name.slice(0, 58)}-fork`;
+        let name = base;
+        for (let n = 2; taken.has(name); n++) name = `${base}-${n}`;
+        const anchor = await tx.createTask(Anchor, null, { ownership: { kind: "conversation" }, background: true });
+        const child = await tx.forkConversation(from, last.id, { ownership: { kind: "task", taskId: anchor } });
+        const stored = await tx.doc(AgentDoc, child.id);
+        const prefix = `You are agent ${source.name}.`;
+        if (stored.instructions?.startsWith(prefix)) await configure(tx, child.id, { instructions: `You are agent ${name}.` + stored.instructions.slice(prefix.length) });
+        const id = String(child.id);
+        if (doc.agents[id]) throw new Error("Agent ID collision with a registered Pi session");
+        doc.agents[id] = { id, name, cwd: source.cwd, enabled: true, activeAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
+        return doc.requests[requestKey] = { id };
+      }, context);
+      notify();
+      return result;
     },
     async agents(): Promise<AgentSummary[]> {
       const state = await read();

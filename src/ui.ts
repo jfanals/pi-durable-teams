@@ -1,7 +1,7 @@
 // Terminal presentation only. Nothing here changes delivery, acknowledgement or worker execution.
 import { homedir } from "node:os";
 
-import { getMarkdownTheme, getSelectListTheme, keyText, ToolExecutionComponent, type Theme, type ThemeBg } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, getSelectListTheme, keyText, ToolExecutionComponent, UserMessageSelectorComponent, type Theme, type ThemeBg } from "@earendil-works/pi-coding-agent";
 import { builtInRenderers, loadToolRenderers } from "./presentation.ts";
 import {
   Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth,
@@ -328,8 +328,11 @@ export type WorkerSource = {
 
 export type ChatActions = {
   send(text: string, mode: Mode): Promise<unknown>; stop(): Promise<unknown>; back(): void;
-  /** `/compact [instructions]` in the editor; absent where only the agent's own tools may compact. */
-  compact?(instructions: string): Promise<unknown>;
+  /** `/compact [instructions]` in the editor. */
+  compact?(instructions: string): Promise<{ outcome: "compacted" | "nothing" | "running" | "failed"; error?: string }>;
+  /** `/fork` and `/clone`, top-level agents only: the human's messages, and a fork before one of them or of everything. */
+  inputs?(): Promise<{ id: string; text: string }[]>;
+  fork?(before?: string, draft?: string): Promise<unknown>;
 };
 
 /** Shared committed transcript, loading, watch and paging for both shells. */
@@ -345,6 +348,8 @@ class Transcript implements Component {
   showThinking = false;
   expanded = false; // Pi's ctrl+o: full tool output
   queued: Queued[] = [];
+  /** What the human just started and the host has not finished, shown at once like Pi's status spinner. */
+  pending?: string;
   /** Pi's pending-message lines above the editor: messages waiting for the agent's next boundary. */
   queuedLines(width: number) {
     if (!this.queued.length) return [];
@@ -409,11 +414,11 @@ class Transcript implements Component {
     })().finally(() => { this.refreshing = undefined; });
     return this.refreshing;
   }
-  private updateWorking() {
+  updateWorking() {
     const s = this.status;
-    if (!this.showWorking || !s?.running) { this.loader?.stop(); this.loader = undefined; return; }
+    if (!this.showWorking || (!s?.running && !this.pending)) { this.loader?.stop(); this.loader = undefined; return; }
     this.loader ??= new Loader(this.tui, text => this.theme.fg("accent", text), text => this.theme.fg("muted", text));
-    this.loader.setMessage(`${s.activity || "Working…"} · ${formatDuration(s.since === undefined ? 0 : Date.now() - s.since)} (esc to stop)`);
+    this.loader.setMessage(this.pending ?? `${s!.activity || "Working…"} · ${formatDuration(s!.since === undefined ? 0 : Date.now() - s!.since)} (esc to stop)`);
   }
   workingLine(width: number) { return this.loader?.render(width) ?? []; }
   async older() {
@@ -536,6 +541,7 @@ export class ChatView implements Component, Focusable {
   private editor: Editor;
   private actions: ChatActions;
   private panel?: TeamPanel;
+  private picker?: { component: Component; input(data: string): void };
   readonly layout: VStack;
   constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }, branch: () => string = () => "") {
     this.actions = actions;
@@ -564,18 +570,48 @@ export class ChatView implements Component, Focusable {
       return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
     }, invalidate() {} };
     const working = { render: (width: number) => [...this.transcript.queuedLines(width), ...this.transcript.workingLine(width)], invalidate() {} };
-    this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, working, this.editor, ...(this.panel ? [this.panel] : []), footer]);
+    // Pi's selectors take the editor's place while open.
+    const input = { render: (width: number) => (this.picker?.component ?? this.editor).render(width), invalidate: () => this.editor.invalidate() };
+    this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, working, input, ...(this.panel ? [this.panel] : []), footer]);
+  }
+  /** Text for the editor, as Pi restores a forked message. */
+  setDraft(text: string) { this.editor.setText(text); }
+  /** Run a host request behind Pi's status spinner, then show its outcome as the footer note. */
+  private run<T>(label: string, request: Promise<T>, done: (value: T) => string | undefined) {
+    const t = this.transcript;
+    t.pending = label; t.note = undefined; t.updateWorking(); t.changed();
+    void request.then(value => { t.note = done(value); }, error => { t.note = error instanceof Error ? error.message : String(error); })
+      .finally(() => { t.pending = undefined; t.updateWorking(); t.changed(); void t.refresh(); });
+  }
+  /** `/fork`: Pi's message selector; the chosen message returns to the forked agent's editor. */
+  private async showForkPicker() {
+    let inputs: { id: string; text: string }[];
+    try { inputs = await this.actions.inputs!(); } catch (error) { this.transcript.note = String(error); this.transcript.changed(); return; }
+    if (!inputs.length) { this.transcript.note = "No messages to fork from"; this.transcript.changed(); return; }
+    const close = () => { this.picker = undefined; this.transcript.changed(); };
+    const selector = new UserMessageSelectorComponent(inputs, id => {
+      close();
+      this.run("Forking…", this.actions.fork!(id, inputs.find(input => input.id === id)?.text ?? ""), () => undefined);
+    }, close);
+    this.picker = { component: selector, input: data => selector.getMessageList().handleInput(data) };
+    this.transcript.changed();
   }
   setChildren(workers: WorkerStatus[]) { this.panel?.setWorkers(workers); }
   focusChild(target: string) { this.panel?.enter(this.editor, target); }
   private submit(text: string, mode: Mode) {
     if (!text.trim()) return;
-    const compact = this.actions.compact && /^\/compact(?:\s|$)/.exec(text.trim());
-    if (compact) {
+    const command = text.trim();
+    if (this.actions.compact && /^\/compact(?:\s|$)/.test(command)) {
       this.editor.setText(""); this.editor.addToHistory(text);
-      this.transcript.note = "compacting…"; this.transcript.changed();
-      void this.actions.compact!(text.trim().slice("/compact".length).trim()).then(() => { this.transcript.note = undefined; this.transcript.changed(); void this.transcript.refresh(); },
-        error => { this.transcript.note = String(error); this.transcript.changed(); });
+      this.run("Compacting context…", this.actions.compact(command.slice("/compact".length).trim()), result =>
+        result.outcome === "compacted" ? "Context compacted" : result.outcome === "nothing" ? "Nothing to compact yet"
+          : result.outcome === "running" ? "Still compacting in the background" : `Compaction failed: ${result.error}`);
+      return;
+    }
+    if (this.actions.fork && (command === "/fork" || command === "/clone")) {
+      this.editor.setText("");
+      if (command === "/clone") this.run("Cloning…", this.actions.fork(), () => undefined);
+      else void this.showForkPicker();
       return;
     }
     this.editor.setText("");
@@ -586,6 +622,7 @@ export class ChatView implements Component, Focusable {
   }
   render(width: number) { return this.layout.render(width); }
   handleInput(data: string) {
+    if (this.picker) { this.picker.input(data); this.transcript.changed(); return; }
     if (matchesKey(data, Key.left) && !this.editor.getText()) return this.actions.back();
     if (this.panel?.focused) { this.panel.handleInput(data); return; }
     if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasWorkers) { this.panel.enter(this.editor); return; }

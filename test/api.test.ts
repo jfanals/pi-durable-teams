@@ -20,7 +20,6 @@ import { Client } from "../src/client.ts";
 import { human } from "../src/teams.ts";
 import { chatItems } from "../src/chat.ts";
 import { startHost } from "../src/host.ts";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { SocketHostSource, workerSource } from "../src/source.ts";
 
 async function until(predicate: () => boolean | Promise<boolean>) {
@@ -425,7 +424,7 @@ test("Web Push routes persist subscriptions and send encrypted notifications onl
   }
 });
 
-test("queued messages, /compact and Pi's cache-miss notices", { timeout: 15000 }, async () => {
+test("queued messages, /compact, /fork, /clone and Pi's cache-miss notices", { timeout: 15000 }, async () => {
   // Pi's own detection and wording: a 60k re-bill after 12 idle minutes; a small miss stays silent.
   const { cacheMissText, piCacheMisses } = await import("../src/presentation.ts");
   const { formatTokens } = await import("../src/status.ts");
@@ -456,10 +455,26 @@ test("queued messages, /compact and Pi's cache-miss notices", { timeout: 15000 }
     await source.stop(agent.id!);
     await until(async () => !(await source.list()).find(row => row.id === agent.id)?.running);
     assert.deepEqual((await source.page(agent.id!)).queued, []);
-    // /compact starts Durable's manual compaction; with too little history it completes without a summary.
-    const compacted = await source.compact(agent.id!, "keep decisions") as { taskId?: number };
+    // /compact waits for Durable's manual compaction; with too little history there is nothing to cut.
+    const compacted = await source.compact(agent.id!, "keep decisions");
     assert.equal(typeof compacted.taskId, "number");
-    await host.service.harness.waitForTask(compacted.taskId as any, BACKGROUND_CONTEXT);
+    assert.equal(compacted.outcome, "nothing");
     await assert.rejects(source.compact("missing"), /No accessible agent/);
+    // /fork offers the human's messages (stop withdrew the queued two); forking before one copies only what came before
+    // it, /clone copies everything. Both are new top-level agents in the same folder; retries reuse the request ID.
+    await source.send(agent.id!, "Second request");
+    await until(async () => (await source.inputs(agent.id!)).length === 2 && !(await source.list()).find(row => row.id === agent.id)?.running);
+    const inputs = await source.inputs(agent.id!);
+    assert.deepEqual(inputs.map(input => input.text), ["Start", "Second request"]);
+    await assert.rejects(source.fork(agent.id!, inputs[0]!.id), /Nothing to fork before the first entry/);
+    const forked = await source.fork(agent.id!, inputs[1]!.id, { requestId: "fork-1" });
+    assert.deepEqual(await source.fork(agent.id!, inputs[1]!.id, { requestId: "fork-1" }), forked);
+    const cloned = await source.fork(agent.id!);
+    const rows = await source.list();
+    const row = (id?: string) => rows.find(r => r.id === id)!;
+    assert.deepEqual([row(forked.id).name, row(cloned.id).name], ["busy-fork", "busy-fork-2"]);
+    assert.equal(row(forked.id).cwd, row(agent.id).cwd);
+    assert.deepEqual((await source.inputs(forked.id!)).map(input => input.text), ["Start"]);
+    assert.deepEqual((await source.inputs(cloned.id!)).map(input => input.text), ["Start", "Second request"]);
   } finally { await host.close(); await rm(directory, { recursive: true, force: true }); }
 });
