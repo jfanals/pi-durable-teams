@@ -31,5 +31,5 @@ export const IDENTITY_TYPE = "durable-team-identity";
 export const SENT_TYPE = "durable-team-sent";
 
 export type AgentSummary = WorkerStatus & {
-  hosted: boolean; connected?: boolean; latest?: string; children: AgentSummary[];
+  hosted: boolean; latest?: string; children: AgentSummary[];
 };

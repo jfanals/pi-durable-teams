@@ -1,14 +1,13 @@
 import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
 import { escape as e, info, footerInfo, transcript } from "./render.ts";
-import { isOffline, formatCost, formatDuration, statusWord } from "../status.ts";
+import { formatCost, formatDuration, statusWord } from "../status.ts";
 import { agentNameError } from "../agent-name.ts";
 import type { ChatItem } from "../chat.ts";
 
 const root = document.querySelector<HTMLElement>("#app")!;
 let agents: Agent[] = [];
 let stack: string[] = [];
-let offline = false;
 let items: ChatItem[] = [];
 let next: string | undefined;
 let screen = "list";
@@ -42,22 +41,16 @@ Host disconnected — reconnecting…</div>${content}<div id="error" role="alert
 function list() {
   const scroll = document.querySelector(".list")?.scrollTop ?? 0;
   const focus = (document.activeElement as HTMLElement)?.dataset.open;
-  const offlineFocus = document.activeElement?.id === "offline";
   screen = "list";
   const row = (a: Agent, child = false): string =>
-    `${
-      !offline && isOffline(a)
-        ? ""
-        : `<button class="agent ${child ? "child" : ""}" data-open="${e(a.id)}">
+    `<button class="agent ${child ? "child" : ""}" data-open="${e(a.id)}">
 <div class="row">
-<strong>${e(a.name)}${a.hosted ? "" : " (Pi)"}</strong>
-<span>${a.running ? '<i class="spinner"></i>' : ""}${e(!a.hosted ? (a.connected ? "connected" : "offline") : statusWord(a))}</span>
+<strong>${e(a.name)}</strong>
+<span>${a.running ? '<i class="spinner"></i>' : ""}${e(statusWord(a))}</span>
 </div>
 <small data-time="${e(a.id)}">${e(info(a))}</small>
-</button>`
-    }${a.children.map((c) => row(c, true)).join("")}`;
+</button>${a.children.map((c) => row(c, true)).join("")}`;
   const running = agents.filter((a) => a.running).length;
-  const hidden = agents.filter(isOffline).length;
   const totalCost = formatCost(all().reduce((n, a) => n + (a.cost ?? 0), 0)) || "$0.000";
   const subscription = all().some((a) => a.subscription) ? " (sub)" : "";
   base(
@@ -68,17 +61,14 @@ function list() {
 <small role="status">${e(notifications.note)}</small></section>
 <main class="list">${agents.map((a) => row(a)).join("") || '<p class="notice">No agents yet. Tap + to create one.</p>'}</main>
 <footer>
-<label>
-<input type="checkbox" id="offline" ${offline ? "checked" : ""}> Show offline Pi sessions (${hidden})</label>
-<small>${running} running · ${agents.length - running - hidden} idle · ${hidden} offline · total ${totalCost}${subscription}</small>
+<small>${running} running · ${agents.length - running} idle · total ${totalCost}${subscription}</small>
 </footer>`,
   );
   document.querySelector(".list")!.scrollTop = scroll;
   const focused = [...root.querySelectorAll<HTMLElement>("[data-open]")].find(
     (el) => el.dataset.open === focus,
   );
-  if (offlineFocus) document.querySelector<HTMLElement>("#offline")?.focus({ preventScroll: true });
-  else focused?.focus({ preventScroll: true });
+  focused?.focus({ preventScroll: true });
 }
 function status(clockOnly = false) {
   const a = current();
@@ -353,7 +343,7 @@ async function newAgent() {
     try {
       const error = agentNameError(name);
       if (error) throw new Error(error);
-      if (agents.some((a) => a.hosted && a.name === name)) throw new Error("Name already exists");
+      if (agents.some((a) => a.name === name)) throw new Error("Name already exists");
       const model = models[Number(form.get("model"))]!;
       const result = await mutate("/new", {
         name,
@@ -414,9 +404,10 @@ root.addEventListener("click", async (event) => {
         if (!a) break;
         const dialog = showDialog(
           a.name,
-          `<button type="button" data-menu="rename" ${a.hosted ? "" : "disabled"}>Rename</button>
+          `<button type="button" data-menu="rename">Rename</button>
 <button type="button" data-menu="model">Model & thinking</button>
-<button type="button" data-menu="disable">Disable agent</button>`,
+<button type="button" data-menu="disable">Disable agent</button>
+<button type="button" data-menu="remove">Remove</button>`,
         );
         dialog.querySelectorAll<HTMLElement>("[data-menu]").forEach(
           (item) =>
@@ -447,6 +438,14 @@ root.addEventListener("click", async (event) => {
                   });
                   thinking(d, models, a.thinking);
                 }
+                if (item.dataset.menu === "remove" && confirm(`Remove ${a.name}${a.children.length ? ` and ${a.children.length} sub-agent${a.children.length === 1 ? "" : "s"}` : ""}?`)) {
+                  await mutate("/remove", { target: a.id });
+                  stack = [];
+                  history.replaceState({ screen: "list", stack: [] }, "", "/");
+                  watchLife.abort();
+                  agents = await api<Agent[]>("");
+                  list();
+                }
                 if (item.dataset.menu === "disable" && confirm(`Disable ${a.name}?`))
                   await mutate("/disable", { target: a.id });
               } catch (error) {
@@ -465,10 +464,6 @@ root.addEventListener("change", (event) => {
   if ((event.target as HTMLElement).id === "notify") {
     const enabled = (event.target as HTMLInputElement).checked;
     void toggleNotifications(enabled).catch(() => {}).finally(() => { if (screen === "list") list(); });
-    list();
-  }
-  if ((event.target as HTMLElement).id === "offline") {
-    offline = (event.target as HTMLInputElement).checked;
     list();
   }
 });

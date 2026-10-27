@@ -1,4 +1,3 @@
-import { isOffline } from "./status.ts";
 import { formatCost } from "./status.ts";
 import { execFile } from "node:child_process";
 import { DirPicker } from "./dir-picker.ts";
@@ -33,13 +32,12 @@ export class AgentsApp implements Component, Focusable {
     });
   }
   private renaming?: { agent: AgentSummary; error?: string };
-  private showOffline = false;
   private selected = 0; private view?: ChatView;
   private note = "Connecting…"; private editor: Editor;
   private form?: { step: number; name: string; cwd: string; model?: WorkerModel; choices: ModelChoice[]; error?: string };
   private picker?: SelectList;
   private dirPicker?: DirPicker;
-  private confirming?: AgentSummary;
+  private confirming?: { agent: AgentSummary; remove?: boolean };
   private ticker?: ReturnType<typeof setInterval>;
   private frame = 0;
   private model?: WorkerModel;
@@ -70,10 +68,10 @@ export class AgentsApp implements Component, Focusable {
       try {
         await this.source.roster(this.life.signal, rows => {
           // Rows reorder by recency: keep the selection on the same agent.
-          const selectedId = this.listRows()[this.selected]?.agent.id;
+          const selectedId = this.rows()[this.selected]?.agent.id;
           this.agents = rows;
           for (const { agent } of this.rows()) this.loadBranch(agent.cwd);
-          const index = this.listRows().findIndex(row => row.agent.id === selectedId);
+          const index = this.rows().findIndex(row => row.agent.id === selectedId);
           if (index >= 0) this.selected = index;
           this.view?.setChildren(this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent.children ?? []); this.note = ""; delay = 250;
           const running = this.rows().some(row => row.agent.running);
@@ -97,20 +95,15 @@ export class AgentsApp implements Component, Focusable {
     const root = this.form || this.confirming || this.renaming ? this : this.view?.layout ?? list;
     this.tui.setLayoutRoot(root);
   }
-  private rows(visible = false) {
+  private rows() {
     const out: { agent: AgentSummary; depth: number }[] = [];
     const visit = (agents: AgentSummary[], depth: number) => {
       for (const agent of agents) {
-        if (visible && !this.showOffline && this.offline(agent)) { visit(agent.children, depth); continue; }
         out.push({ agent, depth }); visit(agent.children, depth + 1);
       }
     };
     visit(this.agents, 0); return out;
   }
-  private offline(agent: AgentSummary): boolean {
-    return isOffline(agent);
-  }
-  private listRows() { return this.rows(true); }
   private fail(error: unknown) { this.note = String(error); this.tui.requestRender(); }
   private open(agent: AgentSummary, push = true) {
     if (push) {
@@ -139,7 +132,7 @@ export class AgentsApp implements Component, Focusable {
   }
   private nameError(name: string, target?: AgentSummary) {
     const siblings = target ? this.rows().find(row => row.agent.children.some(child => child.id === target.id))?.agent.children ?? this.agents : this.agents;
-    return agentNameError(name) ?? (siblings.some(agent => agent.hosted && agent.id !== target?.id && agent.name === name)
+    return agentNameError(name) ?? (siblings.some(agent => agent.id !== target?.id && agent.name === name)
       ? "Name already exists; reuse the agent or choose a distinct name" : undefined);
   }
   private async rename(text: string) {
@@ -212,24 +205,23 @@ export class AgentsApp implements Component, Focusable {
     this.tui.requestRender();
   }
   private list(width: number): string[] {
-    const rows = this.listRows(); this.selected = Math.max(0, Math.min(this.selected, rows.length - 1));
+    const rows = this.rows(); this.selected = Math.max(0, Math.min(this.selected, rows.length - 1));
     const height = this.tui.terminal.rows;
-    const hints = width >= 64 ? ["↑↓ select · enter/→ open · n new · r rename · x disable · q quit"]
-      : ["↑↓ select · enter/→ open · n new", "r rename · x disable · q quit"];
+    const hints = width >= 75 ? ["↑↓ select · enter/→ open · n new · r rename · x disable · d remove · q quit"]
+      : ["↑↓ select · enter/→ open · n new", "r rename · x disable · d remove · q quit"];
     const capacity = Math.max(1, height - 4 - hints.length);
     const start = Math.max(0, this.selected - capacity + 1);
     const lines = [this.theme.fg("accent", this.theme.bold("pi-agents")), ""];
-    const nameWidth = Math.min(24, Math.max(6, ...rows.map(({ agent, depth }) => 2 * depth + agent.name.length + (agent.hosted ? 0 : 5))));
+    const nameWidth = Math.min(24, Math.max(6, ...rows.map(({ agent, depth }) => 2 * depth + agent.name.length)));
     for (const [index, { agent: a, depth }] of rows.slice(start, start + capacity).entries()) {
-      const display = { ...a, name: `${"  ".repeat(depth)}${a.name}${a.hosted ? "" : " (Pi)"}` };
-      lines.push(statusRow(display, width, index + start === this.selected, Date.now(), this.theme, nameWidth, this.frame, a.hosted ? undefined : `${a.connected ? "connected" : "offline"}`, 60));
+      const display = { ...a, name: `${"  ".repeat(depth)}${a.name}` };
+      lines.push(statusRow(display, width, index + start === this.selected, Date.now(), this.theme, nameWidth, this.frame, undefined, 60));
     }
     while (lines.length < height - 2 - hints.length) lines.push("");
     const all = this.rows();
     const total = formatCost(all.reduce((sum, row) => sum + (row.agent.cost ?? 0), 0));
-    const offline = this.agents.filter(a => this.offline(a)).length;
     const running = this.agents.filter(a => a.running).length;
-    const summary = `${running} running · ${this.agents.length - running - offline} idle · ${offline ? `${offline} offline${this.showOffline ? " (o hide)" : " hidden (o show)"} · ` : ""}total ${total || "$0.000"}${all.some(row => row.agent.subscription) ? " (sub)" : ""}`;
+    const summary = `${running} running · ${this.agents.length - running} idle · total ${total || "$0.000"}${all.some(row => row.agent.subscription) ? " (sub)" : ""}`;
     lines.push(this.theme.fg("dim", summary), this.note, ...hints);
     return lines.map(line => truncateToWidth(line, width));
   }
@@ -241,7 +233,7 @@ export class AgentsApp implements Component, Focusable {
       return ["New agent · esc back · esc on name cancels", breadcrumb, ["Name", "Working directory", "Model · type to filter · ↑↓ select · enter choose", "Thinking · ↑↓ select · enter create"][form.step]!,
         ...(form.step === 1 ? this.dirPicker!.render(width) : form.step < 3 ? this.editor.render(width) : []), ...(this.picker?.render(width) ?? []), form.error ? this.theme.fg("error", form.error) : ""].map(line => truncateToWidth(line, width));
     }
-    if (this.confirming) return [`Disable ${this.confirming.name}? y / n`].map(line => truncateToWidth(line, width));
+    if (this.confirming) return [this.confirming.remove ? `Remove ${this.confirming.agent.name}${this.confirming.agent.children.length ? ` and ${this.confirming.agent.children.length} sub-agent${this.confirming.agent.children.length === 1 ? "" : "s"}` : ""}? y/n` : `Disable ${this.confirming.agent.name}? y / n`].map(line => truncateToWidth(line, width));
     return this.view ? this.view.render(width).map(line => truncateToWidth(line, width)) : this.list(width);
   }
   handleInput(data: string) {
@@ -259,24 +251,20 @@ export class AgentsApp implements Component, Focusable {
       } else if (this.picker && (this.form.step === 3 || matchesKey(data, Key.up) || matchesKey(data, Key.down) || matchesKey(data, Key.enter))) this.picker.handleInput(data);
       else this.editor.handleInput(data);
     }
-    else if (this.confirming) { const target = this.confirming; this.confirming = undefined; if (data === "y") void this.source.disable(target.id).catch(error => this.fail(error)); }
+    else if (this.confirming) { const target = this.confirming; this.confirming = undefined; if (data === "y") void (target.remove ? this.source.remove(target.agent.id) : this.source.disable(target.agent.id)).catch(error => this.fail(error)); }
     else if (this.view) this.view.handleInput(data);
     else if (matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-    else if (matchesKey(data, Key.down)) this.selected = Math.min(this.listRows().length - 1, this.selected + 1);
-    else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) { const row = this.listRows()[this.selected]; if (row) this.open(row.agent); }
-    else if (data === "o") {
-      const id = this.listRows()[this.selected]?.agent.id;
-      this.showOffline = !this.showOffline;
-      const index = this.listRows().findIndex(row => row.agent.id === id);
-      if (index >= 0) this.selected = index;
-    }
+    else if (matchesKey(data, Key.down)) this.selected = Math.min(this.rows().length - 1, this.selected + 1);
+    else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) { const row = this.rows()[this.selected]; if (row) this.open(row.agent); }
     else if (data === "r") {
-      const agent = this.listRows()[this.selected]?.agent;
-      if (agent?.hosted) { this.renaming = { agent }; this.editor.setText(agent.name); }
-      else this.note = "External Pi sessions cannot be renamed";
+      const agent = this.rows()[this.selected]?.agent;
+      if (agent) { this.renaming = { agent }; this.editor.setText(agent.name); }
     }
     else if (data === "q") { this.dispose(); this.tui.stop(); this.exit(); return; }
-    else if (data === "x") this.confirming = this.listRows()[this.selected]?.agent;
+    else if (data === "x" || data === "d") {
+      const agent = this.rows()[this.selected]?.agent;
+      if (agent) this.confirming = { agent, remove: data === "d" };
+    }
     else if (data === "n") { this.form = { step: 0, name: "", cwd: "", model: this.model, choices: [] }; this.note = ""; this.formStep(0); }
     this.setScreen();
     this.tui.requestRender();

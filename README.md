@@ -311,7 +311,7 @@ class (upstream export request). A single checked compatibility import loads the
 theme; the app uses public TUI keybindings, so your `keybindings.json` is not
 loaded yet.
 
-- List: **↑↓** select, **Enter/→** open, **n** create, **r** rename, **o** show/hide offline Pi sessions (hidden by default), **q** quit, **x** disable (confirm with **y**).
+- List: **↑↓** select, **Enter/→** open, **n** create, **r** rename, **d** remove (confirm with **y**), **q** quit, **x** disable (confirm with **y**).
 - New agent: enter a unique name, then pick an existing working directory.
   Folder picker: **↑↓** move, **→** enter folder, **←** parent, **Enter** choose,
   typing filters, **Backspace** edits, **Esc** back. Recent directories appear first;
@@ -322,7 +322,12 @@ loaded yet.
 - Chat: **Enter** send/steer, **Alt+Enter** queue follow-up, **Esc** stop current run,
   **↓/Enter** on an empty editor select/open a sub-agent, **←** goes back
   to its parent or the list, **PgUp/PgDn** scroll.
-- **Ctrl+C** exits. External Pi sessions show their latest publication, not a transcript.
+- **Ctrl+C** exits.
+
+Remove is human-only (terminal **d**, web **⋮ → Remove**): it stops the agent and
+its subtree and hides them everywhere, including agents’ `team` tool. History is
+kept and names are reusable. External Pi sessions cannot be removed. Human
+interfaces show durable agents only, with no toggle.
 
 Preview without touching the live host: `npm run screen -- small` (`narrow` or `wide`
 also work). These scenarios use a temporary host and faux model, as do `test/app.test.ts`.

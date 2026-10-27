@@ -19,6 +19,7 @@ export interface HostSource {
   send(target: string, message: string, mode?: Mode, options?: RequestOptions): Promise<MutationResult>;
   stop(target: string, options?: RequestOptions): Promise<MutationResult>;
   disable(target: string, options?: RequestOptions): Promise<MutationResult>;
+  remove(target: string, options?: RequestOptions): Promise<MutationResult>;
   newAgent(agent: { name: string; cwd: string; model?: ModelRef; thinking?: ModelThinkingLevel }, options?: RequestOptions): Promise<MutationResult>;
   rename(target: string, name: string, options?: RequestOptions): Promise<MutationResult>;
   setModel(target: string, provider: string, modelId: string, thinking?: ModelThinkingLevel, options?: RequestOptions): Promise<MutationResult>;
@@ -46,6 +47,7 @@ export class SocketHostSource implements HostSource {
   stop(target: string, options?: RequestOptions) { return this.mutate("stop", { target }, options); }
   disable(target: string, options?: RequestOptions) { return this.mutate("disable", { target }, options); }
   newAgent(agent: { name: string; cwd: string; model?: ModelRef; thinking?: ModelThinkingLevel }, options?: RequestOptions) { return this.mutate("new", agent, options); }
+  remove(target: string, options?: RequestOptions) { return this.mutate("remove", { target }, options); }
   rename(target: string, name: string, options?: RequestOptions) { return this.mutate("rename", { target, name }, options); }
   setModel(target: string, provider: string, modelId: string, thinking?: ModelThinkingLevel, options?: RequestOptions) { return this.mutate("model", { target, provider, modelId, thinking }, options); }
 }

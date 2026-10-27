@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { formatDuration } from "../src/status.ts";
 import { createECDH, randomBytes } from "node:crypto";
 import { finished, openPush } from "../src/push.ts";
-import { mkdtemp, realpath, rm, mkdir, writeFile, stat, chmod, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, stat, chmod, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -94,13 +94,7 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
     await until(() => roster[0]?.enabled === false && roster[0]?.children[0]?.enabled === false);
     await client.call("register", { ...identity, name: "Pi main", cwd: directory, model });
     await client.call("publish", { ...identity, latest: "Published observation" });
-    await until(() => roster.some(row => row.id === identity.sessionId && row.latest === "Published observation"));
-    const external = (await source.list()).find(row => row.id === identity.sessionId)!;
-    assert.equal(external.connected, false);
-    assert.equal(external.cwd, await realpath(directory));
-    assert.equal(external.enabled, true);
     observe(client.stream("events", identity, life.signal, () => {}));
-    await until(() => roster.some(row => row.id === identity.sessionId && row.connected));
     assert.ok((await source.send(identity.sessionId, "Hello Pi")).delivery);
     assert.match(JSON.stringify(await source.page(identity.sessionId)), /Published observation/);
     assert.deepEqual(await client.call("page", { ...identity, target: identity.sessionId }), await source.page(identity.sessionId));
@@ -117,7 +111,7 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
         let text = ""; res.on("data", chunk => { text += chunk; }); res.on("end", () => resolve(JSON.parse(text)));
       }); req.on("error", reject); req.end();
     });
-    assert.equal(get.length, 2);
+    assert.deepEqual(get.map(row => row.id), [target]);
     await assert.rejects(client.call("agents/send", { target, message: "bad mode", mode: "wrong" }), /Invalid/);
   } finally {
     life.abort(); await Promise.all(streams); await host.close(); await rm(directory, { recursive: true, force: true });
@@ -183,6 +177,7 @@ test("phone primitives: directory listings, remote config, token auth and socket
     assert.equal((await client.call("health")).ready, true);
     const identity = { sessionId: "external", secret: "s".repeat(36) };
     await client.call("register", { ...identity, name: "Pi", cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
+    assert.deepEqual(await (await call("/agents", { headers: { authorization: `Bearer ${token}` } })).json(), [], "external sessions are absent from the human roster");
     const source = new SocketHostSource(client);
     assert.deepEqual((await source.page(identity.sessionId)).items, [{ id: "publication", kind: "notice", text: "This Pi session has no hosted transcript." }]);
     await client.call("publish", { ...identity, latest: "Latest \x1b[31mpublication\x1b[0m\x07" });

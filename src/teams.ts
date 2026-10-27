@@ -23,7 +23,7 @@ export type MainRegistration = {
   model: ModelRef; thinking?: AgentChange["thinkingLevel"]; latest?: string;
 };
 export type Agent = {
-  id: string; name: string; parent?: string; enabled: boolean; paused?: boolean; cwd: string;
+  id: string; name: string; parent?: string; enabled: boolean; removed?: boolean; paused?: boolean; cwd: string;
   /** Last creation, registration or publication (ms); the list orders by recency with run times. */
   activeAt?: number;
   where: { kind: "hosted"; conversationId: ConversationId }
@@ -56,6 +56,7 @@ export const Teams = defineDoc<Registry>({
 const actorOf = (agent: Agent): Actor => ({ id: agent.id, name: agent.name, teamId: agent.parent ?? agent.id, role: agent.parent ? "worker" : "main" });
 /** Permissions depend on tree position, never on the caller's wire-format role. */
 export function reach(agents: Record<string, Agent>, actor: Actor, verb: string, target?: Agent) {
+  if (target?.removed || agents[actor.id]?.removed) return false;
   if (actor.id === human.id) return true;
   const own = agents[actor.id];
   if (!own) return false;
@@ -124,7 +125,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   function active(state: Registry, id: string): boolean {
     if (id === human.id) return true;
     const agent = state.agents[id];
-    return Boolean(agent?.enabled && !agent.paused && (!agent.parent || active(state, agent.parent)));
+    return Boolean(agent?.enabled && !agent.removed && !agent.paused && (!agent.parent || active(state, agent.parent)));
   }
   // All deliveries, including answers, enter through this mailbox. Hosted request IDs and external
   // inbox IDs make retries safe across a crash between posting and checkpointing the reporter.
@@ -246,7 +247,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   async function action(actor: Actor, args: Action, requestId: string, signal?: AbortSignal) {
     const state = await read();
     const own = state.agents[actor.id];
-    if (!own && actor.id !== human.id) throw new Error("Unknown agent");
+    if ((!own || own.removed) && actor.id !== human.id) throw new Error("Unknown agent");
     if (args.action === "wait") {
       const seconds = args.timeoutSeconds ?? 600;
       if (!Number.isFinite(seconds) || seconds < 0 || seconds > 1800) throw new Error("timeoutSeconds must be between 0 and 1800");
@@ -374,7 +375,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const doc = await tx.doc(Teams);
         if (doc.requests[requestKey]) return { ...doc.requests[requestKey]! };
         const agent = doc.agents[target!.id]!;
-        if (Object.values(doc.agents).some(sibling => sibling.id !== agent.id && sibling.where.kind === "hosted" && sibling.parent === agent.parent && sibling.name === args.name)) throw new Error("Name already exists; reuse the agent or choose a distinct name");
+        if (Object.values(doc.agents).some(sibling => !sibling.removed && sibling.id !== agent.id && sibling.where.kind === "hosted" && sibling.parent === agent.parent && sibling.name === args.name)) throw new Error("Name already exists; reuse the agent or choose a distinct name");
         if (agent.where.kind !== "hosted") throw new Error("External Pi sessions cannot be renamed");
         const stored = await tx.doc(AgentDoc, agent.where.conversationId);
         const prefix = `You are agent ${agent.name}.`;
@@ -428,7 +429,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       if (!active(doc, actor.id)) throw new Error("Agent/team stopped or paused");
       let recipient = target;
       if (creating) {
-        if (Object.values(doc.agents).some(agent => agent.where.kind === "hosted" && agent.parent === parent && agent.name === args.name)) throw new Error("Name already exists; reuse the agent or choose a distinct name");
+        if (Object.values(doc.agents).some(agent => !agent.removed && agent.where.kind === "hosted" && agent.parent === parent && agent.name === args.name)) throw new Error("Name already exists; reuse the agent or choose a distinct name");
         const anchor = await tx.createTask(Anchor, null, { ownership: { kind: "conversation" }, background: true });
         const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
         recipient = { id: String(child.id), name: args.name!, ...(parent ? { parent } : {}), cwd: cwd!, enabled: true, activeAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
@@ -485,6 +486,22 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   const unsubscribeCommits = harness.subscribeCommits(() => queueMicrotask(notify));
   return {
     harness, action,
+    /** Human-only removal: retain conversations, but retire the registry subtree. */
+    async remove(target: string, requestId: string) {
+      if (!requestId) throw new Error("A stable request ID is required");
+      const state = await read();
+      const agent = state.agents[target] ?? resolveTarget(state, human, target);
+      // The human may remove any hosted agent, including another team’s child; external sessions are refused.
+      if (agent.where.kind !== "hosted") throw new Error("Only hosted agents can be removed");
+      if (agent.removed) return { stopped: [] };
+      const result = await action(human, { action: "stop", target: agent.id }, `remove:${requestId}`) as { stopped: string[] };
+      await harness.commit(async tx => {
+        const doc = await tx.doc(Teams);
+        for (const id of result.stopped) doc.agents[id]!.removed = true;
+      }, context);
+      notify();
+      return result;
+    },
     async page(actor: Actor, target: string, cursor?: string) {
       const destination = resolveTarget(await read(), actor, target);
       if (destination.where.kind === "external") {
@@ -509,17 +526,16 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       }
       return { items: chatItems([...page.items], prefix), next: page.next ? JSON.stringify(page.next) : undefined };
     },
-    async agents(connected: (id: string) => boolean): Promise<AgentSummary[]> {
+    async agents(): Promise<AgentSummary[]> {
       const state = await read();
-      const rows = await Promise.all(Object.values(state.agents).map(async agent => {
-        const base = { id: agent.id, name: agent.name, cwd: agent.cwd, enabled: agent.enabled, hosted: agent.where.kind === "hosted" };
-        if (agent.where.kind === "external") return { ...base, connected: connected(agent.id), latest: agent.where.session.latest, children: [] } as AgentSummary;
+      const rows = await Promise.all(Object.values(state.agents).filter(agent => !agent.removed && agent.where.kind === "hosted").map(async agent => {
+        const base = { id: agent.id, name: agent.name, cwd: agent.cwd, enabled: agent.enabled, hosted: true };
         const details = await action(human, { action: "inspect", target: agent.id }, "") as Parameters<typeof liveStatus>[0];
         return { ...base, ...liveStatus(details), children: [] } as AgentSummary;
       }));
       // Most recent first, at every level: running agents, then the latest activity.
       const now = Date.now();
-      const recency = (row: AgentSummary) => row.running || row.connected ? now : Math.max(state.agents[row.id]!.activeAt ?? 0, row.since ?? 0, row.finishedAt ?? 0);
+      const recency = (row: AgentSummary) => row.running ? now : Math.max(state.agents[row.id]!.activeAt ?? 0, row.since ?? 0, row.finishedAt ?? 0);
       rows.sort((a, b) => recency(b) - recency(a));
       const byId = new Map(rows.map(row => [row.id, row]));
       for (const row of rows) { const parent = state.agents[row.id]!.parent; if (parent) byId.get(parent)?.children.push(row); }

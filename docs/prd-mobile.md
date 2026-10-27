@@ -90,10 +90,11 @@ their shapes.
   tsconfig as part of `npm run check`. Imports `src/status.ts` formatters directly.
 - Markdown via `marked` (already installed with pi-tui), raw HTML escaped, only http(s) links.
 - Screens mirror the terminal app: **list** (recency order, running first, sub-agents indented,
-  offline Pi sessions hidden behind a toggle, summary line), **chat** (transcript items, working
+  human interfaces show durable agents only (no toggle), summary line), **chat** (transcript items, working
   line with activity and elapsed time, composer with send / steer, stop, sub-agent strip, model
   and rename in a menu), **new agent** (name, folder browser via `/agents/dirs` with recent agent
   folders first, model and thinking).
+- **Remove** is human-only: stops and hides an agent and its subtree everywhere, including the `team` tool; keeps history, frees names, and refuses external sessions.
 - Live data: one roster stream for the list and the status line; the open chat's watch ticks
   trigger a refetch of the first page. Reconnect with backoff; a visible "reconnecting" state.
 - PWA: manifest, icons, a service worker that caches only the app shell (never API responses),

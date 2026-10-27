@@ -114,7 +114,7 @@ export async function startHost(directory: string, socket: string, options: Team
         if (body.path !== undefined && typeof body.path !== "string") throw new Error("path must be a string");
         return reply(res, 200, await listDirectories(body.path));
       }
-      if (pathname === "/agents") return reply(res, 200, await service.agents(id => streams.has(id)));
+      if (pathname === "/agents") return reply(res, 200, await service!.agents());
       if (pathname === "/agents/roster") {
         res.writeHead(200, { "content-type": "application/x-ndjson" }); res.flushHeaders();
         workerStreams.add(res);
@@ -128,7 +128,7 @@ export async function startHost(directory: string, socket: string, options: Team
           try {
             while (dirty && !stopped) {
               dirty = false;
-              const rows = await service!.agents(id => streams.has(id));
+              const rows = await service!.agents();
               const json = JSON.stringify(rows);
               if (json !== previous) { previous = json; await frame(res, rows); }
             }
@@ -148,6 +148,12 @@ export async function startHost(directory: string, socket: string, options: Team
         cleanups.add(stop); res.on("close", stop);
         schedule();
         return;
+      }
+      if (pathname === "/agents/remove") {
+        if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
+        if (typeof body.target !== "string" || !body.target) throw new Error("target is required");
+        if (typeof body.requestId !== "string" || !body.requestId) throw new Error("requestId is required");
+        return reply(res, 200, await service.remove(body.target, body.requestId));
       }
       if (pathname.startsWith("/agents/") && pathname !== "/agents/watch") {
         const verbs: Record<string, Action["action"]> = { new: "newAgent", send: "send", stop: "abort", disable: "stop", model: "model", rename: "rename", page: "inspect" };
@@ -275,7 +281,7 @@ export async function startHost(directory: string, socket: string, options: Team
     service = await openTeams(await openNodeSqliteStorage(join(directory, "teams.sqlite")), options);
     try {
       push = openPush(directory);
-      pushWatch = watchPush(push, service, id => streams.has(id));
+      pushWatch = watchPush(push, service);
       cleanups.add(pushWatch.close);
     } catch (error) { console.error("Web Push disabled:", error); }
     if (remoteServer) {

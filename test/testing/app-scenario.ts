@@ -120,13 +120,9 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await until(async () => (await alpha())!.children.length > 0);
     const identity = { sessionId: "external", secret: "s".repeat(36) };
     await source.client.call("register", { ...identity, name: "Pi main", cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
-    const hidden = await wait("1 offline hidden (o show)");
-    assert.doesNotMatch(hidden, /Pi main/); print?.("offline hidden", hidden);
-    await key("o");
-    const roster = await wait("Pi main (Pi)");
-    assert.match(roster, /1 offline \(o hide\)/); assert.match(roster, /  reader/); assert.doesNotMatch(roster, /Pi · (connected|offline)/);
-    print?.("nested and Pi", roster);
-    await key("o"); await wait("1 offline hidden (o show)");
+    const roster = await wait("  reader");
+    assert.doesNotMatch(roster, /Pi main|offline|\(Pi\)/);
+    print?.("nested hosted agents", roster);
     await key("r"); await wait("Rename agent");
     await key("\x15"); await key("beta"); await key("\r"); await wait("Name already exists");
     assert.match(await frame(), /beta/);
@@ -161,6 +157,11 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("x"); await wait("Disable"); await key("y");
     for (let i = 0; i < 100 && (await alpha())?.enabled; i++) await delay(10);
     assert.equal((await alpha())?.enabled, false);
+    await key("d"); await wait("Remove renamed and 1 sub-agent? y/n"); await key("n");
+    assert.ok(await alpha());
+    await key("d"); await wait("Remove renamed"); await key("y");
+    await until(async () => !(await alpha()));
+    assert.ok(!(await source.list()).some(agent => agent.id === readerId));
     // Raw Ctrl+C is global, including the editor and modal confirmation screens.
     // Legacy \x03, Kitty keyboard protocol ctrl+c (Ghostty, cmux), and q on the list all exit.
     for (const [screen, exitKey] of [["list", "\x03"], ["chat", "\x03"], ["form", "\x03"], ["confirm", "\x03"], ["list", "\x1b[99;5u"], ["chat", "\x1b[99;5u"], ["list", "q"]] as const) {

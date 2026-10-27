@@ -76,9 +76,9 @@ export function openPush(directory: string) {
 
 /** Host commit notifications are coalesced just like roster frames, with no reads while unused. */
 export function watchPush(push: ReturnType<typeof openPush>, service: {
-  agents: (connected: (id: string) => boolean) => Promise<AgentSummary[]>;
+  agents: () => Promise<AgentSummary[]>;
   subscribe: (listener: () => void) => () => void;
-}, connected: (id: string) => boolean) {
+}) {
   let previous: AgentSummary[] | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let running = false; let dirty = false; let stopped = false;
@@ -90,7 +90,7 @@ export function watchPush(push: ReturnType<typeof openPush>, service: {
       while (dirty && !stopped) {
         dirty = false;
         if (!push.active) { previous = undefined; continue; }
-        const current = await service.agents(connected);
+        const current = await service.agents();
         const notifications = finished(previous, current);
         previous = current;
         for (const agent of notifications) void push.send(agent).catch(log);
