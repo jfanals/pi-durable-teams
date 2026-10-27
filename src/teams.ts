@@ -595,6 +595,15 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       notify();
       return result;
     },
+    async images(target: string, entryId: string) {
+      const destination = resolveTarget(await read(), human, target);
+      if (destination.where.kind !== "hosted") return [];
+      const conversation = await conversationOf(destination);
+      const page = await conversation.entries({ order: "descending", maxEntryId: Number(entryId) as EntryId }, 1, undefined, context);
+      const entry = page.items.find(entry => String(entry.id) === entryId);
+      const content = entry?.model?.[0]?.content;
+      return Array.isArray(content) ? content.filter(part => part.type === "image") : [];
+    },
     async page(actor: Actor, target: string, cursor?: string) {
       const destination = resolveTarget(await read(), actor, target);
       if (destination.where.kind === "external") {

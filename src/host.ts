@@ -1,3 +1,4 @@
+import { piCompletionTool } from "./presentation.ts";
 import { promptAutocomplete } from "./autocomplete.ts";
 import { normalizeImages } from "./images.ts";
 import { openPush, watchPush } from "./push.ts";
@@ -21,12 +22,13 @@ const HumanActionSchema = Type.Object({
   ...ActionSchema.properties,
   action: StringEnum(["newAgent", "send", "abort", "stop", "model", "rename", "inspect"]),
   model: Type.Optional(Type.Object({ provider: Type.String(), modelId: Type.String() })),
-  thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh"])),
+  thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"])),
 });
 
 // SQLite's OS-backed exclusive lock prevents two hosts opening Durable storage.
 // Unlike a PID/heartbeat lock, a crash releases it and a paused process cannot lose it.
 export async function startHost(directory: string, socket: string, options: TeamsOptions) {
+  void piCompletionTool().catch(() => {});
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   chmodSync(directory, 0o700);
   const remotePort = (await readConfig(directory)).remote?.port;
@@ -192,6 +194,11 @@ export async function startHost(directory: string, socket: string, options: Team
       if (pathname === "/agents/tree") {
         if (typeof body.target !== "string" || (body.entryId !== undefined && typeof body.entryId !== "string")) throw new Error("Expected target and optional entryId");
         return reply(res, 200, await service.tree(body.target, body.requestId ?? randomUUID(), body.entryId));
+      }
+      if (pathname === "/agents/images") {
+        if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
+        if (typeof body.target !== "string" || typeof body.entryId !== "string" || !/^\d+$/.test(body.entryId)) throw new Error("Expected target and entryId");
+        return reply(res, 200, await service.images(body.target, body.entryId));
       }
       if (pathname === "/agents/inputs") {
         if (req.method !== "POST") return reply(res, 405, { error: "POST required" });

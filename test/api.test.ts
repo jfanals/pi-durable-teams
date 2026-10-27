@@ -18,7 +18,6 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import type { AgentSummary } from "../src/protocol.ts";
 import { Client } from "../src/client.ts";
 import { human } from "../src/teams.ts";
-import { imagesFromPaths } from "../src/images.ts";
 import { chatItems } from "../src/chat.ts";
 import { startHost } from "../src/host.ts";
 import { SocketHostSource, workerSource } from "../src/source.ts";
@@ -92,15 +91,13 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
     await source.send(child.id, "Human input", "steer");
     await until(async () => JSON.stringify(await source.page(child.id)).includes("Human input"));
     const image = { type: "image" as const, mimeType: "image/png", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAEElEQVR4AQEFAPr/AP8AAP8FAAH/+lyI0QAAAABJRU5ErkJggg==" };
-    const imagePath = join(directory, "pasted image.png");
-    await writeFile(imagePath, Buffer.from(image.data, "base64"));
-    assert.deepEqual(await imagesFromPaths(imagePath), [image]);
-    assert.deepEqual(await imagesFromPaths(`Look at "${imagePath}"`), [image]);
     await source.send(child.id, "", "followUp", { images: [image] });
     await until(() => sawImage);
     await until(async () => (await source.page(child.id)).items.some(item => item.kind === "input" && !!item.images?.length));
     const imageInput = (await source.page(child.id)).items.find(item => item.kind === "input" && !!item.images?.length);
-    assert.ok(imageInput?.kind === "input" && imageInput.images?.[0]?.data);
+    assert.ok(imageInput?.kind === "input");
+    assert.deepEqual(imageInput.images, [{ mimeType: "image/png" }]);
+    assert.deepEqual(await source.client.call("agents/images", { target: child.id, entryId: imageInput.id }), [image]);
     await assert.rejects(source.send(child.id, "bad image", "followUp", { images: [{ ...image, data: "???" }] }), /Invalid image/);
     await until(async () => !(await source.list())[0]?.children[0]?.running);
     const beforeRewind = await source.inputs(child.id);

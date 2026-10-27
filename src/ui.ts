@@ -6,12 +6,11 @@ import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { imagesFromPaths } from "./images.ts";
 import { piClipboard } from "./presentation.ts";
 import { homedir } from "node:os";
 
 import { getMarkdownTheme, getSelectListTheme, keyText, ToolExecutionComponent, UserMessageSelectorComponent, type Theme, type ThemeBg } from "@earendil-works/pi-coding-agent";
-import { builtInRenderers, loadToolRenderers, piExternalEditor, piModelSelector, piTreeSelector } from "./presentation.ts";
+import { builtInRenderers, loadToolRenderers, piExternalEditor, piModelSelector, piThinkingSelector, piTreeSelector } from "./presentation.ts";
 import {
   Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth,
   type Component, type DefaultTextStyle, type Focusable, type TUI, type TuiMouseEvent,
@@ -644,7 +643,7 @@ export class ChatView implements Component, Focusable {
     } catch (error) { this.transcript.note = String(error); }
     finally { this.editingExternally = false; this.tui.start(); this.tui.requestRender(true); }
   }
-  private async changeModel(command = "", backwards = false, thinking = false) {
+  private async changeModel(command = "", backwards = false, thinking = false, selectThinking = false) {
     const t = this.transcript;
     try {
       const choices = await this.actions.models!();
@@ -658,6 +657,16 @@ export class ChatView implements Component, Focusable {
       if (thinking) {
         const model = choices.find(m => m.provider === current.provider && m.modelId === current.modelId);
         if (!model) throw new Error("Current model unavailable");
+        if (selectThinking && !command) {
+          const close = () => { this.picker = undefined; t.changed(); };
+          const selector = await piThinkingSelector(current.thinking ?? "off", model.thinkingLevels, level => {
+            close(); void apply(model, level, `Thinking level: ${level}`).catch(error => { t.note = String(error); t.changed(); });
+          }, close);
+          if (this.disposed) return;
+          selector.focused = true;
+          this.picker = { component: selector, input: data => selector.handleInput(data) };
+          t.changed(); return;
+        }
         const level = thinkingSelection(model, current.thinking, command);
         if (level) await apply(model, level, `Thinking level: ${level}`);
         else { this.modelNote = "Current model does not support thinking"; t.changed(); }
@@ -665,15 +674,13 @@ export class ChatView implements Component, Focusable {
         const model = nextModel(choices, current, backwards);
         if (model) { const level = modelThinking(model, current.thinking, true); await apply(model, level, modelNotice(model, level, true)); }
         else { this.modelNote = choices.some(m => m.scoped) ? "Only one model in scope" : "Only one model available"; t.changed(); }
-      } else if (command) {
-        const model = choices.find(m => `${m.provider}/${m.modelId}` === command || m.modelId === command);
-        if (!model) throw new Error(`Model not found: ${command}`);
-        await apply(model);
       } else {
+        const model = command && choices.find(m => `${m.provider}/${m.modelId}` === command || m.modelId === command);
+        if (model) { await apply(model); return; }
         const close = () => { this.picker?.dispose?.(); this.picker = undefined; t.changed(); };
         const selector = await piModelSelector(t.tui, choices, current, () => this.actions.models!(), model => {
           close(); void apply(model).catch(error => { t.note = String(error); t.changed(); });
-        }, close);
+        }, close, command);
         if (this.disposed) { selector.dispose(); return; }
         selector.focused = true;
         this.picker = { component: selector, input: data => selector.handleInput(data), dispose: () => selector.dispose() };
@@ -709,7 +716,7 @@ export class ChatView implements Component, Focusable {
     if (this.actions.models && /^\/(model|thinking)(?:\s|$)/.test(command)) {
       this.editor.setText(""); this.editor.addToHistory(text);
       const thinking = command.startsWith("/thinking");
-      void this.changeModel(command.slice(thinking ? 9 : 6).trim(), false, thinking); return;
+      void this.changeModel(command.slice(thinking ? 9 : 6).trim(), false, thinking, thinking); return;
     }
     if (this.actions.compact && /^\/compact(?:\s|$)/.test(command)) {
       this.editor.setText(""); this.editor.addToHistory(text);
@@ -730,10 +737,7 @@ export class ChatView implements Component, Focusable {
     this.editor.setText("");
     this.transcript.note = `${mode === "steer" ? "Steering" : "Follow-up"}: ${firstLine(text)}`;
     this.transcript.changed();
-    void imagesFromPaths(text).then(images => {
-      if (images.length) { this.transcript.note += " [image]"; this.transcript.changed(); }
-      return this.actions.send(text, mode, images);
-    }).then(() => { this.editor.addToHistory(text); this.transcript.note = undefined; this.transcript.changed(); }, error => {
+    void this.actions.send(text, mode).then(() => { this.editor.addToHistory(text); this.transcript.note = undefined; this.transcript.changed(); }, error => {
       if (!this.editor.getText()) this.editor.setText(text);
       this.transcript.note = String(error); this.transcript.changed();
     });
@@ -766,8 +770,9 @@ export class ChatView implements Component, Focusable {
   handleInput(data: string) {
     if (this.editingExternally) return;
     if (this.picker) { this.picker.input(data); this.transcript.changed(); return; }
-    if (this.actions.models) {
-      const kb = getKeybindings();
+    const kb = getKeybindings();
+    const history = kb.matches(data, "tui.editor.historyPrevious") || kb.matches(data, "tui.editor.historyNext");
+    if (this.actions.models && !history) {
       if (kb.matches(data, "app.model.select")) { void this.changeModel(); return; }
       if (kb.matches(data, "app.model.cycleForward")) { void this.changeModel("cycle"); return; }
       if (kb.matches(data, "app.model.cycleBackward")) { void this.changeModel("cycle", true); return; }
@@ -777,6 +782,7 @@ export class ChatView implements Component, Focusable {
     if (this.panel?.focused) { this.panel.handleInput(data); return; }
     if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasWorkers) { this.panel.enter(this.editor); return; }
     if (getKeybindings().matches(data, "app.editor.external")) { void this.openExternalEditor(); return; }
+    if (getKeybindings().matches(data, "app.clipboard.pasteImage")) { void this.pasteClipboard(); return; }
     if (this.editor.isShowingAutocomplete()) { this.editor.handleInput(data); return; }
     if (matchesKey(data, Key.escape)) {
       if (this.transcript.status?.running) {
@@ -793,7 +799,6 @@ export class ChatView implements Component, Focusable {
       }
       return;
     }
-    if (getKeybindings().matches(data, "app.clipboard.pasteImage")) { void this.pasteClipboard(); return; }
     // Pi's follow-up key (option+enter on a Mac, or the user's own binding in Pi's keybindings.json).
     if (getKeybindings().matches(data, "app.message.followUp")) return this.submit(this.editor.getExpandedText(), "followUp");
     if (this.transcript.toggle(data)) return;

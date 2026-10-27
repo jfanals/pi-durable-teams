@@ -1,3 +1,4 @@
+import { piCompletionTool } from "./presentation.ts";
 import { formatCost } from "./status.ts";
 import { execFile } from "node:child_process";
 import { DirPicker } from "./dir-picker.ts";
@@ -49,6 +50,7 @@ export class AgentsApp implements Component, Focusable {
   private removeInput: () => void;
   private cmux?: ReturnType<typeof cmuxTab>;
   constructor(source: HostSource, tui: TuiAltScreen, theme: Theme, options: { cwd?: string; exit?: () => void; cmux?: boolean; doubleEscapeAction?: "tree" | "fork" | "none" } = {}) {
+    void piCompletionTool().catch(() => {});
     this.doubleEscapeAction = options.doubleEscapeAction ?? "tree";
     this.source = source; this.tui = tui; this.theme = theme;
     if (options.cmux) this.cmux = cmuxTab();
