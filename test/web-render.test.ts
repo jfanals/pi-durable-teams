@@ -13,7 +13,9 @@ test("web markdown escapes HTML, drops unsafe URLs and images, and keeps HTTP li
   assert.match(transcript([{ id: "image", kind: "input", from: "Human", text: "", images: [
     { type: "image", mimeType: "image/png", data: "aGVsbG8=" },
   ] }]), /<img class="attachment" alt="Attached image" src="data:image\/png;base64,aGVsbG8=">/);
-  assert.match(html, /data-rewind="1"/);
+  assert.doesNotMatch(html, /data-rewind/);
+  assert.match(transcript([{ id: "human", kind: "input", from: "Human", text: "hello" }]), /data-rewind="human"/);
+  assert.doesNotMatch(transcript([{ id: "report", kind: "input", from: "Human", report: true, text: "report" }]), /data-rewind/);
   const thoughts = transcript([{ id: "2", kind: "reply", parts: [
     { type: "thinking", text: "one" }, { type: "thinking", text: "two" },
   ] }]);

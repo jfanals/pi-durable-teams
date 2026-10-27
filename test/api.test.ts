@@ -17,6 +17,8 @@ import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import type { AgentSummary } from "../src/protocol.ts";
 import { Client } from "../src/client.ts";
+import { AgentDoc, type ConversationId } from "@earendil-works/pi-durable";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { human } from "../src/teams.ts";
 import { imagesFromPaths } from "../src/images.ts";
 import { chatItems } from "../src/chat.ts";
@@ -475,7 +477,7 @@ test("queued messages, /compact, /fork, /clone and Pi's cache-miss notices", { t
   assert.equal(cacheMissText({ missedTokens: 5000, missedCost: 0.01, idleMs: 0, modelChanged: false }, formatTokens), undefined);
 
   const directory = await mkdtemp(join(tmpdir(), "agents-queue-"));
-  const fake = fauxProvider({ tokensPerSecond: 50 });
+  const fake = fauxProvider({ tokensPerSecond: 50, models: [{ id: "faux-1", reasoning: true }, { id: "faux-2", reasoning: true }] });
   fake.setResponses(Array.from({ length: 10 }, () => fauxAssistantMessage("Working slowly. ".repeat(40))));
   const models = createModels(); models.setProvider(fake.provider);
   const socket = join(directory, "s");
@@ -521,12 +523,28 @@ test("queued messages, /compact, /fork, /clone and Pi's cache-miss notices", { t
     assert.ok(JSON.stringify(tree.nodes).includes("Second request"));
     await source.tree(agent.id!, tree.leafId!);
     assert.equal((await source.page(agent.id!)).conversationId, originalPage.conversationId, "current leaf is a no-op");
+    await source.rename(agent.id!, "renamed-busy");
+    await source.setModel(agent.id!, "faux", "faux-2", "high");
+    const originalConfig = await host.service.harness.snapshot(AgentDoc, Number(originalPage.conversationId) as ConversationId, BACKGROUND_CONTEXT);
+    assert.match(originalConfig!.instructions!, /You are agent renamed-busy\./);
     const spend = (await source.list()).find(row => row.id === agent.id)!.cost;
+    let watchTicks = 0;
+    const unwatch = await host.service.watch(human, agent.id!, () => { watchTicks++; });
     const rewound = await source.tree(agent.id!, inputs[1]!.id, { requestId: "rewind" });
     assert.equal(rewound.id, agent.id);
     assert.equal(rewound.editorText, "Second request");
     assert.deepEqual(await source.tree(agent.id!, inputs[1]!.id, { requestId: "rewind" }), rewound);
     const shortened = await source.page(agent.id!);
+    assert.deepEqual(await host.service.harness.snapshot(AgentDoc, Number(shortened.conversationId) as ConversationId, BACKGROUND_CONTEXT), originalConfig);
+    assert.ok(watchTicks > 1, "registry re-point invalidates watch");
+    await delay(30);
+    const ticksBefore = watchTicks;
+    await host.service.harness.commit(tx => tx.appendEntry(Number(originalPage.conversationId) as ConversationId, { kind: "test.watch", data: {} }), BACKGROUND_CONTEXT);
+    await delay(30);
+    assert.equal(watchTicks, ticksBefore, "old conversation no longer invalidates watch");
+    await host.service.harness.commit(tx => tx.appendEntry(Number(shortened.conversationId) as ConversationId, { kind: "test.watch", data: {} }), BACKGROUND_CONTEXT);
+    await until(() => watchTicks > ticksBefore);
+    unwatch();
     assert.notEqual(shortened.conversationId, originalPage.conversationId);
     assert.ok(!JSON.stringify(shortened).includes("Second request"));
     assert.deepEqual((await source.inputs(agent.id!)).map(input => input.text), ["Start"]);
@@ -541,7 +559,8 @@ test("queued messages, /compact, /fork, /clone and Pi's cache-miss notices", { t
     // Root navigation empties the context without discarding configured tools/model/instructions.
     await source.tree(agent.id!, inputs[0]!.id);
     assert.deepEqual((await source.inputs(agent.id!)), []);
-    assert.equal((await source.list()).find(row => row.id === agent.id)!.model, "faux-1");
+    assert.deepEqual(await host.service.harness.snapshot(AgentDoc, Number((await source.page(agent.id!)).conversationId) as ConversationId, BACKGROUND_CONTEXT), originalConfig);
+    assert.equal((await source.list()).find(row => row.id === agent.id)!.model, "faux-2");
     await source.send(agent.id!, "Fresh root request");
     await until(async () => !(await source.list()).find(row => row.id === agent.id)?.running);
     assert.deepEqual((await source.inputs(agent.id!)).map(input => input.text), ["Fresh root request"]);

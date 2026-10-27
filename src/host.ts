@@ -190,6 +190,8 @@ export async function startHost(directory: string, socket: string, options: Team
         return reply(res, 200, await service.compact(body.target, body.instructions));
       }
       if (pathname === "/agents/tree") {
+        if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
+        if (body.requestId !== undefined && (typeof body.requestId !== "string" || !body.requestId)) throw new Error("requestId must be a nonempty string");
         if (typeof body.target !== "string" || (body.entryId !== undefined && typeof body.entryId !== "string")) throw new Error("Expected target and optional entryId");
         return reply(res, 200, await service.tree(body.target, body.requestId ?? randomUUID(), body.entryId));
       }

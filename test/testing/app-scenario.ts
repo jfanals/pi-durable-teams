@@ -112,6 +112,17 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await until(async () => !(await frame()).includes("(esc to stop)"));
     print?.("idle after stop", await frame());
     assert.equal((await alpha())?.enabled, true);
+    // An accepted Enter clears the editor before status catches up: Esc must still stop, not open /tree.
+    const send = source.send.bind(source), stop = source.stop.bind(source);
+    let stopped = 0;
+    let releaseSend!: () => void;
+    source.send = () => new Promise(resolve => { releaseSend = () => resolve({}); });
+    source.stop = (...args) => { stopped++; return stop(...args); };
+    await key("pending send"); await key("\r");
+    await key("\x1b"); await key("\x1b");
+    assert.equal(stopped, 2);
+    assert.doesNotMatch(await frame(), /Session Tree/);
+    releaseSend(); source.send = send; source.stop = stop;
     await key("SCROLL"); await key("\r"); await wait("Transcript line 80");
     const bottom = await frame();
     await key("\x1b[5~"); const scrolled = await frame(); assert.notEqual(scrolled, bottom);

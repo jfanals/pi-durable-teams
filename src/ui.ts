@@ -570,6 +570,7 @@ export class ChatView implements Component, Focusable {
   private editingExternally = false;
   private tui: TUI;
   private lastEscapeTime = 0;
+  private inFlight = 0;
   readonly layout: VStack;
   constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }, branch: () => string = () => "") {
     this.actions = actions;
@@ -614,14 +615,17 @@ export class ChatView implements Component, Focusable {
   /** Run a host request behind Pi's status spinner, then show its outcome as the footer note. */
   private run<T>(label: string, request: Promise<T>, done: (value: T) => string | undefined) {
     const t = this.transcript;
+    this.inFlight++;
     t.pending = label; t.note = undefined; t.updateWorking(); t.changed();
     void request.then(value => { t.note = done(value); }, error => { t.note = error instanceof Error ? error.message : String(error); })
-      .finally(() => { t.pending = undefined; t.updateWorking(); t.changed(); void t.refresh(); });
+      .finally(() => { this.inFlight--; t.pending = undefined; t.updateWorking(); t.changed(); void t.refresh(); });
   }
   /** `/fork`: Pi's message selector; the chosen message returns to the forked agent's editor. */
   private async showForkPicker() {
     let inputs: { id: string; text: string }[];
+    this.inFlight++;
     try { inputs = await this.actions.inputs!(); } catch (error) { this.transcript.note = String(error); this.transcript.changed(); return; }
+    finally { this.inFlight--; }
     if (!inputs.length) { this.transcript.note = "No messages to fork from"; this.transcript.changed(); return; }
     const close = () => { this.picker = undefined; this.transcript.changed(); };
     const selector = new UserMessageSelectorComponent(inputs, id => {
@@ -645,13 +649,16 @@ export class ChatView implements Component, Focusable {
     finally { this.editingExternally = false; this.tui.start(); this.tui.requestRender(true); }
   }
   private async changeModel(command = "", backwards = false, thinking = false) {
+    this.inFlight++;
     const t = this.transcript;
     try {
       const choices = await this.actions.models!();
       if (this.disposed) return;
       const current: { provider?: string; modelId?: string; thinking?: string } = t.status ?? {};
       const apply = async (model: ModelChoice, level = modelThinking(model, current.thinking), notice = modelNotice(model, level)) => {
-        await this.actions.setModel!(model, level as ModelThinkingLevel);
+        this.inFlight++;
+        try { await this.actions.setModel!(model, level as ModelThinkingLevel); }
+        finally { this.inFlight--; }
         if (this.disposed) return;
         this.modelNote = notice; t.changed(); void t.refresh();
       };
@@ -680,9 +687,11 @@ export class ChatView implements Component, Focusable {
         t.changed();
       }
     } catch (error) { t.note = String(error); t.changed(); }
+    finally { this.inFlight--; }
   }
   /** Reuse Pi's actual tree component; the host supplies the session projection. No branch summary. */
   private async showTreePicker() {
+    this.inFlight++;
     try {
       const tree = await this.actions.tree!();
       if (!tree.nodes.length) throw new Error("No entries in session");
@@ -695,10 +704,12 @@ export class ChatView implements Component, Focusable {
           if (result.editorText !== undefined && !this.editor.getText().trim()) this.editor.setText(result.editorText);
           return "Navigated to selected point";
         });
-      }, close);
+      }, close, () => { this.transcript.note = "Labels are not supported"; this.transcript.changed(); });
+      selector.focused = true;
       this.picker = { component: selector, input: data => selector.handleInput(data) };
       this.transcript.changed();
     } catch (error) { this.transcript.note = String(error); this.transcript.changed(); }
+    finally { this.inFlight--; }
   }
   setChildren(workers: WorkerStatus[]) { this.panel?.setWorkers(workers); }
   focusChild(target: string) { this.panel?.enter(this.editor, target); }
@@ -730,13 +741,14 @@ export class ChatView implements Component, Focusable {
     this.editor.setText("");
     this.transcript.note = `${mode === "steer" ? "Steering" : "Follow-up"}: ${firstLine(text)}`;
     this.transcript.changed();
+    this.inFlight++;
     void imagesFromPaths(text).then(images => {
       if (images.length) { this.transcript.note += " [image]"; this.transcript.changed(); }
       return this.actions.send(text, mode, images);
     }).then(() => { this.editor.addToHistory(text); this.transcript.note = undefined; this.transcript.changed(); }, error => {
       if (!this.editor.getText()) this.editor.setText(text);
       this.transcript.note = String(error); this.transcript.changed();
-    });
+    }).finally(() => { this.inFlight--; });
   }
   private async pasteClipboard() {
     try {
@@ -779,7 +791,7 @@ export class ChatView implements Component, Focusable {
     if (getKeybindings().matches(data, "app.editor.external")) { void this.openExternalEditor(); return; }
     if (this.editor.isShowingAutocomplete()) { this.editor.handleInput(data); return; }
     if (matchesKey(data, Key.escape)) {
-      if (this.transcript.status?.running) {
+      if (this.transcript.status?.running !== false || this.inFlight > 0 || this.editor.getText().trim()) {
         this.lastEscapeTime = 0;
         void this.actions.stop().catch(error => { this.transcript.note = String(error); this.transcript.changed(); });
       } else if (!this.editor.getText().trim() && this.actions.doubleEscapeAction !== "none") {

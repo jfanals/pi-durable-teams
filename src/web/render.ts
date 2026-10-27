@@ -63,7 +63,7 @@ export function transcript(items: ChatItem[]) {
       if (item.kind === "input")
         return `<article class="input">
 <small>${escape(item.from)}${item.report ? " · report" : ""}</small>
-<button data-rewind="${escape(item.id)}">Rewind here</button>
+${!item.report && item.from === "Human" ? `<button data-rewind="${escape(item.id)}">Rewind here</button>` : ""}
 <div class="markdown">${markdown(item.text, true)}</div>
 ${(item.images ?? []).map(image => `<img class="attachment" alt="Attached image" src="data:${escape(image.mimeType)};base64,${escape(image.data)}">`).join("")}
 </article>`;

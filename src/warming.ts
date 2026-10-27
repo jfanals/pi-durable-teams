@@ -83,6 +83,14 @@ export async function cacheWarming(getMode: () => string, store: Store, report: 
         }, report);
       }
     },
+    retire(conversationId: number) {
+      const sessionId = byConversation.get(conversationId);
+      if (sessionId === undefined) return;
+      const state = sessions.get(sessionId);
+      if (state) { state.epoch++; state.warmer.cancel(); }
+      sessions.delete(sessionId);
+      byConversation.delete(conversationId);
+    },
     dispose() { for (const { warmer } of sessions.values()) warmer.cancel(); sessions.clear(); },
   };
 }

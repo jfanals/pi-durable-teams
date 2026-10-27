@@ -678,9 +678,10 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         }
         if (!selected || from === undefined) throw new Error("Entry not found in this agent's tree");
         const input = chatItems([selected]).find(item => item.kind === "input");
-        const editorText = input?.kind === "input" ? input.text : undefined;
-        const at = input ? previous : selected.id;
-        const initial = at === undefined ? await harness.snapshot(AgentDoc, current, context) : undefined;
+        const editorText = input?.kind === "input" && !input.report && input.from === human.name ? input.text : undefined;
+        const at = editorText !== undefined ? previous : selected.id;
+        const initial = await harness.snapshot(AgentDoc, current, context);
+        let navigated = false;
         const result = await (await root()).commit(async tx => {
           const doc = await tx.doc(Teams);
           if (doc.requests[key]) return { ...doc.requests[key]! };
@@ -696,14 +697,16 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
             : { kind: "ownerless" as const };
           const child = at !== undefined ? await tx.forkConversation(from!, at, { ownership })
             : await tx.createConversation({ ownership });
-          // There is no entry before a conversation's first input. Bootstrap an empty branch with its configuration.
-          if (at === undefined) Object.assign(await tx.doc(AgentDoc, child.id), structuredClone(initial)!);
+          // Tree navigation keeps the current configuration, not the historical one.
+          Object.assign(await tx.doc(AgentDoc, child.id), structuredClone(initial)!);
           stored.branches = [current, ...(stored.branches ?? [])];
           stored.where.conversationId = child.id;
+          navigated = true;
           stored.cwd = (await tx.doc(AgentDoc, child.id)).cwd ?? stored.cwd;
           stored.activeAt = Date.now();
           return doc.requests[key] = { id: agent.id, ...(editorText !== undefined ? { editorText } : {}) };
         }, context);
+        if (navigated) warming?.retire(current);
         notify();
         return { ...result, nodes: [], leafId: null };
       }
@@ -808,13 +811,18 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     },
     subscribe(listener: () => void) { changed.add(listener); return () => { changed.delete(listener); }; },
     async watch(actor: Actor, target: string, listener: (value: unknown) => void | Promise<void>) {
-      resolveTarget(await read(), actor, target);
-      // Registry changes can switch the conversation behind this stable agent ID. All committed
-      // changes already invalidate the roster; use the same signal rather than pinning an old stream.
+      const agent = resolveTarget(await read(), actor, target);
+      const unsubscribe = harness.subscribeCommits(async publication => {
+        const current = (await read()).agents[agent.id];
+        if (publication.changes.some(change =>
+          change.type === "document" && change.record.kind === "teams.registry"
+          || current?.where.kind === "hosted" && (change.type === "entry" ? change.value.conversationId
+            : change.type === "document" ? change.conversationId : undefined) === current.where.conversationId)) {
+          await listener({ changed: true });
+        }
+      });
       await listener({ changed: true });
-      const invalidate = () => { void listener({ changed: true }); };
-      changed.add(invalidate);
-      return () => { changed.delete(invalidate); };
+      return unsubscribe;
     },
     close: () => { unsubscribeCommits(); warming?.dispose(); return harness.close(context); },
   };
