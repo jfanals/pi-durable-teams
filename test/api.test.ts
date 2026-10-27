@@ -155,33 +155,21 @@ test("phone primitives: directory listings, remote config, token auth and socket
     assert.equal((await call("/agents", { headers: { authorization: token } })).status, 401);
     assert.equal((await call("/health", { headers: { authorization: `Bearer ${token}` } })).status, 200);
     assert.equal((await call(`/agents?token=${token}`)).status, 401);
-    assert.equal((await call("/")).status, 401);
-    const shell = await call(`/?token=${token}`);
+    // App files are public static code so Chrome can install the app; they carry no agent data.
+    const shell = await call("/");
     assert.equal(shell.status, 200); assert.match(shell.headers.get("content-type")!, /text\/html/);
     assert.match(await shell.text(), /Pi Agents/);
-    const attributes = shell.headers.get("set-cookie")!;
-    assert.match(attributes, /HttpOnly/);
-    assert.match(attributes, /SameSite=Strict/);
-    assert.match(attributes, /Max-Age=31536000/);
-    assert.match(attributes, /Path=\//);
-    assert.doesNotMatch(attributes, /Secure/);
+    assert.equal(shell.headers.get("set-cookie"), null);
     assert.match(shell.headers.get("content-security-policy")!, /frame-ancestors 'none'/);
-    for (const headers of [{ "x-forwarded-proto": "https" }]) {
-      const secure = await call(`/?token=${token}`, { headers });
-      assert.match(secure.headers.get("set-cookie")!, /; Secure/);
-    }
-    const cookie = attributes.split(";")[0]!;
-    assert.equal((await call("/health", { headers: { cookie } })).status, 401);
-    assert.equal((await call("/", { method: "POST", headers: { cookie } })).status, 401);
-    assert.equal((await call(`/web/main.ts?token=${token}`, { method: "POST" })).status, 401);
-    assert.equal((await call("/web/main.ts", { headers: { cookie } })).status, 200);
-    assert.equal((await call("/agents", { headers: { cookie } })).status, 401, "shell cookie cannot authenticate API");
+    for (const path of ["/web/manifest.webmanifest", "/web/icons/icon-192.png", "/web/icons/icon-512.png", "/web/sw.js"]) assert.equal((await call(path)).status, 200, path);
+    assert.equal((await call("/web/main.ts", { method: "POST" })).status, 404, "shell files are GET only");
+    assert.equal((await call(`/agents?token=${token}`, { headers: { cookie: `pi_shell=${token}` } })).status, 401, "API needs the Bearer header");
     for (const path of ["/web/main.ts", "/status.ts", "/agent-name.ts"]) {
-      const module = await call(`${path}?token=${token}`);
+      const module = await call(path);
       assert.equal(module.status, 200); assert.match(module.headers.get("content-type")!, /javascript/);
       const code = await module.text(); assert.doesNotMatch(code, /export type |: WorkerStatus|: string/);
     }
-    const marked = await call(`/web/marked.js?token=${token}`);
+    const marked = await call("/web/marked.js");
     assert.equal(marked.status, 200); assert.match(marked.headers.get("content-type")!, /javascript/);
     assert.match(await marked.text(), /export/);
     for (const path of ["/web/nope.ts", "/host.ts", "/web/../host.ts", "/web/%2e%2e/host.ts", "/web/%2f..%2fhost.ts", "/node_modules/marked/lib/marked.esm.js"]) {

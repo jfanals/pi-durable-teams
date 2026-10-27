@@ -342,7 +342,8 @@ with tailnet HTTPS. Without Tailscale the URL falls back to localhost.
 `pi-agents pair --rotate` revokes the old token and closes remote streams within one second.
 The host polls token-file metadata once per second, reloads only changes, and destroys remote
 streams when credentials change; requests and frame writes never create credentials.
-API routes require a Bearer header; query tokens are reserved for GET web-shell paths.
+API routes require a Bearer header. The web app's static files are public (they hold no agent data),
+so Chrome can install the app; the page keeps the pairing token on the phone.
 Folder listings require absolute paths; macOS privacy restrictions may return EPERM.
 
 Treat the pairing URL as a secret: the API requires its token even on your tailnet.

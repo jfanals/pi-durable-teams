@@ -12,8 +12,7 @@ if (supplied) {
   history.replaceState(null, "", url);
 }
 export const token = () => localStorage.getItem("pi-token") ?? "";
-// Unpair removes API access immediately. The HttpOnly shell-only cookie expires
-// via its Max-Age (and stops working immediately if the host token is rotated).
+// Unpair removes this browser's API access; the app files themselves are public.
 export function unpair() {
   localStorage.removeItem("pi-token");
   document.body.innerHTML = pairing;

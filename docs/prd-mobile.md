@@ -71,8 +71,7 @@ their shapes.
 
 - `config.json` gains `remote: { port: number }`. When set, the host also listens on
   `127.0.0.1:<port>` (never 0.0.0.0) with the **same request handler**.
-- Every API request needs `Authorization: Bearer <token>` (`?token=` is accepted only for GET
-  shell paths such as `/` and future static files, which the web app moves into storage and strips from the URL). The token lives in
+- Every API request needs `Authorization: Bearer <token>`. The web app's static files (`/`, `/web/*`, manifest, icons, scripts) are public: they are code with no agent data, and Chrome's installer fetches the manifest and icons without credentials (an earlier cookie gate made the app uninstallable). The pairing URL's `?token=` is read by the page into local storage and removed from the address bar; the host never accepts it. The token lives in
   `remote-token` (0600) in the state dir, created atomically at remote host startup or pairing. Stored and presented tokens must be
   at least 32 characters; invalid stored tokens disable remote access. Constant-time comparison.
 - Remote requests may only reach `/agents*` and the web app's static files. `/register`,
@@ -111,7 +110,7 @@ The native app lived in `android/` up to commit c0b3e5e (see git history).
   written atomically. The subject placeholder may be replaced with an operator contact.
 - Bearer-authenticated `POST /agents/push/key` returns `{ publicKey }`;
   `POST /agents/push/subscribe` accepts `{ subscription }`;
-  `POST /agents/push/unsubscribe` accepts `{ endpoint }`. Shell cookies never authorize these.
+  `POST /agents/push/unsubscribe` accepts `{ endpoint }`. Only the Bearer header authorizes these.
 - The host reuses the existing commit subscription and `service.agents`, coalescing at 25 ms.
   It reads no roster when there are no subscriptions. The first snapshot is only a baseline;
   only top-level hosted running → idle transitions notify, never sub-agents or external Pi
