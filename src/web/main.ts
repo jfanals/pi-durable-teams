@@ -14,6 +14,7 @@ let agents: Agent[] = [];
 let stack: string[] = [];
 let items: ChatItem[] = [];
 let next: string | undefined;
+let conversationId: string | undefined;
 let screen = "list";
 let rosterLife = new AbortController();
 let watchLife = new AbortController();
@@ -184,6 +185,7 @@ async function refresh() {
       // Pi's pending-message lines: messages waiting for the agent's next boundary.
       const queued = document.querySelector("#queued");
       if (queued) queued.innerHTML = (page.queued ?? []).map((q) => `<p>${q.mode === "steer" ? "Steering" : "Follow-up"}: ${e(q.text)}</p>`).join("");
+      if (page.conversationId !== conversationId) { items = []; next = page.next; conversationId = page.conversationId; }
       const overlaps = page.items.some((item) => items.some((old) => old.id === item.id));
       if (!overlaps) {
         items = [];
@@ -471,10 +473,31 @@ ${returnCwd ? '<button type="button" id="cancel-folder">Cancel</button>' : ""}<b
   if (cwd) await review(cwd);
   else await chooseFolder();
 }
+async function rewind(entryId: string) {
+  const result = await mutate("/tree", { target: stack.at(-1), entryId }) as { editorText?: string };
+  await refresh();
+  const input = document.querySelector<HTMLTextAreaElement>("#message");
+  if (input && result.editorText !== undefined && !input.value.trim()) input.value = result.editorText;
+}
+async function treePicker() {
+  type Node = { entry: { id: string; message: { role: string; content: string | { type: string; text?: string }[] } }; children: Node[] };
+  const tree = await api<{ nodes: Node[]; leafId: string | null }>("/tree", { target: stack.at(-1) });
+  const options = (nodes: Node[], depth = 0): string => nodes.map(node => {
+    const m = node.entry.message;
+    const text = typeof m.content === "string" ? m.content : m.content.filter(p => p.type === "text").map(p => p.text).join(" ");
+    return `<option value="${e(node.entry.id)}" ${node.entry.id === tree.leafId ? "selected" : ""}>${e("—".repeat(depth) + " " + m.role + ": " + text.slice(0, 120))}</option>` + options(node.children, depth + 1);
+  }).join("");
+  if (!tree.nodes.length) throw new Error("No entries in session");
+  showDialog("Session tree", `<select name="entryId" size="12">${options(tree.nodes)}</select>`, async form => {
+    const id = String(form.get("entryId"));
+    if (id !== tree.leafId) await rewind(id);
+  });
+}
 root.addEventListener("click", async (event) => {
   const el = (event.target as HTMLElement).closest<HTMLElement>("button");
   if (!el) return;
   try {
+    if (el.dataset.rewind) { await rewind(el.dataset.rewind); return; }
     if (el.dataset.open) {
       await open(el.dataset.open);
       return;
@@ -662,6 +685,7 @@ root.addEventListener("submit", async (event) => {
       await refresh();
       return;
     }
+    if (message === "/tree") { input.value = ""; await treePicker(); return; }
     if (message === "/clone") { input.value = ""; await busy("Cloning…", () => fork()); return; }
     if (message === "/fork") {
       input.value = "";

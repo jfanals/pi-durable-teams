@@ -8,7 +8,9 @@ import { Client } from "./client.ts";
 import type { AgentSummary, Mode } from "./protocol.ts";
 import type { WorkerSource } from "./ui.ts";
 
-export type TranscriptPage = { items: ChatItem[]; queued?: Queued[]; next?: string };
+export type TreeNode = { entry: { type: "message"; id: string; parentId: string | null; timestamp: string; message: any }; children: TreeNode[] };
+export type TreeResult = { nodes: TreeNode[]; leafId: string | null; id?: string; editorText?: string };
+export type TranscriptPage = { conversationId?: string; items: ChatItem[]; queued?: Queued[]; next?: string };
 export type RequestOptions = { requestId?: string; signal?: AbortSignal; images?: import("@earendil-works/pi-ai").ImageContent[] };
 export type CompactResult = { taskId: number; outcome: "compacted" | "nothing" | "running" | "failed"; error?: string };
 export type MutationResult = { id?: string; taskId?: number; workerId?: string; delivery?: string; aborted?: string[]; stopped?: string[]; model?: ModelRef; thinking?: ModelThinkingLevel };
@@ -31,6 +33,7 @@ export interface HostSource {
   inputs(target: string): Promise<{ id: string; text: string }[]>;
   /** A new top-level agent from `target`'s history: all of it, or what came before input `before`. */
   fork(target: string, before?: string, options?: RequestOptions): Promise<MutationResult>;
+  tree(target: string, entryId?: string, options?: RequestOptions): Promise<TreeResult>;
 }
 
 /** No implicit retries. Supply the same requestId when retrying a mutation. */
@@ -61,6 +64,7 @@ export class SocketHostSource implements HostSource {
   setModel(target: string, provider: string, modelId: string, thinking?: ModelThinkingLevel, options?: RequestOptions) { return this.mutate("model", { target, provider, modelId, thinking }, options); }
   compact(target: string, instructions?: string) { return this.client.call<CompactResult>("agents/compact", { target, instructions }); }
   inputs(target: string) { return this.client.call<{ id: string; text: string }[]>("agents/inputs", { target }); }
+  tree(target: string, entryId?: string, options: RequestOptions = {}) { return this.client.call<TreeResult>("agents/tree", { target, entryId, requestId: options.requestId ?? randomUUID() }, options.signal); }
   fork(target: string, before?: string, options?: RequestOptions) { return this.mutate("fork", { target, before }, options); }
 }
 

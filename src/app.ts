@@ -21,6 +21,7 @@ export class AgentsApp implements Component, Focusable {
     this.editor.focused = this.hasFocus && (!!this.renaming || (!!this.form && (this.form.step === 0 || this.form.step === 2)));
     if (this.view) this.view.focused = this.hasFocus && !this.form && !this.confirming;
   }
+  private doubleEscapeAction: "tree" | "fork" | "none";
   private source: HostSource; private tui: TuiAltScreen; private theme: Theme;
   private life = new AbortController(); private agents: AgentSummary[] = [];
   private stack: string[] = [];
@@ -47,7 +48,8 @@ export class AgentsApp implements Component, Focusable {
   private exit: () => void;
   private removeInput: () => void;
   private cmux?: ReturnType<typeof cmuxTab>;
-  constructor(source: HostSource, tui: TuiAltScreen, theme: Theme, options: { cwd?: string; exit?: () => void; cmux?: boolean } = {}) {
+  constructor(source: HostSource, tui: TuiAltScreen, theme: Theme, options: { cwd?: string; exit?: () => void; cmux?: boolean; doubleEscapeAction?: "tree" | "fork" | "none" } = {}) {
+    this.doubleEscapeAction = options.doubleEscapeAction ?? "tree";
     this.source = source; this.tui = tui; this.theme = theme;
     if (options.cmux) this.cmux = cmuxTab();
     this.launchCwd = options.cwd ?? process.cwd();
@@ -137,6 +139,8 @@ export class AgentsApp implements Component, Focusable {
       compact: instructions => this.source.compact(agent.id, instructions),
       models: () => this.source.models(this.life.signal),
       setModel: (model, thinking) => this.source.setModel(agent.id, model.provider, model.modelId, thinking),
+      tree: entryId => this.source.tree(agent.id, entryId),
+      doubleEscapeAction: this.doubleEscapeAction,
       ...(this.stack.length === 1 ? {
         inputs: () => this.source.inputs(agent.id),
         // Pi jumps into the fork; the chosen message waits in its editor.

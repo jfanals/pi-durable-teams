@@ -6,6 +6,7 @@ export const promptCommands: SlashCommand[] = [
   { name: "compact", description: "Compact conversation context" },
   { name: "fork", description: "Fork from a previous message" },
   { name: "clone", description: "Clone this conversation" },
+  { name: "tree", description: "Navigate session tree (switch branches)" },
   { name: "model", description: "Select model (opens selector UI)", argumentHint: "<provider/model>" },
   { name: "thinking", description: "Set thinking level", argumentHint: "<level>" },
 ];

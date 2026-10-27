@@ -3,10 +3,10 @@
 import { realpath, stat } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
-  AgentDoc, AssistantEntry, LiveDoc, ProviderDoc, UsageDoc, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool,
-  Harness, watchEvents,
+  AgentDoc, AssistantEntry, InboxDoc, LiveDoc, ProviderDoc, UsageDoc, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool,
+  Harness,
   type AgentChange, type ConversationId, type Cursor, type EntryId, type HarnessOptions, type ModelRef,
-  type Storage, type TaskId, type Tx,
+  type Storage, type TaskId, type Tx, type UsageState,
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { WorkerModel } from "./config.ts";
@@ -28,12 +28,14 @@ export type Agent = {
   id: string; name: string; parent?: string; enabled: boolean; removed?: boolean; paused?: boolean; cwd: string;
   /** Last creation, registration or publication (ms); the list orders by recency with run times. */
   activeAt?: number;
+  /** Retained conversation branches, newest first; identity is independent of the current conversation. */
+  branches?: ConversationId[];
   where: { kind: "hosted"; conversationId: ConversationId }
     | { kind: "external"; session: MainRegistration; inbox: Record<string, Delivery> };
 };
 type Registry = {
   agents: Record<string, Agent>;
-  requests: Record<string, { taskId?: TaskId; delivery?: string; workerId?: string; id?: string; stopped?: string[]; aborted?: string[]; paused?: boolean; model?: ModelRef; thinking?: WorkerModel["thinking"] }>;
+  requests: Record<string, { taskId?: TaskId; delivery?: string; workerId?: string; id?: string; stopped?: string[]; aborted?: string[]; paused?: boolean; model?: ModelRef; thinking?: WorkerModel["thinking"]; editorText?: string }>;
   reported: Record<string, boolean>;
   waiting?: Record<string, number>;
 };
@@ -152,6 +154,34 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   async function conversationOf(agent: Agent) {
     if (agent.where.kind !== "hosted") throw new Error("This agent is an external Pi session, not a hosted conversation");
     return (await harness.conversation(agent.where.conversationId, context))!;
+  }
+  async function history(conversationId: ConversationId) {
+    const conversation = (await harness.conversation(conversationId, context))!;
+    const entries = [];
+    let cursor: Cursor | undefined;
+    do {
+      const page = await conversation.entries({ order: "ascending" }, 200, cursor, context);
+      entries.push(...page.items); cursor = page.next;
+    } while (cursor);
+    return entries;
+  }
+  // UsageDoc starts empty on every fork. Sum each conversation once, including abandoned branches.
+  async function totalUsage(agent: Agent) {
+    const sum: UsageState = { models: Object.create(null), tools: Object.create(null) };
+    if (agent.where.kind !== "hosted") return sum;
+    for (const id of new Set([agent.where.conversationId, ...(agent.branches ?? [])])) {
+      const usage = await harness.snapshot(UsageDoc, id, context);
+      for (const bucket of ["models", "tools"] as const) for (const [key, value] of Object.entries(usage?.[bucket] ?? {})) {
+        const total = sum[bucket][key];
+        if (!total) sum[bucket][key] = structuredClone(value);
+        else {
+          for (const field of ["input", "output", "cacheRead", "cacheWrite", "totalTokens", "cacheWrite1h", "reasoning"] as const)
+            if (value[field] !== undefined) total[field] = (total[field] ?? 0) + value[field]!;
+          for (const field of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) total.cost[field] += value.cost[field];
+        }
+      }
+    }
+    return sum;
   }
   function active(state: Registry, id: string): boolean {
     if (id === human.id) return true;
@@ -360,7 +390,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         // pi.agent holds the worker's configured model, thinking level and cwd.
         const agent = v.value.docs["pi.agent"] as { model?: ModelRef } | undefined;
         const info = agent?.model && options.modelInfo?.(agent.model);
-        return { ...actorOf(target!), enabled: target!.enabled, agent, contextWindow: info?.window, subscription: info?.subscription, live: v.value.docs["pi.live"], usage: v.value.docs["pi.usage"], latest, since };
+        return { ...actorOf(target!), enabled: target!.enabled, agent, contextWindow: info?.window, subscription: info?.subscription, live: v.value.docs["pi.live"], usage: await totalUsage(target!), latest, since };
       } finally { v.dispose(); }
     }
     if (!requestId) throw new Error("A stable request ID is required");
@@ -490,7 +520,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     tools: [defineTool({
       name: TOOL_NAME, description: TOOL_DESCRIPTION, parameters: ActionSchema, replay: "unsafe",
       execute: async (args, api, ctx) => {
-        const worker = (await read()).agents[String(api.conversationId)];
+        const worker = Object.values((await read()).agents).find(agent => agent.where.kind === "hosted" && agent.where.conversationId === api.conversationId);
         if (!worker?.enabled) throw new Error("Worker not active");
         const value = await action(actorOf(worker), args, String(api.taskId), ctx.abortSignal);
         return { output: [{ type: "text", text: JSON.stringify(value) }] };
@@ -595,7 +625,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const inbox = (view.value.docs["pi.inbox"] as { items?: any[] } | undefined)?.items ?? [];
         queued = inbox.filter(item => item.mode !== "write").map(item => ({ mode: item.mode, text: firstLine(item.entry?.data?.message ?? textOf({ content: item.content })) + (Array.isArray(item.content) && item.content.some((p: any) => p.type === "image") ? " [image]" : "") }));
       } finally { view.dispose(); }
-      return { items, queued, next: page.next ? JSON.stringify(page.next) : undefined };
+      return { conversationId: String(destination.where.conversationId), items, queued, next: page.next ? JSON.stringify(page.next) : undefined };
     },
     /**
      * Human-only `/compact [instructions]`: Durable's manual compaction. Waits a while for the outcome, so the client can
@@ -622,6 +652,81 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         cursor = page.next;
       } while (cursor && inputs.length < 500);
       return inputs.sort((a, b) => Number(a.id) - Number(b.id));
+    },
+    /** Pi-shaped tree projection shared by terminal and web. Shared inherited entries appear only once. */
+    async tree(target: string, requestId?: string, entryId?: string) {
+      const state = await read();
+      const agent = resolveTarget(state, human, target);
+      if (agent.where.kind !== "hosted") throw new Error("Only hosted agents have a tree");
+      const current = agent.where.conversationId;
+      const conversations = [current, ...(agent.branches ?? [])];
+      if (entryId !== undefined) {
+        if (!requestId) throw new Error("A stable request ID is required");
+        const key = `human:tree:${requestId}`;
+        if (state.requests[key]) return { ...state.requests[key]!, nodes: [], leafId: null };
+        let selected: Awaited<ReturnType<typeof history>>[number] | undefined;
+        let previous: EntryId | undefined;
+        let from: ConversationId | undefined;
+        let alreadyHere = false;
+        for (const id of conversations) {
+          const entries = await history(id);
+          const index = entries.findIndex(entry => String(entry.id) === entryId);
+          if (index < 0) continue;
+          selected = entries[index]; previous = entries[index - 1]?.id; from = id;
+          alreadyHere = id === current && entries.findLast(entry => entry.model?.length)?.id === selected?.id;
+          break;
+        }
+        if (!selected || from === undefined) throw new Error("Entry not found in this agent's tree");
+        const input = chatItems([selected]).find(item => item.kind === "input");
+        const editorText = input?.kind === "input" ? input.text : undefined;
+        const at = input ? previous : selected.id;
+        const initial = at === undefined ? await harness.snapshot(AgentDoc, current, context) : undefined;
+        const result = await (await root()).commit(async tx => {
+          const doc = await tx.doc(Teams);
+          if (doc.requests[key]) return { ...doc.requests[key]! };
+          const live = await tx.doc(LiveDoc, current);
+          const inbox = await tx.doc(InboxDoc, current);
+          const stored = doc.agents[agent.id]!;
+          if (stored.removed || stored.where.kind !== "hosted" || stored.where.conversationId !== current) throw new Error("Agent changed; reopen the tree");
+          if (live.run || live.compactions?.length || inbox.items.length) throw new Error("Wait until the agent is idle and its inbox is empty before navigating the tree");
+          if (alreadyHere) return doc.requests[key] = { id: agent.id };
+          const owner = (await tx.conversation(current))!.owner;
+          // Completed anchors cannot acquire new owned conversations. Use a fresh anchor, as /fork does.
+          const ownership = owner ? { kind: "task" as const, taskId: await tx.createTask(Anchor, null, { ownership: { kind: "conversation" }, background: true }) }
+            : { kind: "ownerless" as const };
+          const child = at !== undefined ? await tx.forkConversation(from!, at, { ownership })
+            : await tx.createConversation({ ownership });
+          // There is no entry before a conversation's first input. Bootstrap an empty branch with its configuration.
+          if (at === undefined) Object.assign(await tx.doc(AgentDoc, child.id), structuredClone(initial)!);
+          stored.branches = [current, ...(stored.branches ?? [])];
+          stored.where.conversationId = child.id;
+          stored.cwd = (await tx.doc(AgentDoc, child.id)).cwd ?? stored.cwd;
+          stored.activeAt = Date.now();
+          return doc.requests[key] = { id: agent.id, ...(editorText !== undefined ? { editorText } : {}) };
+        }, context);
+        notify();
+        return { ...result, nodes: [], leafId: null };
+      }
+      const nodes = new Map<string, any>();
+      let leafId: string | null = null;
+      for (const id of conversations) {
+        let parentId: string | null = null;
+        for (const entry of await history(id)) {
+          let message = entry.model?.[0];
+          if (!message) continue;
+          const input = chatItems([entry]).find(item => item.kind === "input");
+          if (input?.kind === "input") message = { ...message, content: [{ type: "text", text: input.text }] } as typeof message;
+          const key = String(entry.id);
+          if (!nodes.has(key)) {
+            const node = { entry: { type: "message", id: key, parentId, timestamp: new Date(message.timestamp ?? 0).toISOString(), message }, children: [] as any[] };
+            nodes.set(key, node);
+            if (parentId) nodes.get(parentId)?.children.push(node);
+          }
+          parentId = key;
+        }
+        if (id === current) leafId = parentId;
+      }
+      return { nodes: [...nodes.values()].filter(node => node.entry.parentId === null), leafId };
     },
     /**
      * Human-only fork of a top-level agent into a new top-level agent: `/clone` copies the whole conversation, `/fork`
@@ -703,18 +808,13 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     },
     subscribe(listener: () => void) { changed.add(listener); return () => { changed.delete(listener); }; },
     async watch(actor: Actor, target: string, listener: (value: unknown) => void | Promise<void>) {
-      const state = await read();
-      const destination = resolveTarget(state, actor, target);
-      if (destination.where.kind !== "hosted") {
-        await listener({ changed: true });
-        const notify = () => { void listener({ changed: true }); };
-        changed.add(notify);
-        return () => { changed.delete(notify); };
-      }
-      const stream = await watchEvents(harness, destination.where.conversationId, context);
+      resolveTarget(await read(), actor, target);
+      // Registry changes can switch the conversation behind this stable agent ID. All committed
+      // changes already invalidate the roster; use the same signal rather than pinning an old stream.
       await listener({ changed: true });
-      stream.start(async () => { await listener({ changed: true }); });
-      return () => stream.stop();
+      const invalidate = () => { void listener({ changed: true }); };
+      changed.add(invalidate);
+      return () => { changed.delete(invalidate); };
     },
     close: () => { unsubscribeCommits(); warming?.dispose(); return harness.close(context); },
   };

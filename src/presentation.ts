@@ -105,3 +105,8 @@ export async function piClipboard() {
 export async function piProcessImage(bytes: Uint8Array, mimeType: string) {
   return (await import(piModule("./utils/image-process.js"))).processImage(bytes, mimeType);
 }
+
+/** Pi's session-tree selector: keep its rendering, filtering, folding and navigation keys. */
+export async function piTreeSelector() {
+  return (await import(piModule("./modes/interactive/components/tree-selector.js"))).TreeSelectorComponent;
+}

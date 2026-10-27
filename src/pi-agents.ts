@@ -23,7 +23,7 @@ const tui = new TuiAltScreen(new ProcessTerminal(), undefined, undefined, {
     try { await copyToClipboard(app.copyText(text)); return true; } catch (error) { return error instanceof Error ? error.message : String(error); }
   },
 });
-const app = new AgentsApp(source, tui, theme, { exit: () => process.exit(0), cmux: true });
+const app = new AgentsApp(source, tui, theme, { exit: () => process.exit(0), cmux: true, doubleEscapeAction: settings.getDoubleEscapeAction() });
 tui.addChild(app); tui.setFocus(app);
 const close = () => { app.dispose(); tui.stop(); };
 process.once("SIGINT", () => { close(); process.exit(0); });
