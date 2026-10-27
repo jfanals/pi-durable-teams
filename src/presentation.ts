@@ -60,3 +60,14 @@ export function cacheMissText(miss: Miss, formatTokens: (n: number) => string) {
     : miss.idleMs >= 5 * 60_000 ? `Cache miss after ${Math.round(miss.idleMs / 60_000)}m idle` : "Cache miss";
   return `${label}: ${formatTokens(miss.missedTokens)} tokens re-billed${miss.missedCost >= 0.01 ? ` (~$${miss.missedCost.toFixed(2)})` : ""}`;
 }
+
+/** Pi's cache warmer (core/cache-warmer.js, not in its public index): the class and its transcript wording. */
+export async function piCacheWarming(): Promise<{
+  CacheWarmer: new (models: { streamSimple: Function }, session: { appendUsage: Function; getBranch(): object[] }, getMode: () => string) => {
+    start(request: { model: object; context: object; options: object }, isCurrent: () => boolean): void;
+    onAgentSettled(): void; cancel(): void; onWarmed?: (entry: object) => void;
+  };
+  formatCacheWarmingUsage(entry: { usage: { cost: { total: number } }; note?: string }): string;
+}> {
+  return import(piModule("./core/cache-warmer.js"));
+}

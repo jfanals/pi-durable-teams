@@ -478,3 +478,37 @@ test("queued messages, /compact, /fork, /clone and Pi's cache-miss notices", { t
     assert.deepEqual((await source.inputs(cloned.id!)).map(input => input.text), ["Start", "Second request"]);
   } finally { await host.close(); await rm(directory, { recursive: true, force: true }); }
 });
+
+test("Pi's cache warming keeps a hosted agent's prompt cache warm during a long tool run", { timeout: 15000 }, async () => {
+  const { Type } = await import("typebox");
+  const { createRegistry, defineExtension, defineTool } = await import("@earendil-works/pi-durable");
+  const directory = await mkdtemp(join(tmpdir(), "agents-warm-"));
+  const registry = createRegistry();
+  registry.install(defineExtension({ name: "slow", tools: [defineTool({ name: "slow", parameters: Type.Object({}), description: "Takes a while",
+    execute: async () => { await delay(1800); return { output: [{ type: "text", text: "done" }] }; } })] }));
+  const fake = fauxProvider({ tokensPerSecond: 100000 });
+  const warms: unknown[] = [];
+  // Real requests: a tool call, then the answer. A one-token request is Pi's warm.
+  fake.setResponses(Array.from({ length: 10 }, () => (context: any, options: any) => {
+    if (options?.maxTokens === 1) { warms.push(options.sessionId); return fauxAssistantMessage("w"); }
+    return context.messages.at(-1)?.role === "toolResult" ? fauxAssistantMessage("Done") : fauxAssistantMessage(fauxToolCall("slow", {}), { stopReason: "toolUse" });
+  }));
+  const base = createModels(); base.setProvider(fake.provider);
+  // An 11 s cache lifetime refreshes after 1 s; cache writes cost enough that Pi's rule says warm.
+  const models = new Proxy(base, { get: (target, property) => property === "getModel"
+    ? (provider: string, id: string) => { const model = target.getModel(provider, id); return model && { ...model, promptCache: { short: 11 }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 20000 } }; }
+    : (Reflect.get(target, property, target) as any)?.bind?.(target) ?? Reflect.get(target, property, target) });
+  const host = await startHost(directory, join(directory, "s"), { models, registry, agentModel: async () => ({ provider: "faux", modelId: "faux-1" }),
+    showCacheMissNotices: () => true, cacheWarming: () => "streaming" });
+  try {
+    const source = new SocketHostSource(new Client(join(directory, "s")));
+    const agent = await source.newAgent({ name: "warm", cwd: directory });
+    await source.send(agent.id!, "Run the slow tool");
+    await until(async () => (await source.page(agent.id!)).items.some(item => item.kind === "reply" && item.parts.some(part => part.type === "text" && part.text === "Done")));
+    assert.equal(warms.length, 1, "one warm while the tool ran; streaming mode stops when the run settles");
+    const lines = (await source.page(agent.id!)).items.filter(item => item.kind === "notice").map(item => item.kind === "notice" && item.text);
+    assert.deepEqual(lines, ["Cache warmed: $0.000"]);
+    await delay(1500);
+    assert.equal(warms.length, 1, "no warming after the run in streaming mode");
+  } finally { await host.close(); await rm(directory, { recursive: true, force: true }); }
+});

@@ -81,6 +81,8 @@ export async function productionOptions(): Promise<TeamsOptions> {
       return model && { window: model.contextWindow, subscription: runtime.isUsingSubscription(ref.provider) };
     },
     showCacheMissNotices: () => settings.getShowCacheMissNotices(),
+    // Pi's own setting, global only because each warm costs money; re-read so a change applies without a restart.
+    cacheWarming: () => settings.getCacheWarmingMode(),
     settings: {
       get retry() { return settings.getRetrySettings(); },
       get compaction() { return settings.getCompactionSettings(); },

@@ -63,6 +63,8 @@ export function chatItems(entries: readonly TranscriptEntry[], prefix: readonly 
         break;
       case "teams.placeholder": items.push({ id, kind: "notice", text: clean(entry.data?.text) }); break;
       case "pi.system": break;
+      // Shown as Pi's "Cache warmed" line only where Pi shows it (showCacheMissNotices); teams.ts adds it.
+      case "teams.cache-warm": break;
       case "pi.compaction": items.push({ id, kind: "notice", text: "— context compacted —" }); break;
       case "pi.reset": items.push({ id, kind: "notice", text: "— context reset —" }); break;
       default: items.push({ id, kind: "notice", text: `[${clean(entry.kind)}]` });

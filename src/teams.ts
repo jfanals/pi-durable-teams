@@ -3,7 +3,7 @@
 import { realpath, stat } from "node:fs/promises";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
-  AgentDoc, AssistantEntry, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool,
+  AgentDoc, AssistantEntry, ProviderDoc, UsageDoc, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool,
   Harness, watchEvents,
   type AgentChange, type ConversationId, type Cursor, type EntryId, type HarnessOptions, type ModelRef,
   type Storage, type TaskId, type Tx,
@@ -11,7 +11,8 @@ import {
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { WorkerModel } from "./config.ts";
 import { chatItems, type ChatItem, type Queued } from "./chat.ts";
-import { cacheMissText, piCacheMisses } from "./presentation.ts";
+import { cacheMissText, piCacheMisses, piCacheWarming } from "./presentation.ts";
+import { CACHE_WARM_KIND, cacheWarming, type CacheWarmData } from "./warming.ts";
 import { agentNameError } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import { firstLine, formatTokens, liveStatus, textOf } from "./status.ts";
@@ -92,6 +93,8 @@ export type TeamsOptions = Omit<HarnessOptions, "registry"> & {
   modelInfo?: (model: ModelRef) => { window: number; subscription: boolean } | undefined;
   /** Pi's showCacheMissNotices setting; off when absent, as in Pi. */
   showCacheMissNotices?: () => boolean;
+  /** Pi's cacheWarming setting (off, streaming, idle); no warming when absent. */
+  cacheWarming?: () => string;
 };
 
 export async function openTeams(storage: Storage, options: TeamsOptions) {
@@ -126,8 +129,15 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     const collect = await piCacheMisses();
     const ordered = [...entries].sort((a, b) => Number(a.id) - Number(b.id));
     const replies = new Map<object, string>();
+    const { formatCacheWarmingUsage } = await piCacheWarming();
     const session = ordered.flatMap(entry => {
       if (entry.kind === "pi.compaction" || entry.kind === "pi.reset") return [{ type: "compaction" }];
+      if (entry.kind === CACHE_WARM_KIND) {
+        // Pi's line for each warm; a warm also counts as the previous request for the next reply's miss check.
+        const warm = (entry as { data?: CacheWarmData }).data!;
+        items.push({ id: String(entry.id), kind: "notice", text: formatCacheWarmingUsage(warm) });
+        return [{ type: "usage", kind: "cache_warm", provider: warm.provider, model: warm.model, usage: warm.usage, timestamp: warm.at }];
+      }
       const message = entry.model?.[0];
       if (entry.kind !== "pi.assistant" || !message?.usage) return [];
       replies.set(message, String(entry.id));
@@ -485,7 +495,27 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       },
     })],
   }));
-  harness = await Harness.open(storage, { ...options, registry }, context);
+  // Pi's cache warming: wraps the models every request goes through; warms are recorded in the agent's conversation.
+  const warming = options.cacheWarming ? await cacheWarming(options.cacheWarming, {
+    async conversationOf(sessionId) {
+      for (const agent of Object.values((await read()).agents)) if (agent.where.kind === "hosted"
+        && (await harness.snapshot(ProviderDoc, agent.where.conversationId, context))?.sessionId === sessionId) return agent.where.conversationId;
+      return undefined;
+    },
+    record: (conversationId, warm) => harness.commit(async tx => {
+      await tx.appendEntry(conversationId as ConversationId, { kind: CACHE_WARM_KIND, data: warm as any });
+      // Its cost joins the agent's spend, as Pi counts usage entries in its session stats.
+      const totals = (await tx.doc(UsageDoc, conversationId as ConversationId)).models;
+      const key = `${warm.provider}/${warm.model}`;
+      const total = totals[key];
+      if (!total) totals[key] = JSON.parse(JSON.stringify(warm.usage));
+      else {
+        for (const field of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) total[field] += warm.usage[field];
+        for (const field of ["input", "output", "cacheRead", "cacheWrite", "total"] as const) total.cost[field] += warm.usage.cost[field];
+      }
+    }, context),
+  }, error => console.error("durable-teams cache warming", error)) : undefined;
+  harness = await Harness.open(storage, { ...options, ...(warming ? { models: warming.models(options.models) } : {}), registry }, context);
   await root();
   // The document migrate hook is pure. Recover each v1 worker's actual cwd from its
   // conversation configuration before scheduling migrated tasks (main cwd is the fallback).
@@ -504,7 +534,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   }
   harness.resume();
   // Commit listeners must not re-enter Session APIs through subscribers.
-  const unsubscribeCommits = harness.subscribeCommits(() => queueMicrotask(notify));
+  const unsubscribeCommits = harness.subscribeCommits(publication => { warming?.onCommit(publication); queueMicrotask(notify); });
   return {
     harness, action,
     /** Human-only removal: retain conversations, but retire the registry subtree. */
@@ -674,7 +704,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       stream.start(async () => { await listener({ changed: true }); });
       return () => stream.stop();
     },
-    close: () => { unsubscribeCommits(); return harness.close(context); },
+    close: () => { unsubscribeCommits(); warming?.dispose(); return harness.close(context); },
   };
 }
 export type TeamsService = Awaited<ReturnType<typeof openTeams>>;
