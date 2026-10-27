@@ -3,7 +3,7 @@ import type { WorkerStatus } from "../status.ts";
 import type { ChatItem, Queued } from "../chat.ts";
 export type Agent = WorkerStatus & { hosted: boolean; children: Agent[] };
 export type Page = { items: ChatItem[]; queued?: Queued[]; next?: string };
-export type Model = { provider: string; modelId: string; name?: string; thinkingLevels: string[] };
+export type Model = { provider: string; modelId: string; name?: string; thinkingLevels: string[]; thinking?: string; cycleThinking?: string; scoped?: boolean; thinkingMap?: Record<string, string> };
 const supplied = new URL(location.href).searchParams.get("token");
 if (supplied) {
   localStorage.setItem("pi-token", supplied);

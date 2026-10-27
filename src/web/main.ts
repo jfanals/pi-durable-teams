@@ -3,6 +3,7 @@ import { notifications, notificationState, toggleNotifications } from "./push.ts
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
 import { escape as e, info, footerInfo, transcript } from "./render.ts";
 import { formatCost, formatDuration, statusWord } from "../status.ts";
+import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
 import { agentNameError, suggestedAgentName } from "../agent-name.ts";
 import type { ChatItem } from "../chat.ts";
 import type { WorkerModel } from "../config.ts";
@@ -127,6 +128,7 @@ async function open(id: string, push = true) {
 <div class="row">
 <label>
 <input id="steer" type="checkbox"> Steer</label>
+${button("Model & thinking", "model", 'type="button"')}
 <div>${button("Stop", "stop", 'id="stop" type="button" hidden')}<button type="submit">Send</button>
 </div>
 </div>
@@ -263,6 +265,16 @@ function showDialog(title: string, fields: string, save?: (form: FormData) => Pr
     }
   };
   return dialog;
+}
+async function pickModel(agent: Agent) {
+  const { models, index } = await modelFields(agent);
+  const d = showDialog("Model & thinking", selectors(models, index), async form => {
+    const model = models[Number(form.get("model"))]!;
+    const level = String(form.get("thinking"));
+    await mutate("/model", { target: agent.id, provider: model.provider, modelId: model.modelId, thinking: level });
+    fail(modelNotice(model, level));
+  });
+  thinking(d, models, agent.thinking);
 }
 function selectors(models: Model[], index: number) {
   const options = models
@@ -480,6 +492,9 @@ root.addEventListener("click", async (event) => {
         el.hidden = true;
         break;
       }
+      case "model":
+        if (a) await pickModel(a);
+        break;
       case "stop":
         await mutate("/stop", { target: a?.id });
         break;
@@ -521,19 +536,7 @@ root.addEventListener("click", async (event) => {
                       await mutate("/rename", { target: a.id, name });
                     },
                   );
-                if (item.dataset.menu === "model") {
-                  const { models, index } = await modelFields(a);
-                  const d = showDialog("Model & thinking", selectors(models, index), async (form) => {
-                    const m = models[Number(form.get("model"))]!;
-                    await mutate("/model", {
-                      target: a.id,
-                      provider: m.provider,
-                      modelId: m.modelId,
-                      thinking: form.get("thinking"),
-                    });
-                  });
-                  thinking(d, models, a.thinking);
-                }
+                if (item.dataset.menu === "model") await pickModel(a);
                 if (item.dataset.menu === "remove" && confirm(`Remove ${a.name}${a.children.length ? ` and ${a.children.length} sub-agent${a.children.length === 1 ? "" : "s"}` : ""}?`)) {
                   await mutate("/remove", { target: a.id });
                   stack = [];
@@ -584,6 +587,22 @@ root.addEventListener("submit", async (event) => {
     try { await work(); } finally { pending = ""; status(); }
   };
   try {
+    if (/^\/(model|thinking)(?:\s|$)/.test(message)) {
+      const agent = current();
+      if (!agent) throw new Error("No open agent");
+      const isThinking = message.startsWith("/thinking");
+      const arg = message.slice(isThinking ? 9 : 6).trim();
+      input.value = "";
+      if (!isThinking && !arg) { await pickModel(agent); return; }
+      const models = await api<Model[]>("/models");
+      const model = models.find(m => isThinking ? m.provider === agent.provider && m.modelId === agent.modelId : `${m.provider}/${m.modelId}` === arg || m.modelId === arg);
+      if (!model) throw new Error(`Model not found: ${arg}`);
+      const level = isThinking ? thinkingSelection(model, agent.thinking, arg) : modelThinking(model, agent.thinking);
+      if (!level) { fail("Current model does not support thinking"); return; }
+      await mutate("/model", { target, provider: model.provider, modelId: model.modelId, thinking: level });
+      fail(isThinking ? `Thinking level: ${level}` : modelNotice(model, level));
+      await refresh(); return;
+    }
     if (/^\/compact(?:\s|$)/.test(message)) {
       input.value = "";
       await busy("Compacting context…", async () => {

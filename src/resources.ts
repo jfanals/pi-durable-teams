@@ -72,7 +72,11 @@ export async function productionOptions(): Promise<TeamsOptions> {
       const patterns = settings.getEnabledModels() ?? [];
       const scoped = patterns.length ? (await resolveModelScopeWithDiagnostics(patterns, runtime)).scopedModels : [];
       const available = await runtime.getAvailable();
-      return modelChoices(selectableModels(scoped, () => available));
+      return modelChoices(selectableModels(scoped, () => available).filter(model => available.some(item => item.provider === model.provider && item.id === model.id))).map(choice => ({
+        ...choice, scoped: scoped.length > 0,
+        cycleThinking: scoped.find(item => item.model.provider === choice.provider && item.model.id === choice.modelId)?.thinkingLevel,
+        thinking: settings.getModelThinkingLevel(choice.provider, choice.modelId) ?? settings.getDefaultThinkingLevel(),
+      }));
     },
     agentModel: async () => (await readConfig()).agentModel,
     workerModel: async name => { await settings.reload(); return workerModelFor(await readConfig(), name); },

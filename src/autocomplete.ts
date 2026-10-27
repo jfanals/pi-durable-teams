@@ -6,6 +6,8 @@ export const promptCommands: SlashCommand[] = [
   { name: "compact", description: "Compact conversation context" },
   { name: "fork", description: "Fork from a previous message" },
   { name: "clone", description: "Clone this conversation" },
+  { name: "model", description: "Select model (opens selector UI)", argumentHint: "<provider/model>" },
+  { name: "thinking", description: "Set thinking level", argumentHint: "<level>" },
 ];
 
 /** Pi's provider, including its path quoting, fuzzy @ search and completion edits. Resolve cwd lazily as status arrives. */

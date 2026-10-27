@@ -11,7 +11,7 @@ import { TuiAltScreen, visibleWidth, setKeybindings } from "@earendil-works/pi-t
 import { AgentsApp } from "../../src/app.ts";
 import { Client } from "../../src/client.ts";
 import { startHost } from "../../src/host.ts";
-import { piKeybindings, piPresentation } from "../../src/presentation.ts";
+import { piPresentation, piKeybindings } from "../../src/presentation.ts";
 import { SocketHostSource } from "../../src/source.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -31,7 +31,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
   const host = await startHost(directory, join(directory, "s"), { models, agentModel: async () => ({ provider: "faux", modelId: "faux-1" }) });
   const source = new SocketHostSource(new Client(join(directory, "s")));
   const terminal = new VirtualTerminal(width, height); const tui = new TuiAltScreen(terminal);
-  setKeybindings(await piKeybindings());
+  setKeybindings(await piKeybindings(directory));
   initTheme("dark", false); const { theme } = await piPresentation();
   let exited = false;
   const app = new AgentsApp(source, tui, theme, { cwd: directory, exit: () => { exited = true; } });
@@ -73,6 +73,31 @@ export async function appScenario(width: number, height: number, print?: (name: 
     assert.match(chat, /\(footer-test\) • alpha/);
     assert.match(chat, new RegExp(`alpha · ${alphaId} · ← back`));
     assert.doesNotMatch(chat, /↓ to select/);
+    // The open chat reuses Pi's selector and keybindings; changes persist in host status.
+    await key("\x0c"); await wait("configured providers");
+    await key("opus"); await key("\r");
+    await until(async () => (await alpha())?.modelId === "faux-opus-2");
+    await wait("Model: faux-opus-2");
+    await key("\x10");
+    await until(async () => (await alpha())?.modelId === "faux-1");
+    await key("\x1b[80;6u"); // Shift+Ctrl+P (Kitty)
+    await until(async () => (await alpha())?.modelId === "faux-opus-2");
+    const unscopedModels = source.models.bind(source);
+    source.models = async signal => (await unscopedModels(signal)).map(model => ({ ...model, scoped: true, cycleThinking: "high" }));
+    await key("\x10");
+    await until(async () => (await alpha())?.modelId === "faux-1" && (await alpha())?.thinking === "high");
+    await wait("Switched to faux-1 (thinking: high)");
+    source.models = async signal => (await unscopedModels(signal)).filter(model => model.modelId === "faux-1").map(model => ({ ...model, scoped: true }));
+    await key("\x10"); await wait("Only one model in scope");
+    source.models = unscopedModels;
+    await key("/model faux/faux-1"); await key("\r");
+    await until(async () => (await alpha())?.modelId === "faux-1");
+    await key("/thinking low"); await key("\r");
+    await until(async () => (await alpha())?.thinking === "low");
+    await wait("Thinking level: low");
+    await key("\x1b[Z");
+    await until(async () => (await alpha())?.thinking === "medium");
+    await wait("Thinking level: medium");
     await key("SLOW"); await key("\r");
     await until(async () => (await alpha())?.running === true);
     const working = await wait("(esc to stop)"); print?.("working", working);
