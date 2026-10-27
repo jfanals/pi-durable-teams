@@ -59,7 +59,7 @@ export function transcript(items: ChatItem[]) {
   return items
     .map((item) => {
       if (item.kind === "result") return "";
-      if (item.kind === "notice") return `<p class="notice">${escape(item.text)}</p>`;
+      if (item.kind === "notice") return `<p class="notice${item.warning ? " warning" : ""}">${escape(item.text)}</p>`;
       if (item.kind === "input")
         return `<article class="input">
 <small>${escape(item.from)}${item.report ? " · report" : ""}</small>

@@ -8,7 +8,7 @@ import {
   type Component, type DefaultTextStyle, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import { clean, firstLine, textOf, liveStatus, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, type WorkerStatus } from "./status.ts";
-import type { ChatItem } from "./chat.ts";
+import type { ChatItem, Queued } from "./chat.ts";
 import type { Action, Delivery, Mode } from "./protocol.ts";
 
 export type ViewResult = { type: "back" } | { type: "send"; mode: Mode } | { type: "stop" };
@@ -315,19 +315,21 @@ export function renderTranscript(items: ChatItem[], worker: string, width: numbe
         const parts = [item.at !== undefined && clock(item.at), item.turn.ms !== undefined && formatDuration(item.turn.ms), item.turn.tokens && `${formatTokens(item.turn.tokens)} tok`, formatCost(item.turn.cost)];
         block(new Text(theme.fg("dim", parts.filter(Boolean).join(" · ")), 1, 0).render(width));
       }
-    } else if (item.kind === "notice") block(new Text(theme.fg("dim", item.text), 1, 0).render(width));
+    } else if (item.kind === "notice") block(new Text(theme.fg(item.warning ? "warning" : "dim", item.text), 1, 0).render(width));
   }
   return out[0] === "" ? out.slice(1) : out;
 }
 
 export type WorkerSource = {
-  page(cursor?: string): Promise<{ items: ChatItem[]; next?: string }>;
+  page(cursor?: string): Promise<{ items: ChatItem[]; queued?: Queued[]; next?: string }>;
   status(): Promise<WorkerStatus>;
   watch(signal: AbortSignal, onFrame: () => void): Promise<void>;
 };
 
 export type ChatActions = {
   send(text: string, mode: Mode): Promise<unknown>; stop(): Promise<unknown>; back(): void;
+  /** `/compact [instructions]` in the editor; absent where only the agent's own tools may compact. */
+  compact?(instructions: string): Promise<unknown>;
 };
 
 /** Shared committed transcript, loading, watch and paging for both shells. */
@@ -342,6 +344,12 @@ class Transcript implements Component {
   unseen = false;
   showThinking = false;
   expanded = false; // Pi's ctrl+o: full tool output
+  queued: Queued[] = [];
+  /** Pi's pending-message lines above the editor: messages waiting for the agent's next boundary. */
+  queuedLines(width: number) {
+    if (!this.queued.length) return [];
+    return ["", ...this.queued.map(q => truncateToWidth(` ${this.theme.fg("dim", `${q.mode === "steer" ? "Steering" : "Follow-up"}: ${q.text}`)}`, width))];
+  }
   private cache?: { width: number; version: number; lines: string[] };
   version = 0;
   private lastLength?: { width: number; length: number };
@@ -386,6 +394,7 @@ class Transcript implements Component {
           const [page, status] = await Promise.all([this.source.page(), this.source.status()]);
           if (this.life.signal.aborted) return;
           for (const entry of page.items) this.entries.set(String(entry.id), entry);
+          this.queued = page.queued ?? [];
           if (!this.olderLoaded) this.next = page.next;
           this.status = status; this.note = undefined; this.version++;
           this.updateWorking();
@@ -554,13 +563,21 @@ export class ChatView implements Component, Focusable {
       const hints = `${s?.name ?? name} · ${s?.id ?? "…"} · ← back · esc stop · alt+enter follow-up · ${keyText("app.tools.expand")} ${this.transcript.expanded ? "collapse" : "expand"} · ${keyText("app.thinking.toggle")} thinking`;
       return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
     }, invalidate() {} };
-    const working = { render: (width: number) => this.transcript.workingLine(width), invalidate() {} };
+    const working = { render: (width: number) => [...this.transcript.queuedLines(width), ...this.transcript.workingLine(width)], invalidate() {} };
     this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, working, this.editor, ...(this.panel ? [this.panel] : []), footer]);
   }
   setChildren(workers: WorkerStatus[]) { this.panel?.setWorkers(workers); }
   focusChild(target: string) { this.panel?.enter(this.editor, target); }
   private submit(text: string, mode: Mode) {
     if (!text.trim()) return;
+    const compact = this.actions.compact && /^\/compact(?:\s|$)/.exec(text.trim());
+    if (compact) {
+      this.editor.setText(""); this.editor.addToHistory(text);
+      this.transcript.note = "compacting…"; this.transcript.changed();
+      void this.actions.compact!(text.trim().slice("/compact".length).trim()).then(() => { this.transcript.note = undefined; this.transcript.changed(); void this.transcript.refresh(); },
+        error => { this.transcript.note = String(error); this.transcript.changed(); });
+      return;
+    }
     this.editor.setText("");
     void this.actions.send(text, mode).then(() => { this.editor.addToHistory(text); this.transcript.note = undefined; this.transcript.changed(); }, error => {
       if (!this.editor.getText()) this.editor.setText(text);

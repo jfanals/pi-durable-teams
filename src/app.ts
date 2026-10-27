@@ -119,6 +119,7 @@ export class AgentsApp implements Component, Focusable {
     const bound = workerSource(this.source, agent.id);
     this.view = new ChatView(this.tui, this.theme, agent.name, bound, this.life.signal, {
       send: (text, mode) => this.source.send(agent.id, text, mode), stop: () => this.source.stop(agent.id),
+      compact: instructions => this.source.compact(agent.id, instructions),
       back: () => {
         const child = this.stack.pop();
         const parent = this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent;

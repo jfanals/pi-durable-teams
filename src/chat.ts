@@ -7,7 +7,9 @@ export type ChatItem =
   | { id: string; kind: "input"; from: string; text: string; report?: boolean; at?: number }
   | { id: string; kind: "reply"; parts: ({ type: "text"; text: string } | { type: "thinking"; text: string } | ({ type: "tool" } & ToolCall))[]; error?: string; at?: number; turn?: { ms?: number; tokens: number; cost: number } }
   | { id: string; kind: "result"; callId: string; ok: boolean; error?: string; content?: ToolOutput[]; details?: unknown; durationMs?: number }
-  | { id: string; kind: "notice"; text: string };
+  | { id: string; kind: "notice"; text: string; warning?: boolean };
+/** Messages waiting for the agent's next boundary, oldest first, as Pi shows them above its editor. */
+export type Queued = { mode: "steer" | "followUp"; text: string };
 /** Committed entries only. Prefix entries complete the oldest request without appearing in the returned page. */
 const MAX_TEXT = 8_000;
 /** Keeps both ends of long text: Pi's renderers preview a file's head and a command's tail. */

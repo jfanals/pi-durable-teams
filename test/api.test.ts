@@ -20,6 +20,7 @@ import { Client } from "../src/client.ts";
 import { human } from "../src/teams.ts";
 import { chatItems } from "../src/chat.ts";
 import { startHost } from "../src/host.ts";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { SocketHostSource, workerSource } from "../src/source.ts";
 
 async function until(predicate: () => boolean | Promise<boolean>) {
@@ -422,4 +423,43 @@ test("Web Push routes persist subscriptions and send encrypted notifications onl
     await host?.close(); await new Promise<void>(resolve => endpoint.close(() => resolve()));
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("queued messages, /compact and Pi's cache-miss notices", { timeout: 15000 }, async () => {
+  // Pi's own detection and wording: a 60k re-bill after 12 idle minutes; a small miss stays silent.
+  const { cacheMissText, piCacheMisses } = await import("../src/presentation.ts");
+  const { formatTokens } = await import("../src/status.ts");
+  const usage = (input: number, cacheRead: number) => ({ input, output: 10, cacheRead, cacheWrite: 0, cost: { input: input * 3e-6, output: 0, cacheRead: cacheRead * 3e-7, cacheWrite: 0, total: 0 } });
+  const reply = (timestamp: number, input: number, cacheRead: number) => ({ type: "message", message: { role: "assistant", provider: "p", model: "m", timestamp, usage: usage(input, cacheRead) } });
+  const collect = await piCacheMisses();
+  const misses = [...collect([reply(0, 1000, 60_000), reply(12 * 60_000, 61_000, 0), reply(12 * 60_000 + 1, 1000, 61_500)], { getModel: () => undefined }).values()];
+  assert.equal(misses.length, 1);
+  assert.equal(cacheMissText(misses[0]!, formatTokens), "Cache miss after 12m idle: 61k tokens re-billed (~$0.18)");
+  assert.equal(cacheMissText({ missedTokens: 5000, missedCost: 0.01, idleMs: 0, modelChanged: false }, formatTokens), undefined);
+
+  const directory = await mkdtemp(join(tmpdir(), "agents-queue-"));
+  const fake = fauxProvider({ tokensPerSecond: 50 });
+  fake.setResponses(Array.from({ length: 10 }, () => fauxAssistantMessage("Working slowly. ".repeat(40))));
+  const models = createModels(); models.setProvider(fake.provider);
+  const socket = join(directory, "s");
+  const host = await startHost(directory, socket, { models, agentModel: async () => ({ provider: "faux", modelId: "faux-1" }), showCacheMissNotices: () => true });
+  try {
+    const source = new SocketHostSource(new Client(socket));
+    const agent = await source.newAgent({ name: "busy", cwd: directory });
+    await source.send(agent.id!, "Start");
+    await until(async () => (await source.list()).some(row => row.id === agent.id && row.running));
+    // Pi shows waiting input above its editor; the page carries it, oldest first, by mode.
+    await source.send(agent.id!, "Steer this way", "steer");
+    await source.send(agent.id!, "Then this\nsecond line", "followUp");
+    const queued = (await source.page(agent.id!)).queued;
+    assert.deepEqual(queued, [{ mode: "steer", text: "Steer this way" }, { mode: "followUp", text: "Then this" }]);
+    await source.stop(agent.id!);
+    await until(async () => !(await source.list()).find(row => row.id === agent.id)?.running);
+    assert.deepEqual((await source.page(agent.id!)).queued, []);
+    // /compact starts Durable's manual compaction; with too little history it completes without a summary.
+    const compacted = await source.compact(agent.id!, "keep decisions") as { taskId?: number };
+    assert.equal(typeof compacted.taskId, "number");
+    await host.service.harness.waitForTask(compacted.taskId as any, BACKGROUND_CONTEXT);
+    await assert.rejects(source.compact("missing"), /No accessible agent/);
+  } finally { await host.close(); await rm(directory, { recursive: true, force: true }); }
 });

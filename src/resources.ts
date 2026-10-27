@@ -80,6 +80,7 @@ export async function productionOptions(): Promise<TeamsOptions> {
       const model = runtime.getModel(ref.provider, ref.modelId);
       return model && { window: model.contextWindow, subscription: runtime.isUsingSubscription(ref.provider) };
     },
+    showCacheMissNotices: () => settings.getShowCacheMissNotices(),
     settings: {
       get retry() { return settings.getRetrySettings(); },
       get compaction() { return settings.getCompactionSettings(); },

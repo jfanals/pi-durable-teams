@@ -1,5 +1,5 @@
 import type { WorkerModel } from "./config.ts";
-import type { ChatItem } from "./chat.ts";
+import type { ChatItem, Queued } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import { randomUUID } from "node:crypto";
 import type { ModelRef } from "@earendil-works/pi-durable";
@@ -8,7 +8,7 @@ import { Client } from "./client.ts";
 import type { AgentSummary, Mode } from "./protocol.ts";
 import type { WorkerSource } from "./ui.ts";
 
-export type TranscriptPage = { items: ChatItem[]; next?: string };
+export type TranscriptPage = { items: ChatItem[]; queued?: Queued[]; next?: string };
 export type RequestOptions = { requestId?: string; signal?: AbortSignal };
 export type MutationResult = { id?: string; taskId?: number; workerId?: string; delivery?: string; aborted?: string[]; stopped?: string[]; model?: ModelRef; thinking?: ModelThinkingLevel };
 export interface HostSource {
@@ -25,6 +25,7 @@ export interface HostSource {
   newAgent(agent: { name: string; cwd: string; model?: ModelRef; thinking?: ModelThinkingLevel }, options?: RequestOptions): Promise<MutationResult>;
   rename(target: string, name: string, options?: RequestOptions): Promise<MutationResult>;
   setModel(target: string, provider: string, modelId: string, thinking?: ModelThinkingLevel, options?: RequestOptions): Promise<MutationResult>;
+  compact(target: string, instructions?: string): Promise<MutationResult>;
 }
 
 /** No implicit retries. Supply the same requestId when retrying a mutation. */
@@ -53,6 +54,7 @@ export class SocketHostSource implements HostSource {
   remove(target: string, options?: RequestOptions) { return this.mutate("remove", { target }, options); }
   rename(target: string, name: string, options?: RequestOptions) { return this.mutate("rename", { target, name }, options); }
   setModel(target: string, provider: string, modelId: string, thinking?: ModelThinkingLevel, options?: RequestOptions) { return this.mutate("model", { target, provider, modelId, thinking }, options); }
+  compact(target: string, instructions?: string) { return this.client.call<MutationResult>("agents/compact", { target, instructions }); }
 }
 
 /** Bind the shared chat inspector to one agent without database access. */

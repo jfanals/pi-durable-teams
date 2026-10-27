@@ -10,10 +10,11 @@ import {
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { WorkerModel } from "./config.ts";
-import { chatItems } from "./chat.ts";
+import { chatItems, type ChatItem, type Queued } from "./chat.ts";
+import { cacheMissText, piCacheMisses } from "./presentation.ts";
 import { agentNameError } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
-import { liveStatus, textOf } from "./status.ts";
+import { firstLine, formatTokens, liveStatus, textOf } from "./status.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { ActionSchema, TOOL_DESCRIPTION, TOOL_NAME, type Action, type Actor, type Delivery, type Mode } from "./protocol.ts";
 
@@ -89,6 +90,8 @@ export type TeamsOptions = Omit<HarnessOptions, "registry"> & {
   workerAgent?: (cwd: string) => Promise<AgentChange>;
   /** A model's real context window, and whether its provider bills by subscription. */
   modelInfo?: (model: ModelRef) => { window: number; subscription: boolean } | undefined;
+  /** Pi's showCacheMissNotices setting; off when absent, as in Pi. */
+  showCacheMissNotices?: () => boolean;
 };
 
 export async function openTeams(storage: Storage, options: TeamsOptions) {
@@ -117,6 +120,24 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       if (matches.length === 1) return matches[0]!;
     }
     throw new Error("No accessible agent with that ID/name");
+  }
+  /** Pi's cache-miss notices, after the reply that paid for each miss. The previous request may be on an older page. */
+  async function addCacheMisses(items: ChatItem[], entries: readonly { id: unknown; kind: string; model?: readonly any[] }[]) {
+    const collect = await piCacheMisses();
+    const ordered = [...entries].sort((a, b) => Number(a.id) - Number(b.id));
+    const replies = new Map<object, string>();
+    const session = ordered.flatMap(entry => {
+      if (entry.kind === "pi.compaction" || entry.kind === "pi.reset") return [{ type: "compaction" }];
+      const message = entry.model?.[0];
+      if (entry.kind !== "pi.assistant" || !message?.usage) return [];
+      replies.set(message, String(entry.id));
+      return [{ type: "message", message }];
+    });
+    const models = typeof options.models === "function" ? options.models() : options.models;
+    for (const [message, miss] of collect(session, models)) {
+      const text = cacheMissText(miss, formatTokens); const id = replies.get(message);
+      if (text && id) items.push({ id: `${id}.5`, kind: "notice", text, warning: true });
+    }
   }
   async function conversationOf(agent: Agent) {
     if (agent.where.kind !== "hosted") throw new Error("This agent is an external Pi session, not a hosted conversation");
@@ -524,7 +545,21 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         if (boundary >= 0) break;
         oldest = ordered.at(-1);
       }
-      return { items: chatItems([...page.items], prefix), next: page.next ? JSON.stringify(page.next) : undefined };
+      const items = chatItems([...page.items], prefix);
+      if (options.showCacheMissNotices?.()) await addCacheMisses(items, [...prefix, ...page.items]);
+      const view = await conversation.viewState(context);
+      let queued: Queued[];
+      try {
+        const inbox = (view.value.docs["pi.inbox"] as { items?: any[] } | undefined)?.items ?? [];
+        queued = inbox.filter(item => item.mode !== "write").map(item => ({ mode: item.mode, text: firstLine(item.entry?.data?.message ?? textOf({ content: item.content })) }));
+      } finally { view.dispose(); }
+      return { items, queued, next: page.next ? JSON.stringify(page.next) : undefined };
+    },
+    /** Human-only `/compact [instructions]`: Durable's manual compaction, which summarizes when there is enough history. */
+    async compact(target: string, instructions?: string) {
+      const agent = resolveTarget(await read(), human, target);
+      const taskId = await (await conversationOf(agent)).compact(instructions || undefined, context);
+      return { taskId };
     },
     async agents(): Promise<AgentSummary[]> {
       const state = await read();

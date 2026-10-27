@@ -262,6 +262,17 @@ summary {
   color: var(--muted);
   text-align: center;
 }
+.notice.warning {
+  color: #ffd38a;
+}
+.queued p {
+  margin: 0 0 4px;
+  font-size: 0.9rem;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 .error,
 .dialog-error {
   color: #ffb7b7;

@@ -113,6 +113,7 @@ async function open(id: string, push = true) {
 </div>
 <footer class="composer-footer">
 <button id="new-messages" hidden data-action="bottom">New messages ↓</button>
+<div id="queued" class="queued"></div>
 <div id="working" role="status">
 </div>
 <small id="info">
@@ -169,6 +170,9 @@ async function refresh() {
       const version = generation;
       const page = await api<Page>("/page", { target: id });
       if (version !== generation || screen !== "chat") continue;
+      // Pi's pending-message lines: messages waiting for the agent's next boundary.
+      const queued = document.querySelector("#queued");
+      if (queued) queued.innerHTML = (page.queued ?? []).map((q) => `<p>${q.mode === "steer" ? "Steering" : "Follow-up"}: ${e(q.text)}</p>`).join("");
       const overlaps = page.items.some((item) => items.some((old) => old.id === item.id));
       if (!overlaps) {
         items = [];
@@ -564,7 +568,9 @@ root.addEventListener("submit", async (event) => {
   const submit = document.querySelector<HTMLButtonElement>('#composer button[type="submit"]')!;
   submit.disabled = true;
   try {
-    await mutate("/send", {
+    const compact = /^\/compact(?:\s|$)/.test(message);
+    if (compact) await api("/compact", { target: stack.at(-1), instructions: message.slice("/compact".length).trim() });
+    else await mutate("/send", {
       target: stack.at(-1),
       message,
       mode: (document.querySelector("#steer") as HTMLInputElement).checked ? "steer" : "followUp",

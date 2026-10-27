@@ -1,8 +1,8 @@
 import { pairing } from "./pair.ts";
 import type { WorkerStatus } from "../status.ts";
-import type { ChatItem } from "../chat.ts";
+import type { ChatItem, Queued } from "../chat.ts";
 export type Agent = WorkerStatus & { hosted: boolean; children: Agent[] };
-export type Page = { items: ChatItem[]; next?: string };
+export type Page = { items: ChatItem[]; queued?: Queued[]; next?: string };
 export type Model = { provider: string; modelId: string; name?: string; thinkingLevels: string[] };
 const supplied = new URL(location.href).searchParams.get("token");
 if (supplied) {

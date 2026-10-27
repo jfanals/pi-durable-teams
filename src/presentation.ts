@@ -45,3 +45,18 @@ export async function piKeybindings() {
   const { KeybindingsManager } = await import(piModule("./core/keybindings.js"));
   return KeybindingsManager.create();
 }
+
+type Usage = { input: number; cacheRead: number; cacheWrite: number; cost: { input: number; cacheRead: number; cacheWrite: number } };
+type Message = { role: string; provider: string; model: string; timestamp: number; usage: Usage };
+type Miss = { missedTokens: number; missedCost: number; idleMs: number; modelChanged: boolean };
+/** Pi's cache-miss detection (core/cache-stats.js, not in its public index). Entries are Pi session entries. */
+export async function piCacheMisses(): Promise<(entries: object[], models: { getModel(provider: string, id: string): any }) => Map<Message, Miss>> {
+  return (await import(piModule("./core/cache-stats.js"))).collectCacheMisses;
+}
+/** Pi's wording and threshold for a transcript notice, or undefined below it. */
+export function cacheMissText(miss: Miss, formatTokens: (n: number) => string) {
+  if (miss.missedTokens < 20_000 && miss.missedCost < 0.1) return undefined;
+  const label = miss.modelChanged ? "Cache miss after model switch"
+    : miss.idleMs >= 5 * 60_000 ? `Cache miss after ${Math.round(miss.idleMs / 60_000)}m idle` : "Cache miss";
+  return `${label}: ${formatTokens(miss.missedTokens)} tokens re-billed${miss.missedCost >= 0.01 ? ` (~$${miss.missedCost.toFixed(2)})` : ""}`;
+}

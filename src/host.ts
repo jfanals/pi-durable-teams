@@ -156,6 +156,12 @@ export async function startHost(directory: string, socket: string, options: Team
         if (typeof body.requestId !== "string" || !body.requestId) throw new Error("requestId is required");
         return reply(res, 200, await service.remove(body.target, body.requestId));
       }
+      if (pathname === "/agents/compact") {
+        if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
+        if (typeof body.target !== "string" || !body.target) throw new Error("target is required");
+        if (body.instructions !== undefined && typeof body.instructions !== "string") throw new Error("instructions must be a string");
+        return reply(res, 200, await service.compact(body.target, body.instructions));
+      }
       if (pathname.startsWith("/agents/") && pathname !== "/agents/watch") {
         const verbs: Record<string, Action["action"]> = { new: "newAgent", send: "send", stop: "abort", disable: "stop", model: "model", rename: "rename", page: "inspect" };
         const route = pathname.slice("/agents/".length);
