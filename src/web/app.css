@@ -409,3 +409,8 @@ a:focus-visible {
   display: block;
   color: var(--muted);
 }
+
+.attachment { max-width: 180px; max-height: 140px; object-fit: contain; border-radius: 6px; }
+#attachments { display: flex; gap: 8px; flex-wrap: wrap; }
+.attach { font-size: .85em; }
+.attach input { max-width: 230px; }

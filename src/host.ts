@@ -1,3 +1,4 @@
+import { normalizeImages } from "./images.ts";
 import { openPush, watchPush } from "./push.ts";
 import { readConfig } from "./config.ts";
 import { remoteToken, remoteAllowed, tokenMatches, tokenCache } from "./remote.ts";
@@ -87,7 +88,7 @@ export async function startHost(directory: string, socket: string, options: Team
       let size = 0;
       for await (const chunk of req) {
         size += chunk.length;
-        if (size > 2 * 1024 * 1024) throw new Error("Request exceeds 2 MiB");
+        if (size > 25 * 1024 * 1024) throw new Error("Request exceeds 25 MiB");
         chunks.push(chunk);
       }
       const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
@@ -181,7 +182,7 @@ export async function startHost(directory: string, socket: string, options: Team
         if (!verb) return reply(res, 404, { error: "Unknown operation" });
         if (route !== "new" && typeof body.target !== "string") throw new Error("target is required");
         if (body.requestId !== undefined && (typeof body.requestId !== "string" || !body.requestId)) throw new Error("requestId must be a nonempty string");
-        const args = { action: verb, target: body.target, name: body.name, cwd: body.cwd, message: body.message, mode: body.mode,
+        const args = { action: verb, target: body.target, name: body.name, cwd: body.cwd, message: body.message, mode: body.mode, images: route === "send" ? await normalizeImages(body.images) : undefined,
           model: route === "model" ? { provider: body.provider, modelId: body.modelId } : body.model,
           thinking: body.thinking, cursor: body.cursor, ...(route === "page" ? { transcript: true } : {}) };
         if (!Value.Check(HumanActionSchema, args)) throw new Error("Invalid agent action arguments");

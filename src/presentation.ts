@@ -71,3 +71,11 @@ export async function piCacheWarming(): Promise<{
 }> {
   return import(piModule("./core/cache-warmer.js"));
 }
+
+/** Pi's clipboard readers and prompt-image normalization, kept behind the deep-import boundary. */
+export async function piClipboard() {
+  return { ...await import(piModule("./utils/clipboard.js")), ...await import(piModule("./utils/clipboard-image.js")) };
+}
+export async function piProcessImage(bytes: Uint8Array, mimeType: string) {
+  return (await import(piModule("./utils/image-process.js"))).processImage(bytes, mimeType);
+}

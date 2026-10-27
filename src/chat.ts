@@ -4,7 +4,7 @@ export type TranscriptEntry = { id: number | string; kind: string; model?: reado
 export type ToolCall = { id: string; name: string; subject: string; args?: Record<string, unknown> };
 export type ToolOutput = { type: "text"; text: string } | { type: "image"; mimeType?: string };
 export type ChatItem =
-  | { id: string; kind: "input"; from: string; text: string; report?: boolean; at?: number }
+  | { id: string; kind: "input"; from: string; text: string; report?: boolean; images?: import("@earendil-works/pi-ai").ImageContent[]; at?: number }
   | { id: string; kind: "reply"; parts: ({ type: "text"; text: string } | { type: "thinking"; text: string } | ({ type: "tool" } & ToolCall))[]; error?: string; at?: number; turn?: { ms?: number; tokens: number; cost: number } }
   | { id: string; kind: "result"; callId: string; ok: boolean; error?: string; content?: ToolOutput[]; details?: unknown; durationMs?: number }
   | { id: string; kind: "notice"; text: string; warning?: boolean };
@@ -26,9 +26,11 @@ export function chatItems(entries: readonly TranscriptEntry[], prefix: readonly 
     switch (entry.kind) {
       case "teams.message": case "teams.report": case "pi.user":
         if (at !== undefined && start === undefined) { start = at; tokens = 0; cost = 0; }
+        const images = Array.isArray(message?.content) ? message.content.filter((p: any) => p.type === "image") : [];
         items.push({ id, kind: "input", from: clean(entry.data?.from?.name ?? "input"),
           text: clean(entry.kind === "pi.user" ? textOf(message)
             : entry.data?.message ?? textOf(message).replace(/^\[[^\]\n]*\]: /, "")),
+          ...(images.length ? { images } : {}),
           ...(entry.kind === "teams.report" ? { report: true } : {}), at });
         break;
       case "pi.assistant": {

@@ -1,4 +1,10 @@
 // Terminal presentation only. Nothing here changes delivery, acknowledgement or worker execution.
+import { writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import { imagesFromPaths } from "./images.ts";
+import { piClipboard } from "./presentation.ts";
 import { homedir } from "node:os";
 
 import { getMarkdownTheme, getSelectListTheme, keyText, ToolExecutionComponent, UserMessageSelectorComponent, type Theme, type ThemeBg } from "@earendil-works/pi-coding-agent";
@@ -290,7 +296,7 @@ export function renderTranscript(items: ChatItem[], worker: string, width: numbe
       // Pi's user message; reports take Pi's custom-message colours.
       const [bg, label, text] = item.report ? ["customMessageBg", "customMessageLabel", "customMessageText"] as const : ["userMessageBg", "accent", "userMessageText"] as const;
       block(card(bg, new Text(theme.fg(label, theme.bold(`${clean(item.from)} → ${worker}`)) + (item.report ? theme.fg("dim", " · report") : ""), 0, 0),
-        new Markdown(clean(item.text), 0, 0, md, { color: t => theme.fg(text, t) })));
+        new Markdown(clean(item.text) + (item.images?.length ? "\n" + item.images.map(() => "[image]").join("\n") : ""), 0, 0, md, { color: t => theme.fg(text, t) })));
     } else if (item.kind === "reply") {
       for (const part of item.parts) {
         if (part.type === "text") { if (part.text.trim()) block(markdown(part.text).render(width)); }
@@ -327,7 +333,7 @@ export type WorkerSource = {
 };
 
 export type ChatActions = {
-  send(text: string, mode: Mode): Promise<unknown>; stop(): Promise<unknown>; back(): void;
+  send(text: string, mode: Mode, images?: import("@earendil-works/pi-ai").ImageContent[]): Promise<unknown>; stop(): Promise<unknown>; back(): void;
   /** `/compact [instructions]` in the editor. */
   compact?(instructions: string): Promise<{ outcome: "compacted" | "nothing" | "running" | "failed"; error?: string }>;
   /** `/fork` and `/clone`, top-level agents only: the human's messages, and a fork before one of them or of everything. */
@@ -621,10 +627,39 @@ export class ChatView implements Component, Focusable {
       return;
     }
     this.editor.setText("");
-    void this.actions.send(text, mode).then(() => { this.editor.addToHistory(text); this.transcript.note = undefined; this.transcript.changed(); }, error => {
+    this.transcript.note = `${mode === "steer" ? "Steering" : "Follow-up"}: ${firstLine(text)}`;
+    this.transcript.changed();
+    void imagesFromPaths(text).then(images => {
+      if (images.length) { this.transcript.note += " [image]"; this.transcript.changed(); }
+      return this.actions.send(text, mode, images);
+    }).then(() => { this.editor.addToHistory(text); this.transcript.note = undefined; this.transcript.changed(); }, error => {
       if (!this.editor.getText()) this.editor.setText(text);
       this.transcript.note = String(error); this.transcript.changed();
     });
+  }
+  private async pasteClipboard() {
+    try {
+      const clipboard = await piClipboard();
+      const paths = await clipboard.readClipboardFilePaths();
+      if (paths) {
+        if (paths.some((path: string) => /\p{Cc}/u.test(path))) throw new Error("Clipboard file path contains control characters");
+        const cursor = this.editor.getCursor();
+        const line = this.editor.getText().split("\n")[cursor.line] ?? "";
+        const before = line[cursor.col - 1]; const after = line[cursor.col];
+        this.editor.insertTextAtCursor(`${before && !/\s/.test(before) ? " " : ""}${paths.join("\n")}${after && !/\s/.test(after) ? " " : ""}`);
+      } else {
+        const image = await clipboard.readClipboardImage();
+        if (image) {
+          const path = join(tmpdir(), `pi-clipboard-${randomUUID()}.${clipboard.extensionForImageMimeType(image.mimeType) ?? "png"}`);
+          await writeFile(path, image.bytes);
+          this.editor.insertTextAtCursor(path);
+        } else {
+          const text = await clipboard.readClipboardText();
+          if (text) this.editor.insertTextAtCursor(text);
+        }
+      }
+    } catch (error) { this.transcript.note = `Failed to paste from clipboard: ${error}`; }
+    this.transcript.changed();
   }
   render(width: number) { return this.layout.render(width); }
   handleInput(data: string) {
@@ -633,6 +668,7 @@ export class ChatView implements Component, Focusable {
     if (this.panel?.focused) { this.panel.handleInput(data); return; }
     if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasWorkers) { this.panel.enter(this.editor); return; }
     if (matchesKey(data, Key.escape)) { void this.actions.stop().catch(error => { this.transcript.note = String(error); this.transcript.changed(); }); return; }
+    if (getKeybindings().matches(data, "app.clipboard.pasteImage")) { void this.pasteClipboard(); return; }
     // Pi's follow-up key (option+enter on a Mac, or the user's own binding in Pi's keybindings.json).
     if (getKeybindings().matches(data, "app.message.followUp")) return this.submit(this.editor.getExpandedText(), "followUp");
     if (this.transcript.toggle(data)) return;

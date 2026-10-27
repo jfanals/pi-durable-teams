@@ -75,7 +75,7 @@ const Anchor = defineTask<null, { phase: "done" }, null>({
   abort: (_task, runtime, ctx) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), ctx),
 });
 
-type ReporterInput = { from: Actor; recipient: string; message: string; mode: Mode };
+type ReporterInput = { from: Actor; recipient: string; message: string; mode: Mode; images?: { type: "image"; data: string; mimeType: string }[] };
 type ReporterState = { phase: "deliver" } | { phase: "report"; text?: string; answer?: EntryId; claimed?: boolean };
 type ReporterResult = { answer?: EntryId; status: string; text?: string };
 
@@ -177,9 +177,10 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       return;
     }
     const conversation = await conversationOf(recipient);
-    return conversation.submit({ type: "input", content: report
-      ? `[${delivery.from.name} report; no acknowledgement needed]: ${delivery.text}`
-      : `[${delivery.from.name} (${delivery.from.id})]: ${delivery.text}`,
+    const text = report ? `[${delivery.from.name} report; no acknowledgement needed]: ${delivery.text}`
+      : `[${delivery.from.name} (${delivery.from.id})]: ${delivery.text}`;
+    return conversation.submit({ type: "input", content: delivery.images?.length
+      ? [{ type: "text", text }, ...delivery.images] : text,
       requestId: delivery.id, whenBusy: delivery.mode,
       entry: { kind: report ? "teams.report" : "teams.message", data: { from: delivery.from, message: delivery.text, ...(delivery.request ? { request: delivery.request } : {}) } },
     }, context);
@@ -194,14 +195,14 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     }, initial: () => ({ phase: "deliver" }),
     phases: {
       deliver: async (task, runtime, ctx) => {
-        const { recipient, from, message, mode } = task.input;
+        const { recipient, from, message, mode, images } = task.input;
         const state = await read();
         const current = state.agents[recipient];
         if (!current || !active(state, recipient) || !active(state, from.id)) {
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: { status: "stopped" } } }), ctx);
           return;
         }
-        const submission = await post(recipient, { id: `teams-input:${task.id}`, from, text: message, mode });
+        const submission = await post(recipient, { id: `teams-input:${task.id}`, from, text: message, mode, images });
         if (!submission) {
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: { status: "delivered" } } }), ctx);
           return;
@@ -429,7 +430,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         return doc.requests[requestKey] = { model: args.model!, ...(args.thinking ? { thinking: args.thinking } : {}) };
       }, context);
     }
-    if (args.action !== "newAgent" && !args.message?.trim()) throw new Error("A nonempty message/task is required");
+    if (args.action !== "newAgent" && !args.message?.trim() && !args.images?.length) throw new Error("A nonempty message/task is required");
     let prepared: AgentChange | undefined;
     let cwd: string | undefined;
     const parent = actor.id === human.id ? undefined : actor.id;
@@ -471,10 +472,11 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       if (!recipient || !active(doc, recipient.id)) throw new Error("Agent stopped; start a new named agent");
       if (args.action === "newAgent") return doc.requests[requestKey] = { id: recipient.id };
       if (recipient.where.kind === "external") {
+        if (args.images?.length) throw new Error("Image attachments require a hosted agent");
         await post(recipient.id, { id: requestKey, from: actor, text: args.message!, mode: args.mode ?? "followUp" }, false, tx);
         return doc.requests[requestKey] = { delivery: requestKey };
       }
-      const taskId = await tx.createTask(Reporter, { from: actor, recipient: recipient.id, message: args.message!, mode: args.mode ?? "followUp" }, {
+      const taskId = await tx.createTask(Reporter, { from: actor, recipient: recipient.id, message: args.message ?? "", images: args.images, mode: args.mode ?? "followUp" }, {
         ownership: { kind: "conversation" }, background: true,
       });
       return doc.requests[requestKey] = { taskId, workerId: recipient.id };
@@ -591,7 +593,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       let queued: Queued[];
       try {
         const inbox = (view.value.docs["pi.inbox"] as { items?: any[] } | undefined)?.items ?? [];
-        queued = inbox.filter(item => item.mode !== "write").map(item => ({ mode: item.mode, text: firstLine(item.entry?.data?.message ?? textOf({ content: item.content })) }));
+        queued = inbox.filter(item => item.mode !== "write").map(item => ({ mode: item.mode, text: firstLine(item.entry?.data?.message ?? textOf({ content: item.content })) + (Array.isArray(item.content) && item.content.some((p: any) => p.type === "image") ? " [image]" : "") }));
       } finally { view.dispose(); }
       return { items, queued, next: page.next ? JSON.stringify(page.next) : undefined };
     },

@@ -133,7 +133,7 @@ export class AgentsApp implements Component, Focusable {
     this.loadBranch(agent.cwd);
     const bound = workerSource(this.source, agent.id);
     this.view = new ChatView(this.tui, this.theme, agent.name, bound, this.life.signal, {
-      send: (text, mode) => this.source.send(agent.id, text, mode), stop: () => this.source.stop(agent.id),
+      send: (text, mode, images) => this.source.send(agent.id, text, mode, { images }), stop: () => this.source.stop(agent.id),
       compact: instructions => this.source.compact(agent.id, instructions),
       ...(this.stack.length === 1 ? {
         inputs: () => this.source.inputs(agent.id),
