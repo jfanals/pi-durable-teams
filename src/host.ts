@@ -85,7 +85,7 @@ export async function startHost(directory: string, socket: string, options: Team
           res.end(file.body); return;
         }
       }
-      if (pathname === "/health") return reply(res, 200, { pid: process.pid, ready: Boolean(service) });
+      if (pathname === "/health") return reply(res, 200, { pid: process.pid, ready: Boolean(service), entry: process.argv[1] });
       if (!service) return reply(res, 503, { error: "Host starting" });
       const chunks: Buffer[] = [];
       let size = 0;

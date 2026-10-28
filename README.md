@@ -245,6 +245,11 @@ the runtime. Update dependencies and the reference deliberately, then rerun test
 
 Default directory: `~/.pi/agent/durable-teams/` (`PI_TEAMS_DIR` overrides).
 Socket: `host.sock` (`PI_TEAMS_SOCKET` overrides; macOS paths must stay short).
+Restart: `pi-agents restart-host` stops the host (SIGTERM, up to 2 minutes), starts it again and
+prints the new PID and entry file (`/health` reports both). It works from inside a hosted agent.
+Any client that finds no host starts one from its own checkout, or from `PI_TEAMS_DAEMON` when set;
+point a development checkout's clients at the live `src/daemon.ts` with it. A host that loses the
+start race to another exits quietly.
 Files: `teams.sqlite` (+ WAL/SHM), `owner.sqlite`, `host.log`, `config.json` and
 private large-result JSON files. Credentials are reused from Pi, not copied here;
 main reconnection secrets are in private Pi session/host state. Do not publish them.

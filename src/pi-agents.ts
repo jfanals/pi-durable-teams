@@ -10,6 +10,9 @@ import { SocketHostSource } from "./source.ts";
 if (process.argv[2] === "pair") {
   try { await pair(stateDir, process.argv.includes("--rotate")); }
   catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
+} else if (process.argv[2] === "restart-host") {
+  try { await (await import("./restart.ts")).restartHost(); }
+  catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
 } else {
 const settings = SettingsManager.create(process.cwd());
 initTheme(settings.getTheme(), false);

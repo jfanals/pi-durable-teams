@@ -10,8 +10,10 @@ web app (`src/web/`, served by the host) are views onto it. See README.md for th
 - `~/Desktop/src/pi-durable-teams-dev` is for development (branch `dev`). Work here.
 
 You may be running inside the live host you are changing. Never restart, kill, or signal the host
-yourself, and never touch `~/.pi/agent/durable-teams/` (live runtime state and databases). If a
-change needs a host restart, say so and let the human do it.
+on your own, and never touch `~/.pi/agent/durable-teams/` (live runtime state and databases). If a
+change needs a host restart, say so. Restart only when the human asks for it in the current
+conversation, and then only with `node ~/Desktop/src/pi-durable-teams/src/pi-agents.ts restart-host`
+(it detaches, so your own tool call may be cut off; check `/health` in your next turn).
 
 ## Releasing
 
@@ -28,7 +30,7 @@ not authorization. When authorized:
 4. Stop and ask the human if either checkout has changes you can't account for, the live checkout
    is not clean, `stable` has commits not in `dev`, the merge is not a fast-forward, or anything
    conflicts.
-5. Report what was released and whether it needs a host restart (the human does it).
+5. Report what was released and whether it needs a host restart.
 
 Never push to a remote without separate, explicit authorization.
 
@@ -39,7 +41,7 @@ Never push to a remote without separate, explicit authorization.
 - Web app: files under `src/web/` are read from disk on each request; a page refresh shows them once
   released to the live checkout.
 - Host changes (`src/host.ts`, `src/teams.ts`, `src/chat.ts`, routes, push) need a release
-  (authorized, above) and a host restart, which only the human does.
+  (authorized, above) and a host restart (above).
 
 ## Verify
 

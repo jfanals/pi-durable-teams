@@ -39,7 +39,9 @@ export class Client {
     signal?.throwIfAborted();
     mkdirSync(stateDir, { recursive: true, mode: 0o700 });
     const fd = openSync(join(stateDir, "host.log"), "a", 0o600);
-    const child = spawn(process.execPath, ["--no-warnings", fileURLToPath(new URL("./daemon.ts", import.meta.url))], {
+    // PI_TEAMS_DAEMON pins which checkout starts the host (pi-agents-dev sets it to the live one).
+    const daemon = process.env.PI_TEAMS_DAEMON ?? fileURLToPath(new URL("./daemon.ts", import.meta.url));
+    const child = spawn(process.execPath, ["--no-warnings", daemon], {
       detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, PI_TEAMS_SOCKET: this.socket },
     });
     closeSync(fd);
