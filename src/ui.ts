@@ -120,7 +120,7 @@ export class TeamPanel implements Component, Focusable {
       const start = Math.max(0, Math.min(this.selected - Math.floor(visible / 2), this.workers.length - visible));
       for (const [i, w] of this.workers.slice(start, start + visible).entries()) push(statusRow(w, width, start + i === this.selected, now, t, nameWidth, this.frame), w);
       const more = this.compact || this.workers.length > visible ? `${this.selected + 1}/${this.workers.length} · ` : "";
-      push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · enter open · esc back`), width));
+      push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · enter/→ open · esc back`), width));
       return lines;
     }
     if (this.compact) {
@@ -141,7 +141,8 @@ export class TeamPanel implements Component, Focusable {
   handleInput(data: string) {
     if (matchesKey(data, Key.up)) { if (this.selected === 0) return this.leave(); this.selected--; }
     else if (matchesKey(data, Key.down)) this.selected = Math.min(this.workers.length - 1, this.selected + 1);
-    else if (matchesKey(data, Key.enter)) { const w = this.workers[this.selected]; if (w) this.onOpen(w); return; }
+    // As on the dashboard, → opens like Enter and ← goes back (handled by the chat view).
+    else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) { const w = this.workers[this.selected]; if (w) this.onOpen(w); return; }
     else if (matchesKey(data, Key.escape)) return this.leave();
     else return this.leave(data);
     this.tui.requestRender();

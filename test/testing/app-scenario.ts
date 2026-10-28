@@ -270,13 +270,13 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[D"); await wait("n new"); await key("\x1b[A");
     await key("\r"); await wait("reader");
     await source.stop(readerId); await wait("1 idle");
-    await key("\x1b[B"); const panel = await wait("enter open"); print?.("sub-agent panel", panel);
-    await key("\x1b[A"); assert.doesNotMatch(await frame(), /enter open/);
-    await key("\x1b[B"); await key("\x1b"); assert.doesNotMatch(await frame(), /enter open/);
+    await key("\x1b[B"); const panel = await wait("enter/→ open"); print?.("sub-agent panel", panel);
+    await key("\x1b[A"); assert.doesNotMatch(await frame(), /enter\/→ open/);
+    await key("\x1b[B"); await key("\x1b"); assert.doesNotMatch(await frame(), /enter\/→ open/);
     await key("\x1b[B"); await key("draft"); assert.match(await frame(), /draft/); await key("\x15");
-    await key("\x1b[B"); await key("\r"); const childChat = await wait("reader ·");
+    await key("\x1b[B"); await key("\x1b[C"); const childChat = await wait("reader ·"); // → opens the selected sub-agent, like Enter
     assert.doesNotMatch(childChat, /pi-agents|↓ to select|team \$/); print?.("sub-agent chat", childChat);
-    await key("\x1b[D"); const parentChat = await wait("enter open"); assert.match(parentChat, /renamed/); print?.("back to parent panel", parentChat);
+    await key("\x1b[D"); const parentChat = await wait("enter/→ open"); assert.match(parentChat, /renamed/); print?.("back to parent panel", parentChat);
     await key("\x1b[D"); await wait("n new");
     await key("x"); await wait("Disable"); await key("y");
     for (let i = 0; i < 100 && (await alpha())?.enabled; i++) await delay(10);
