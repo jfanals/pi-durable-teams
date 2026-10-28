@@ -797,7 +797,7 @@ export class ChatView implements Component, Focusable {
     if (getKeybindings().matches(data, "app.clipboard.pasteImage")) { void this.pasteClipboard(); return; }
     if (this.editor.isShowingAutocomplete()) { this.editor.handleInput(data); return; }
     if (matchesKey(data, Key.escape)) {
-      if (this.transcript.status?.running !== false || this.inFlight > 0 || this.editor.getText().trim()) {
+      if (this.transcript.status?.running !== false || this.inFlight > 0) {
         this.lastEscapeTime = 0;
         void this.actions.stop().catch(error => { this.transcript.note = String(error); this.transcript.changed(); });
       } else if (!this.editor.getText().trim() && this.actions.doubleEscapeAction !== "none") {

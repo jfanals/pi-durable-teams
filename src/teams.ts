@@ -689,7 +689,6 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const input = chatItems([selected]).find(item => item.kind === "input");
         const editorText = input?.kind === "input" && !input.report && input.from === human.name ? input.text : undefined;
         const at = editorText !== undefined ? previous : selected.id;
-        const initial = await harness.snapshot(AgentDoc, current, context);
         let navigated = false;
         const result = await (await root()).commit(async tx => {
           const doc = await tx.doc(Teams);
@@ -706,8 +705,11 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
             : { kind: "ownerless" as const };
           const child = at !== undefined ? await tx.forkConversation(from!, at, { ownership })
             : await tx.createConversation({ ownership });
-          // Tree navigation keeps the current configuration, not the historical one.
-          Object.assign(await tx.doc(AgentDoc, child.id), structuredClone(initial)!);
+          // Tree navigation keeps the current configuration, not the historical one: replace the branch's copy outright.
+          const now = JSON.parse(JSON.stringify(await tx.doc(AgentDoc, current)));
+          const config = await tx.doc(AgentDoc, child.id) as Record<string, unknown>;
+          for (const key of Object.keys(config)) delete config[key];
+          Object.assign(config, now);
           stored.branches = [current, ...(stored.branches ?? [])];
           stored.where.conversationId = child.id;
           navigated = true;
