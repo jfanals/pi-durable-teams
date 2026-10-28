@@ -258,6 +258,10 @@ summary {
 .stamp {
   margin-top: 12px;
 }
+.compaction .markdown {
+  padding: 0 12px 12px;
+  color: var(--fg);
+}
 .notice {
   color: var(--muted);
   text-align: center;

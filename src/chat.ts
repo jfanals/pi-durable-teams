@@ -7,7 +7,9 @@ export type ChatItem =
   | { id: string; kind: "input"; from: string; text: string; report?: boolean; images?: { mimeType: string }[]; at?: number }
   | { id: string; kind: "reply"; parts: ({ type: "text"; text: string } | { type: "thinking"; text: string } | ({ type: "tool" } & ToolCall))[]; error?: string; at?: number; turn?: { ms?: number; tokens: number; cost: number } }
   | { id: string; kind: "result"; callId: string; ok: boolean; error?: string; content?: ToolOutput[]; details?: unknown; durationMs?: number }
-  | { id: string; kind: "notice"; text: string; warning?: boolean };
+  | { id: string; kind: "notice"; text: string; warning?: boolean }
+  /** The summary that replaced the history before it, as Pi's compaction message shows it. */
+  | { id: string; kind: "compaction"; summary: string; tokensBefore?: number };
 /** Messages waiting for the agent's next boundary, oldest first, as Pi shows them above its editor. */
 export type Queued = { mode: "steer" | "followUp"; text: string };
 /** Committed entries only. Prefix entries complete the oldest request without appearing in the returned page. */
@@ -19,7 +21,7 @@ const boundArgs = (args: Record<string, unknown>) => Object.fromEntries(Object.e
   [key, typeof value === "string" ? bound(value) : (JSON.stringify(value)?.length ?? 0) > MAX_TEXT ? "[too large]" : value]));
 export function chatItems(entries: readonly TranscriptEntry[], prefix: readonly TranscriptEntry[] = []): ChatItem[] {
   const items: ChatItem[] = [];
-  let start: number | undefined; let tokens = 0; let cost = 0;
+  let start: number | undefined; let tokens = 0; let cost = 0; let context: number | undefined;
   for (const entry of [...prefix, ...entries].sort((a, b) => Number(a.id) - Number(b.id))) {
     const id = String(entry.id); const message = entry.model?.[0];
     const at = typeof message?.timestamp === "number" ? message.timestamp : undefined;
@@ -46,6 +48,8 @@ export function chatItems(entries: readonly TranscriptEntry[], prefix: readonly 
         if (["error", "aborted"].includes(message?.stopReason)) item.error = clean(`${message.stopReason}${message.errorMessage ? `: ${message.errorMessage}` : ""}`);
         const u = message?.usage;
         tokens += replyTokens(u); cost += u?.cost?.total ?? 0;
+        // Pi's calculateContextTokens: the context size as of this reply.
+        if (u) context = u.totalTokens || (u.input ?? 0) + (u.output ?? 0) + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0);
         if (message?.stopReason && message.stopReason !== "toolUse" && at !== undefined) {
           item.turn = { ...(start !== undefined && at >= start ? { ms: at - start } : {}), tokens, cost };
           start = undefined; tokens = 0; cost = 0;
@@ -67,7 +71,13 @@ export function chatItems(entries: readonly TranscriptEntry[], prefix: readonly 
       case "pi.system": break;
       // Shown as Pi's "Cache warmed" line only where Pi shows it (showCacheMissNotices); teams.ts adds it.
       case "teams.cache-warm": break;
-      case "pi.compaction": items.push({ id, kind: "notice", text: "— context compacted —" }); break;
+      case "pi.compaction": {
+        // Durable wraps the summary in <summary> tags for the model; show the summary itself.
+        const text = textOf(message);
+        const summary = text.match(/<summary>\n?([\s\S]*?)\n?<\/summary>\s*$/)?.[1] ?? text;
+        items.push({ id, kind: "compaction", summary: clean(summary), ...(context ? { tokensBefore: context } : {}) });
+        break;
+      }
       case "pi.reset": items.push({ id, kind: "notice", text: "— context reset —" }); break;
       default: items.push({ id, kind: "notice", text: `[${clean(entry.kind)}]` });
     }

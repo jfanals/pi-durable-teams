@@ -1,4 +1,5 @@
 import { chatItems } from "../src/chat.ts";
+import { transcript } from "../src/web/render.ts";
 import { markdownForSelection } from "../src/copy.ts";
 import { liveStatus, type WorkerStatus } from "../src/status.ts";
 import assert from "node:assert/strict";
@@ -160,7 +161,7 @@ test("chat items are plain JSON with clean text, tool subjects, notices and comp
     ] }] },
     { id: 4, kind: "pi.tool-result", model: [{ toolCallId: "call", isError: true, content: "<harness>[error] Not found</harness>" }] },
     { id: 5, kind: "pi.assistant", model: [{ timestamp: 2500, stopReason: "stop", usage: { input: 20, output: 4, cacheRead: 99, cost: { total: 0.2 } }, content: [{ type: "text", text: "\x1bPprivate\x1b\\Done\x07" }] }] },
-    { id: 6, kind: "pi.compaction" }, { id: 7, kind: "pi.reset" }, { id: 8, kind: "other.event" },
+    { id: 6, kind: "pi.compaction", model: [{ content: [{ type: "text", text: "The conversation history before this point was compacted into the following summary:\n\n<summary>\n## Goal\nShip it\n</summary>" }] }] }, { id: 7, kind: "pi.reset" }, { id: 8, kind: "other.event" },
   ]);
   assert.deepEqual(items[0], { id: "2", kind: "input", from: "Lead", text: "Read this", at: 1000 });
   const call = items[1]; assert.ok(call?.kind === "reply");
@@ -169,7 +170,13 @@ test("chat items are plain JSON with clean text, tool subjects, notices and comp
   const answer = items[3]; assert.ok(answer?.kind === "reply");
   assert.deepEqual(answer.parts, [{ type: "text", text: "Done" }]); assert.equal(answer.turn?.ms, 1500); assert.equal(answer.turn?.tokens, 39);
   assert.ok(Math.abs(answer.turn!.cost - 0.3) < 1e-10);
-  assert.deepEqual(items.slice(4).map(item => item.kind === "notice" && item.text), ["— context compacted —", "— context reset —", "[other.event]"]);
+  // Pi's compaction message: the summary itself, sized by the last reply's context (20 + 4 + 99).
+  assert.deepEqual(items[4], { id: "6", kind: "compaction", summary: "## Goal\nShip it", tokensBefore: 123 });
+  const compaction = (expanded: boolean) => renderTranscript([items[4]!], "w", 80, theme, { expanded }).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+  assert.match(compaction(false), /\[compaction\][\s\S]*Compacted from 123 tokens \(.* to expand\)/); assert.doesNotMatch(compaction(false), /Ship it/);
+  assert.match(compaction(true), /Compacted from 123 tokens[\s\S]*Goal[\s\S]*Ship it/);
+  assert.match(transcript([items[4]!]), /<details class="compaction"[^>]*>\n<summary>\[compaction\] Compacted from 123 tokens<\/summary>[\s\S]*<h2>Goal<\/h2>/);
+  assert.deepEqual(items.slice(5).map(item => item.kind === "notice" && item.text), ["— context reset —", "[other.event]"]);
   assert.doesNotMatch(JSON.stringify(items), /private|\\u001b|\\u0000|\\u0007/);
   const inputs = chatItems([
     { id: 20, kind: "teams.report", data: { message: "**Report**" }, model: [{ content: "[Reader]: wrong" }] },

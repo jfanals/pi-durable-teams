@@ -164,7 +164,7 @@ function drawChat(older = false) {
   const height = view.scrollHeight;
   const top = view.scrollTop;
   const expanded = [...view.querySelectorAll<HTMLDetailsElement>("details[open]")].map(
-    (el) => el.dataset.thinking,
+    (el) => el.dataset.thinking ?? el.dataset.compaction,
   );
   document.querySelector("#history")!.innerHTML =
     `${next ? button("Load older", "older") : ""}${transcript(items) || '<p class="notice">Send a message to get started.</p>'}`;
@@ -188,7 +188,7 @@ function drawChat(older = false) {
     }).catch(() => { imageCache.delete(key); });
   });
   view.querySelectorAll<HTMLDetailsElement>("details").forEach((el) => {
-    el.open = expanded.includes(el.dataset.thinking);
+    el.open = expanded.includes(el.dataset.thinking ?? el.dataset.compaction);
   });
   if (older) view.scrollTop = top + view.scrollHeight - height;
   else if (bottom) view.scrollTop = view.scrollHeight;

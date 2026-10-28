@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { piClipboard } from "./presentation.ts";
 import { homedir } from "node:os";
 
-import { getMarkdownTheme, getSelectListTheme, keyText, ToolExecutionComponent, UserMessageSelectorComponent, type Theme, type ThemeBg } from "@earendil-works/pi-coding-agent";
+import { CompactionSummaryMessageComponent, getMarkdownTheme, getSelectListTheme, keyText, ToolExecutionComponent, UserMessageSelectorComponent, type Theme, type ThemeBg } from "@earendil-works/pi-coding-agent";
 import { builtInRenderers, loadToolRenderers, piExternalEditor, piModelSelector, piThinkingSelector, piTreeSelector } from "./presentation.ts";
 import {
   Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth,
@@ -328,6 +328,12 @@ export function renderTranscript(items: ChatItem[], worker: string, width: numbe
         block(new Text(theme.fg("dim", parts.filter(Boolean).join(" · ")), 1, 0).render(width));
       }
     } else if (item.kind === "notice") block(new Text(theme.fg(item.warning ? "warning" : "dim", item.text), 1, 0).render(width));
+    else if (item.kind === "compaction") {
+      // Pi's compaction message: collapsed to its token count, the summary on ctrl+o.
+      const message = new CompactionSummaryMessageComponent({ summary: clean(item.summary), tokensBefore: item.tokensBefore ?? 0 } as any, md);
+      message.setExpanded(expanded);
+      block(message.render(width));
+    }
   }
   return out[0] === "" ? out.slice(1) : out;
 }

@@ -59,6 +59,11 @@ export function transcript(items: ChatItem[]) {
   return items
     .map((item) => {
       if (item.kind === "result") return "";
+      if (item.kind === "compaction")
+        return `<details class="compaction" data-compaction="${escape(item.id)}">
+<summary>[compaction] ${item.tokensBefore ? `Compacted from ${item.tokensBefore.toLocaleString()} tokens` : "Context compacted"}</summary>
+<div class="markdown">${markdown(item.summary)}</div>
+</details>`;
       if (item.kind === "notice") return `<p class="notice${item.warning ? " warning" : ""}">${escape(item.text)}</p>`;
       if (item.kind === "input")
         return `<article class="input">
