@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import { startHost } from "../src/host.ts";
-import { human, Teams } from "../src/teams.ts";
+import { human } from "../src/teams.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { Client } from "../src/client.ts";
 
@@ -171,14 +171,10 @@ test("human removal retires a hosted subtree without deleting history and frees 
     const otherActor = { id: other.id, name: "other", teamId: other.id, role: "main" as const };
     const untouched = await host.service.action(otherActor, { action: "spawn", name: "untouched", message: "other work" }, "untouched") as any;
     while (removedRuns === 0) await delay(5);
-    const waiting = host.service.action(actor, { action: "wait", request: String(child.taskId) }, "") as Promise<any>;
-    while (!(await host.service.harness.snapshot(Teams, ctx))?.waiting?.[String(child.taskId)]) await delay(5);
     const removal = { target: parent.id, requestId: "remove" };
     assert.deepEqual((await client.call("agents/remove", removal)).stopped.sort(), [parent.id, child.workerId].sort());
-    const waited = await Promise.race([waiting, delay(1000).then(() => assert.fail("Remove did not release the parent’s wait"))]);
-    assert.deepEqual(waited.pending, []);
-    assert.equal(waited.answers[0].state.outcome.status, "aborted");
-    assert.deepEqual((await host.service.harness.snapshot(Teams, ctx))?.waiting, {});
+    const removed = await host.service.harness.waitForTask(child.taskId, ctx);
+    assert.equal(removed.state.status === "terminal" && removed.state.outcome.status, "aborted");
     const otherState = await host.service.action(otherActor, { action: "inspect", request: String(untouched.taskId) }, "") as any;
     assert.notEqual(otherState.state.status, "terminal");
     assert.deepEqual((await client.call("agents")).map((row: any) => row.id), [other.id]);

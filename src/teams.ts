@@ -37,7 +37,6 @@ type Registry = {
   agents: Record<string, Agent>;
   requests: Record<string, { taskId?: TaskId; delivery?: string; workerId?: string; id?: string; stopped?: string[]; aborted?: string[]; paused?: boolean; model?: ModelRef; thinking?: WorkerModel["thinking"]; editorText?: string; note?: boolean }>;
   reported: Record<string, boolean>;
-  waiting?: Record<string, number>;
 };
 export const human: Actor = { id: "human", teamId: "human", role: "main", name: "Human" };
 export const Teams = defineDoc<Registry>({
@@ -79,8 +78,8 @@ const Anchor = defineTask<null, { phase: "done" }, null>({
 
 /** `note`: a child messaging its parent. Delivered only; the parent's reply is not reported back. */
 type ReporterInput = { from: Actor; recipient: string; message: string; mode: Mode; images?: { type: "image"; data: string; mimeType: string }[]; note?: boolean };
-type ReporterState = { phase: "deliver" } | { phase: "report"; text?: string; answer?: EntryId; claimed?: boolean };
-type ReporterResult = { answer?: EntryId; status: string; text?: string };
+type ReporterState = { phase: "deliver" } | { phase: "report"; text?: string; answer?: EntryId };
+type ReporterResult = { answer?: EntryId; status: string };
 type ReminderInput = { request: string; from: Actor; recipient: string; seconds: number };
 /** Default reminder for spawn/send: a parent hears about a request with no report after this long. */
 const REMIND_SECONDS = 1800;
@@ -299,28 +298,16 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const checkpoint = task.state.checkpoint;
         if (checkpoint.phase !== "report") return;
         const { from, recipient } = task.input;
-        const finish = (enabled: boolean, suppressed = false) => ({ status: "terminal", outcome: { status: "completed", result: {
-          status: enabled ? "reported" : "stopped", ...(checkpoint.answer === undefined ? {} : { answer: checkpoint.answer }),
-          ...(suppressed && checkpoint.text !== undefined ? { text: checkpoint.text } : {}),
-        } } }) as const;
-        if (checkpoint.claimed) {
-          const state = await read();
-          await reportDelivery(String(task.id), task.input, checkpoint.text, state);
-          await runtime.commit(() => finish(active(state, recipient) && active(state, from.id)), ctx);
-          return;
-        }
-        // Decide suppression and settle in the SAME transaction. Otherwise a released wait
-        // could miss both the answer and its automatic report. A claimed hosted post may
-        // still race a newly reserved wait; that accepted duplicate window is unavoidable.
+        const state = await read();
+        const external = state.agents[from.id]?.where.kind === "external";
+        if (!external) await reportDelivery(String(task.id), task.input, checkpoint.text, state);
         await runtime.commit(async tx => {
+          // An external inbox delivery and the terminal receipt are atomic, so an acknowledged report is never recreated.
           const doc = await tx.doc(Teams);
-          const enabled = active(doc, recipient) && active(doc, from.id);
-          if (doc.waiting?.[String(task.id)]) return finish(enabled, true);
-          if (doc.agents[from.id]?.where.kind === "external") {
-            await reportDelivery(String(task.id), task.input, checkpoint.text, doc, tx);
-            return finish(enabled);
-          }
-          return { status: "running", checkpoint: { ...checkpoint, claimed: true } } as const;
+          if (external) await reportDelivery(String(task.id), task.input, checkpoint.text, doc, tx);
+          return { status: "terminal", outcome: { status: "completed", result: {
+            status: active(doc, recipient) && active(doc, from.id) ? "reported" : "stopped", ...(checkpoint.answer === undefined ? {} : { answer: checkpoint.answer }),
+          } } } as const;
         }, ctx);
         notify();
       },
@@ -362,9 +349,9 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     }
     return held;
   }
-  async function inspectRequest(actor: Actor, request: string, ownOnly = false) {
+  async function inspectRequest(actor: Actor, request: string) {
     const task = await harness.getTask(Number(request) as TaskId, context);
-    if (!task || task.kind !== "teams.reporter" || ((task.input as ReporterInput).from.id !== actor.id && (ownOnly || actor.id !== human.id))) throw new Error("Unknown request for this agent");
+    if (!task || task.kind !== "teams.reporter" || ((task.input as ReporterInput).from.id !== actor.id && actor.id !== human.id)) throw new Error("Unknown request for this agent");
     const outcome = task.state.status === "terminal" ? task.state.outcome : undefined;
     const result = outcome?.status === "completed" ? outcome.result as ReporterResult : undefined;
     const answer = result?.answer === undefined ? undefined : (await storage.entry(result.answer, context))?.entry;
@@ -377,70 +364,10 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       text, mode: "followUp", request: id }, true, tx);
   }
 
-  async function restoreReport(id: string) {
-    const task = await harness.getTask(Number(id) as TaskId, context);
-    if (task?.state.status !== "terminal" || task.kind !== "teams.reporter" || task.state.outcome.status !== "completed") return;
-    const current = await read();
-    if (current.waiting?.[id]) return;
-    await reportDelivery(id, task.input as ReporterInput, (task.state.outcome.result as ReporterResult).text, current);
-  }
-
-  async function action(actor: Actor, args: Action, requestId: string, signal?: AbortSignal) {
+  async function action(actor: Actor, args: Action, requestId: string) {
     const state = await read();
     const own = state.agents[actor.id];
     if ((!own || own.removed) && actor.id !== human.id) throw new Error("Unknown agent");
-    if (args.action === "wait") {
-      const seconds = args.timeoutSeconds ?? 600;
-      if (!Number.isFinite(seconds) || seconds < 0 || seconds > 1800) throw new Error("timeoutSeconds must be between 0 and 1800");
-      signal?.throwIfAborted();
-      const ids = args.request === undefined
-        ? (await harness.inspect(context)).tasks.flatMap(({ record: task }) => task.kind === "teams.reporter"
-          && (task.input as ReporterInput).from.id === actor.id && task.state.status !== "terminal" ? [String(task.id)] : [])
-        : Array.isArray(args.request) ? args.request : [args.request];
-      const selected = [...new Set(ids)];
-      for (const id of selected) await inspectRequest(actor, id, true);
-      // Each invocation owns one reservation, including concurrent waits on the same ID.
-      await harness.commit(async tx => {
-        const doc = await tx.doc(Teams); doc.waiting ??= {};
-        for (const id of selected) doc.waiting[id] = (doc.waiting[id] ?? 0) + 1;
-      }, context);
-      const completed = new Set<string>();
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let abort!: () => void;
-      let steered = false;
-      // A steer (from the human or another agent) ends the wait, so it is read now rather than after the wait.
-      const inbox = own?.where.kind === "hosted" ? await harness.watchDoc(InboxDoc, own.where.conversationId, context) : undefined;
-      const interrupted = new Promise<void>((resolve, reject) => {
-        timer = setTimeout(resolve, seconds * 1000);
-        abort = () => reject(signal!.reason);
-        signal?.addEventListener("abort", abort, { once: true });
-        const check = (value: { items?: { mode: string }[] } | null) => { if (value?.items?.some(item => item.mode === "steer")) { steered = true; resolve(); } };
-        check(inbox?.value ?? null);
-        inbox?.start(async value => check(value));
-      });
-      try {
-        signal?.throwIfAborted();
-        // waitForTask accepts a Context signal, but these background waits deliberately
-        // outlive timeout/Esc until task settlement (or harness close); no commit polling.
-        await Promise.race([Promise.all(selected.map(id => harness.waitForTask(Number(id) as TaskId, context))), interrupted]);
-        signal?.throwIfAborted();
-        const results = await Promise.all(selected.map(id => inspectRequest(actor, id, true)));
-        const answers = results.filter(result => result.state.status === "terminal");
-        for (const answer of answers) completed.add(String(answer.request));
-        const pending = selected.filter(id => !completed.has(id));
-        return { answers, pending, ...(steered && pending.length ? { steered: "A steering message arrived; it follows this result. Wait again later if still needed." } : {}) };
-      } finally {
-        clearTimeout(timer); signal?.removeEventListener("abort", abort); void inbox?.stop();
-        await harness.commit(async tx => {
-          const doc = await tx.doc(Teams);
-          for (const id of selected) {
-            if (doc.waiting?.[id] && --doc.waiting[id]! === 0) delete doc.waiting[id];
-          }
-        }, context);
-        // Esc may race a terminal commit that suppressed its report. Restore that delivery.
-        for (const id of selected) if (!completed.has(id)) await restoreReport(id);
-      }
-    }
     if (args.action === "list") {
       return Object.values(state.agents).filter(agent => reach(state.agents, actor, "inspect", agent)
         && (args.scope === "mains" ? !agent.parent : actor.id === human.id || agent.id === actor.id || Boolean(agent.parent) || agent.id === own?.parent))
@@ -455,7 +382,6 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     const target = creating || (args.action === "inspect" && args.request) || teamStop ? undefined : resolveTarget(state, actor, args.target, args.action);
     if (args.action === "inspect") {
       if (args.request) {
-        if (Array.isArray(args.request)) throw new Error("inspect accepts one request ID");
         return inspectRequest(actor, args.request);
       }
       if (target!.where.kind === "external") {
@@ -472,7 +398,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     if (!requestId) throw new Error("A stable request ID is required");
     const requestKey = actor.id === human.id ? `human:${args.action}:${requestId}` : `${actor.id}:${requestId}`;
     const accepted = (result: NonNullable<Registry["requests"][string]>) => actor.id !== human.id && result.taskId !== undefined
-      ? { ...result, next: result.note ? "delivered to your parent; no report comes back" : "end your turn (the report arrives automatically) or call wait" } : result;
+      ? { ...result, next: result.note ? "delivered to your parent; no report comes back" : "end your turn; the report arrives automatically" } : result;
     if (state.requests[requestKey]) return accepted(state.requests[requestKey]);
     if (!active(state, actor.id)) throw new Error("Agent/team stopped or paused");
 
@@ -599,10 +525,10 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     name: "durable-teams", tasks: [Anchor, Reporter, Reminder],
     tools: [defineTool({
       name: TOOL_NAME, description: TOOL_DESCRIPTION, parameters: ActionSchema, replay: "unsafe",
-      execute: async (args, api, ctx) => {
+      execute: async (args, api) => {
         const worker = Object.values((await read()).agents).find(agent => agent.where.kind === "hosted" && agent.where.conversationId === api.conversationId);
         if (!worker?.enabled) throw new Error("Worker not active");
-        const value = await action(actorOf(worker), args, String(api.taskId), ctx.abortSignal);
+        const value = await action(actorOf(worker), args, String(api.taskId));
         return { output: [{ type: "text", text: JSON.stringify(value) }] };
       },
     })],
@@ -647,13 +573,6 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       agent.cwd = (await tx.doc(AgentDoc, agent.where.conversationId)).cwd ?? agent.cwd;
     }
   }, context);
-  // A tool marked replay:"unsafe" is interrupted, not rerun, after a host restart.
-  // Release its reservations and restore any report it suppressed before the crash.
-  const interruptedWaits = Object.keys((await read()).waiting ?? {});
-  if (interruptedWaits.length) {
-    await harness.commit(async tx => { (await tx.doc(Teams)).waiting = {}; }, context);
-    for (const id of interruptedWaits) await restoreReport(id);
-  }
   // One roster for every reader (HTTP, streams and push). Commits only mark work here;
   // Session reads run later, never inside the publication callback.
   let rosterState: Registry | undefined;

@@ -42,7 +42,6 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   assert.match(plain(renderSent(sent, true, theme).render(60)).join("\n"), /finding 30/);
   const call = plain(renderTeamCall({ action: "send", target: "reader", message: body, timeoutSeconds: 1800 }, theme, { expanded: true }).render(60)).join("\n");
   assert.match(call, /remind 30m/); assert.match(call, /finding 30/);
-  assert.match(plain(renderTeamCall({ action: "wait", timeoutSeconds: 1800 }, theme).render(60)).join("\n"), /up to 30m/);
   // Tool image bytes are requested by result entry ID only when Pi's image setting is enabled.
   const imageItems: ChatItem[] = [
     { id: "1", kind: "reply", parts: [{ type: "tool", id: "read-image", name: "read", subject: "image.png", args: { path: "image.png" } }] },

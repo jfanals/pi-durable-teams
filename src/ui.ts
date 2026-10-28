@@ -229,7 +229,7 @@ function sentNote(data: { target: string; mode: Mode; text: string; request?: st
 export function renderTeamCall(args: Partial<Action> & { timeoutSeconds?: number }, theme: Theme, context: { expanded: boolean } = { expanded: false }) {
   const subject = args.action === "spawn" ? args.name : args.target ?? (args.action === "stop" && args.team ? "whole team" : "");
   let text = theme.fg("toolTitle", theme.bold("team ")) + theme.fg("accent", args.action ?? "") + (subject ? ` ${clean(subject)}` : "");
-  const extras = [args.timeoutSeconds !== undefined && `${args.action === "wait" ? "up to" : "remind"} ${formatDuration(args.timeoutSeconds * 1000)}`, args.mode === "steer" && "steer", args.scope === "mains" && "sessions", args.transcript && "transcript", args.request && `request ${args.request}`].filter(Boolean);
+  const extras = [args.timeoutSeconds !== undefined && `remind ${formatDuration(args.timeoutSeconds * 1000)}`, args.mode === "steer" && "steer", args.scope === "mains" && "sessions", args.transcript && "transcript", args.request && `request ${args.request}`].filter(Boolean);
   if (extras.length) text += theme.fg("muted", ` · ${extras.join(" · ")}`);
   const box = new Box(0, 0);
   box.addChild(new Text(text, 0, 0));

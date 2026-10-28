@@ -218,145 +218,50 @@ test("v1 SQLite registry and in-flight reporter migrate to v2 without losing inb
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("team wait joins two answers in one agent run, suppresses reports, times out and honours reach/abort", { timeout: 10000 }, async () => {
+test("spawn/send remind the requester once when no report arrives in time; an earlier report cancels it", { timeout: 10000 }, async () => {
   const registry = createRegistry();
   let release!: () => void;
   let gate = new Promise<void>(resolve => { release = resolve; });
   let entered!: () => void;
   let started = new Promise<void>(resolve => { entered = resolve; });
-  registry.install(defineExtension({ name: "wait-gate", tools: [defineTool({
+  registry.install(defineExtension({ name: "remind-gate", tools: [defineTool({
     name: "gate", description: "Hold an answer", parameters: Type.Object({}),
     execute: async () => { entered(); await gate; return { output: [] }; },
   })] }));
   const fake = fauxProvider({ models: [{ id: "faux-1" }] });
   const models = createModels(); models.setProvider(fake.provider);
-  let a!: string; let b!: string;
-  fake.setResponses(Array.from({ length: 100 }, () => request => {
+  fake.setResponses(Array.from({ length: 20 }, () => request => {
     const last = request.messages.findLast(message => message.role !== "system");
-    if (last?.role === "user" && JSON.stringify(last).includes("JOIN")) return fauxAssistantMessage([
-      fauxToolCall("team", { action: "send", target: a, message: "HOLD" }),
-      fauxToolCall("team", { action: "send", target: b, message: "HOLD" }),
-    ], { stopReason: "toolUse" });
     if (last?.role === "user" && JSON.stringify(last).includes("HOLD")) return fauxAssistantMessage(fauxToolCall("gate", {}), { stopReason: "toolUse" });
-    if (last?.role === "toolResult" && last.toolName === "team") {
-      const text = last.content.filter(part => part.type === "text").map(part => part.text).join("");
-      const result = JSON.parse(text);
-      if (!("answers" in result)) return fauxAssistantMessage(fauxToolCall("team", { action: "wait" }), { stopReason: "toolUse" });
-      assert.equal(result.answers.length, 2); assert.deepEqual(result.pending, []);
-      for (const answer of result.answers) assert.match(JSON.stringify(answer.answer), /joined answer/);
-      return fauxAssistantMessage("Both answers in the same run");
-    }
-    return fauxAssistantMessage("joined answer");
+    return fauxAssistantMessage("held answer");
   }));
   const service = await openTeams(new MemoryStorage(), { models, registry, agentModel: async () => model });
+  const reminderOf = async (request: string) => (await service.harness.inspect(ctx)).tasks
+    .find(({ record }) => record.kind === "teams.reminder" && (record.input as any).request === request)?.record;
   try {
-    const leader = await service.action(human, { action: "newAgent", name: "lead", cwd: tmpdir() }, "lead") as any;
-    a = (await service.action(human, { action: "newAgent", name: "one", cwd: tmpdir() }, "one") as any).id;
-    b = (await service.action(human, { action: "newAgent", name: "two", cwd: tmpdir() }, "two") as any).id;
-    const run = await service.action(human, { action: "send", target: leader.id, message: "JOIN" }, "join") as any;
+    const worker = (await service.action(human, { action: "newAgent", name: "slow", cwd: tmpdir() }, "slow") as any).id;
+    const sender = await service.register({ sessionId: "remind-sender", secret: "r".repeat(36), name: "Sender", cwd: tmpdir(), model });
+    const late = await service.action(sender, { action: "send", target: worker, message: "HOLD", timeoutSeconds: 0.05 }, "late") as any;
+    assert.equal(late.next, "end your turn; the report arrives automatically");
     await started;
-    // Wait for the actual tool reservation, not a wall-clock guess.
-    await new Promise<void>(resolve => {
-      const off = service.subscribe(() => { void service.harness.snapshot(Teams, ctx).then(doc => {
-        if (Object.keys(doc?.waiting ?? {}).length === 2) { off(); resolve(); }
-      }); });
-    });
-    release(); await settle(service, run); await idle(service, leader.id);
-    const history = JSON.stringify(await page(service, leader.id));
-    assert.match(history, /Both answers in the same run/);
-    assert.doesNotMatch(history, /teams.report/);
+    await service.harness.waitForTask((await reminderOf(String(late.taskId)))!.id, ctx);
+    const reminder = (await service.pending(sender)).find(delivery => delivery.id === `teams-remind:${late.taskId}`);
+    assert.match(reminder?.text ?? "", /no report for request .* after/);
+    release(); await settle(service, late);
+    assert.ok((await service.pending(sender)).some(delivery => delivery.id === `teams-report:${late.taskId}`), "the report still arrives after the reminder");
 
-    gate = new Promise<void>(resolve => { release = resolve; });
-    started = new Promise<void>(resolve => { entered = resolve; });
-    const sender = await service.register({ sessionId: "wait-sender", secret: "w".repeat(36), name: "Wait sender", cwd: tmpdir(), model });
-    const pending = await service.action(sender, { action: "send", target: a, message: "HOLD" }, "pending") as any;
-    await started;
-    await assert.rejects(service.action(human, { action: "wait", request: String(pending.taskId) }, ""), /Unknown request/);
-    const timed = await service.action(sender, { action: "wait", request: [String(pending.taskId)], timeoutSeconds: 0.01 }, "") as any;
-    assert.deepEqual(timed.answers, []); assert.deepEqual(timed.pending, [String(pending.taskId)]);
-    const reservation = (id: string, count: number) => new Promise<void>(resolve => {
-      const check = () => { void service.harness.snapshot(Teams, ctx).then(doc => {
-        if ((doc?.waiting?.[id] ?? 0) === count) { off(); resolve(); }
-      }); };
-      const off = service.subscribe(check); check();
-    });
-    const controller = new AbortController();
-    const waiting = service.action(sender, { action: "wait", request: String(pending.taskId) }, "", controller.signal);
-    await reservation(String(pending.taskId), 1);
-    controller.abort(new Error("Esc"));
-    await assert.rejects(waiting, /Esc/);
-    release(); await settle(service, pending);
-    assert.ok((await service.pending(sender)).some(report => report.request === String(pending.taskId)), "timeout/abort must not withdraw the automatic report");
-    const result = await service.action(sender, { action: "wait", request: String(pending.taskId) }, "") as any;
-    assert.match(JSON.stringify(result.answers[0].answer), /joined answer/);
-    assert.deepEqual(result.pending, []);
-    assert.deepEqual(await service.action(sender, { action: "wait" }, ""), { answers: [], pending: [] });
+    gate = Promise.resolve(); started = new Promise<void>(resolve => { entered = resolve; });
+    const quick = await service.action(sender, { action: "send", target: worker, message: "HOLD", timeoutSeconds: 0.5 }, "quick") as any;
+    await settle(service, quick);
+    await service.harness.waitForTask((await reminderOf(String(quick.taskId)))!.id, ctx);
+    assert.ok(!(await service.pending(sender)).some(delivery => delivery.id === `teams-remind:${quick.taskId}`));
 
-    // Two invocations own independent reservations. Cancelling one cannot expose the
-    // other's answer to automatic external delivery.
-    gate = new Promise<void>(resolve => { release = resolve; });
-    started = new Promise<void>(resolve => { entered = resolve; });
-    const concurrent = await service.action(sender, { action: "send", target: a, message: "HOLD" }, "concurrent") as any;
-    await started;
-    const cancel = new AbortController();
-    const firstWait = service.action(sender, { action: "wait", request: String(concurrent.taskId) }, "", cancel.signal);
-    const secondWait = service.action(sender, { action: "wait" }, "");
-    await reservation(String(concurrent.taskId), 2);
-    cancel.abort(new Error("Esc concurrent"));
-    await assert.rejects(firstWait, /Esc concurrent/);
-    await reservation(String(concurrent.taskId), 1);
-    release();
-    assert.equal((await secondWait as any).answers.length, 1);
-    assert.ok(!(await service.pending(sender)).some(report => report.request === String(concurrent.taskId)));
-
-    // Deterministic lost-answer race: hold the harness wait's observation until the
-    // Reporter has suppressed AND settled, then release the reservation via Esc.
-    // Its terminal receipt must already contain the exact suppressed checkpoint text.
-    gate = new Promise<void>(resolve => { release = resolve; });
-    started = new Promise<void>(resolve => { entered = resolve; });
-    const hostedSender = (await roster(service)).find(actor => actor.id === leader.id)!;
-    const raced = await service.action(hostedSender, { action: "send", target: a, message: "HOLD" }, "race") as any;
-    await started;
-    const originalWait = service.harness.waitForTask.bind(service.harness);
-    let observed!: () => void;
-    const terminalObserved = new Promise<void>(resolve => { observed = resolve; });
-    let unblock!: () => void;
-    const observationGate = new Promise<void>(resolve => { unblock = resolve; });
-    service.harness.waitForTask = async (id, context) => {
-      const task = await originalWait(id, context);
-      if (id === raced.taskId) { observed(); await observationGate; }
-      return task;
-    };
-    const esc = new AbortController();
-    const raceWait = service.action(hostedSender, { action: "wait", request: String(raced.taskId) }, "", esc.signal);
-    await reservation(String(raced.taskId), 1);
-    release(); await terminalObserved;
-    const suppressed = (await service.harness.getTask(raced.taskId, ctx))!;
-    assert.equal(suppressed.state.status, "terminal");
-    assert.match(JSON.stringify(suppressed.state.outcome), /joined answer/);
-    assert.ok(!JSON.stringify(await page(service, leader.id)).includes(`"request":"${raced.taskId}"`));
-    esc.abort(new Error("Esc after suppression"));
-    await assert.rejects(raceWait, /Esc after suppression/);
-    unblock(); service.harness.waitForTask = originalWait;
-    assert.ok(JSON.stringify(await page(service, leader.id)).includes(`"request":"${raced.taskId}"`));
-    await reservation(String(raced.taskId), 0);
-
-    // A steer to a busy waiting agent ends its wait at once; spawn/send arm a reminder for the requester.
-    gate = new Promise<void>(resolve => { release = resolve; });
-    started = new Promise<void>(resolve => { entered = resolve; });
-    const steered = await service.action(hostedSender, { action: "send", target: a, message: "HOLD" }, "steer-wait") as any;
-    await started;
-    started = new Promise<void>(resolve => { entered = resolve; });
-    await service.action(human, { action: "send", target: leader.id, message: "HOLD" }, "busy-leader");
-    await started;
-    const steerWait = service.action(hostedSender, { action: "wait", request: String(steered.taskId) }, "") as Promise<any>;
-    await reservation(String(steered.taskId), 1);
-    await service.action(human, { action: "send", target: leader.id, message: "look now", mode: "steer" }, "steer-now");
-    const interrupted = await steerWait;
-    assert.deepEqual(interrupted.pending, [String(steered.taskId)]); assert.match(interrupted.steered, /steering message arrived/);
-    const reminders = (await service.harness.inspect(ctx)).tasks.filter(({ record }) => record.kind === "teams.reminder");
-    assert.ok(reminders.some(({ record }) => (record.input as any).request === String(steered.taskId) && (record.input as any).seconds === 1800));
-    assert.ok(!reminders.some(({ record }) => (record.input as any).from.id === human.id), "the human gets no reminders");
+    const defaulted = await service.action(sender, { action: "send", target: worker, message: "again" }, "default") as any;
+    assert.equal((await reminderOf(String(defaulted.taskId)))?.input && ((await reminderOf(String(defaulted.taskId)))!.input as any).seconds, 1800);
+    const silent = await service.action(sender, { action: "send", target: worker, message: "again", timeoutSeconds: 0 }, "silent") as any;
+    assert.equal(await reminderOf(String(silent.taskId)), undefined);
+    await service.action(human, { action: "send", target: worker, message: "from human" }, "human-send");
+    assert.ok(!(await service.harness.inspect(ctx)).tasks.some(({ record }) => record.kind === "teams.reminder" && (record.input as any).from.id === human.id), "the human gets no reminders");
   } finally { release(); await service.close(); }
 });
 

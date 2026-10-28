@@ -23,9 +23,7 @@ export class Client {
           } catch (error) { reject(error); }
         });
       });
-      const args = operation === "action" ? (body as { args?: { action?: string; timeoutSeconds?: number } }).args : undefined;
-      const timeout = args?.action === "wait" ? ((args.timeoutSeconds ?? 600) + 60) * 1000 : 60_000;
-      req.setTimeout(timeout, () => req.destroy(new Error("Durable host request timed out; retry only with the same request ID")));
+      req.setTimeout(60_000, () => req.destroy(new Error("Durable host request timed out; retry only with the same request ID")));
       req.on("error", reject);
       req.end(JSON.stringify(body));
     });
