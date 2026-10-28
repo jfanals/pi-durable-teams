@@ -1,5 +1,5 @@
 import { piCompletionTool } from "./presentation.ts";
-import { formatCost, teamGlance } from "./status.ts";
+import { archiveView, formatCost, teamGlance } from "./status.ts";
 import { execFile } from "node:child_process";
 import { DirPicker } from "./dir-picker.ts";
 import { agentNameError, suggestedAgentName } from "./agent-name.ts";
@@ -25,6 +25,21 @@ export class AgentsApp implements Component, Focusable {
   private doubleEscapeAction: "tree" | "fork" | "none";
   private source: HostSource; private tui: TuiAltScreen; private theme: Theme;
   private life = new AbortController(); private agents: AgentSummary[] = [];
+  /** The host's full roster; `agents` is the active or archived view of it (tab toggles). */
+  private allAgents: AgentSummary[] = []; private showArchived = false; private archivedCount = 0;
+  /** The active view's selection, restored when leaving the archived view. */
+  private activeSelected = 0;
+  private setRoster(rows: AgentSummary[]) {
+    this.allAgents = rows;
+    ({ agents: this.agents, archivedCount: this.archivedCount } = archiveView(rows, this.showArchived));
+    if (!this.archivedCount && this.showArchived) this.toggleArchived();
+  }
+  private toggleArchived() {
+    if (!this.showArchived) this.activeSelected = this.selected;
+    this.showArchived = !this.showArchived;
+    this.selected = this.showArchived ? 0 : this.activeSelected;
+    this.agents = archiveView(this.allAgents, this.showArchived).agents;
+  }
   private stack: string[] = [];
   private branches = new Map<string, string>();
   private loadBranch(cwd?: string) {
@@ -42,7 +57,7 @@ export class AgentsApp implements Component, Focusable {
   private form?: { step: number; name: string; cwd: string; nameEdited?: boolean; model?: WorkerModel; choices: ModelChoice[]; error?: string; creating?: boolean; loading?: boolean; folderRequest?: number };
   private picker?: SelectList;
   private dirPicker?: DirPicker;
-  private confirming?: { agent: AgentSummary; remove?: boolean };
+  private confirming?: AgentSummary;
   private ticker?: ReturnType<typeof setInterval>;
   private expiry?: ReturnType<typeof setTimeout>;
   private frame = 0;
@@ -86,7 +101,7 @@ export class AgentsApp implements Component, Focusable {
         await this.source.roster(this.life.signal, rows => {
           // Rows reorder by recency: keep the selection on the same agent.
           const selectedId = this.selectable()[this.selected]?.id;
-          this.agents = rows;
+          this.setRoster(rows);
           for (const { agent } of this.rows()) this.loadBranch(agent.cwd);
           const index = this.selectable().findIndex(agent => agent.id === selectedId);
           if (index >= 0) this.selected = index;
@@ -176,7 +191,7 @@ export class AgentsApp implements Component, Focusable {
           const rows = await this.source.list();
           const created = rows.find(row => row.id === id);
           if (!created) throw new Error("Fork created but not in the roster yet; open it from the list");
-          this.agents = rows; this.stack = []; this.open(created);
+          this.setRoster(rows); this.stack = []; this.open(created);
           if (draft) this.view?.setDraft(draft);
         },
       } : {}),
@@ -317,12 +332,13 @@ export class AgentsApp implements Component, Focusable {
     const rows = this.dashboard(); const selectable = rows.filter(row => row.agent);
     this.selected = Math.max(0, Math.min(this.selected, selectable.length - 1));
     const height = this.tui.terminal.rows;
-    const hints = width >= 75 ? ["↑↓ select · enter/→ open · n new · r rename · x disable · d remove · q quit"]
-      : ["↑↓ select · enter/→ open · n new", "r rename · x disable · d remove · q quit"];
+    const keys = this.showArchived ? ["↑↓ select · enter/→ open", "u unarchive · d delete · tab active · q quit"]
+      : ["↑↓ select · enter/→ open · n new", `r rename · a archive${this.archivedCount ? " · tab archived" : ""} · q quit`];
+    const hints = width >= 75 ? [keys.join(" · ")] : keys;
     const capacity = Math.max(1, height - 4 - hints.length);
     const at = rows.indexOf(selectable[this.selected]!);
     const start = Math.max(0, at - capacity + 1);
-    const lines = [this.theme.fg("accent", this.theme.bold("pi-agents")), ""];
+    const lines = [this.theme.fg("accent", this.theme.bold("pi-agents")) + (this.showArchived ? this.theme.fg("dim", " · archived") : ""), ""];
     const nameWidth = Math.min(24, Math.max(6, ...selectable.map(({ agent, tree }) => tree.length + agent!.name.length)));
     for (const [index, { agent, tree, summary }] of rows.slice(start, start + capacity).entries()) {
       lines.push(agent ? statusRow(agent, width, index + start === at, Date.now(), this.theme, nameWidth - visibleWidth(tree), this.frame, undefined, 60, tree)
@@ -332,7 +348,7 @@ export class AgentsApp implements Component, Focusable {
     const all = this.rows();
     const total = formatCost(all.reduce((sum, row) => sum + (row.agent.cost ?? 0), 0));
     const running = this.agents.filter(a => a.running).length;
-    const summary = `${running} running · ${this.agents.length - running} idle · total ${total || "$0.000"}${all.some(row => row.agent.subscription) ? " (sub)" : ""}`;
+    const summary = this.showArchived ? `${this.agents.length} archived` : `${running} running · ${this.agents.length - running} idle${this.archivedCount ? ` · ${this.archivedCount} archived` : ""} · total ${total || "$0.000"}${all.some(row => row.agent.subscription) ? " (sub)" : ""}`;
     lines.push(this.theme.fg("dim", summary), this.note, ...hints);
     return lines.map(line => truncateToWidth(line, width));
   }
@@ -345,7 +361,7 @@ export class AgentsApp implements Component, Focusable {
         ...(form.step === 1 ? this.dirPicker!.render(width) : form.step === 0 || form.step === 2 ? this.editor.render(width) : []),
         ...(this.picker?.render(width) ?? []), form.creating ? "Creating…" : form.loading ? "Loading settings…" : "", form.error ? this.theme.fg("error", form.error) : ""].map(line => truncateToWidth(line, width));
     }
-    if (this.confirming) return [this.confirming.remove ? `Remove ${this.confirming.agent.name}${this.confirming.agent.children.length ? ` and ${this.confirming.agent.children.length} sub-agent${this.confirming.agent.children.length === 1 ? "" : "s"}` : ""}? y/n` : `Disable ${this.confirming.agent.name}? y / n`].map(line => truncateToWidth(line, width));
+    if (this.confirming) { const { name, children } = this.confirming; return [`Delete ${name}${children.length ? ` and ${children.length} sub-agent${children.length === 1 ? "" : "s"}` : ""}? This can't be undone. y/n`].map(line => truncateToWidth(line, width)); }
     return this.view ? this.view.render(width).map(line => truncateToWidth(line, width)) : this.list(width);
   }
   handleInput(data: string) {
@@ -364,7 +380,7 @@ export class AgentsApp implements Component, Focusable {
       } else if (this.picker && (this.form.step === 3 || this.form.step === 4 || matchesKey(data, Key.up) || matchesKey(data, Key.down) || matchesKey(data, Key.enter))) this.picker.handleInput(data);
       else this.editor.handleInput(data);
     }
-    else if (this.confirming) { const target = this.confirming; this.confirming = undefined; if (data === "y") void (target.remove ? this.source.remove(target.agent.id) : this.source.disable(target.agent.id)).catch(error => this.fail(error)); }
+    else if (this.confirming) { const target = this.confirming; this.confirming = undefined; if (data === "y") void this.source.remove(target.id).catch(error => this.fail(error)); }
     else if (this.view) this.view.handleInput(data);
     else if (matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
     else if (matchesKey(data, Key.down)) this.selected = Math.min(this.selectable().length - 1, this.selected + 1);
@@ -374,11 +390,14 @@ export class AgentsApp implements Component, Focusable {
       if (agent) { this.renaming = { agent }; this.editor.setText(agent.name); }
     }
     else if (data === "q") { this.dispose(); this.tui.stop(); this.exit(); return; }
-    else if (data === "x" || data === "d") {
-      const agent = this.selectable()[this.selected];
-      if (agent) this.confirming = { agent, remove: data === "d" };
+    else if (matchesKey(data, Key.tab) && (this.showArchived || this.archivedCount)) {
+      this.toggleArchived();
     }
-    else if (data === "n") {
+    // Archive is undoable, so it needs no confirmation; delete is only offered for archived agents.
+    else if (data === "a" && !this.showArchived) { const agent = this.selectable()[this.selected]; if (agent) void this.source.archive(agent.id).catch(error => this.fail(error)); }
+    else if (data === "u" && this.showArchived) { const agent = this.selectable()[this.selected]; if (agent) void this.source.unarchive(agent.id).catch(error => this.fail(error)); }
+    else if (data === "d" && this.showArchived) { const agent = this.selectable()[this.selected]; if (agent) this.confirming = agent; }
+    else if (data === "n" && !this.showArchived) {
       this.form = { step: 4, name: suggestedAgentName(this.launchCwd, this.agents.map(agent => agent.name)), cwd: this.launchCwd, choices: [] };
       this.note = ""; this.formStep(4); void this.loadReview(this.launchCwd);
     }

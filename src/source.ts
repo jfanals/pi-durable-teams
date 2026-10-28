@@ -24,7 +24,8 @@ export interface HostSource {
   watch(target: string, signal: AbortSignal, receive: (frame: unknown) => void | Promise<void>): Promise<void>;
   send(target: string, message: string, mode?: Mode, options?: RequestOptions): Promise<MutationResult>;
   stop(target: string, options?: RequestOptions): Promise<MutationResult>;
-  disable(target: string, options?: RequestOptions): Promise<MutationResult>;
+  archive(target: string, options?: RequestOptions): Promise<MutationResult>;
+  unarchive(target: string, options?: RequestOptions): Promise<MutationResult>;
   remove(target: string, options?: RequestOptions): Promise<MutationResult>;
   newAgent(agent: { name: string; cwd: string; model?: ModelRef; thinking?: ModelThinkingLevel }, options?: RequestOptions): Promise<MutationResult>;
   rename(target: string, name: string, options?: RequestOptions): Promise<MutationResult>;
@@ -61,7 +62,8 @@ export class SocketHostSource implements HostSource {
   }
   send(target: string, message: string, mode: Mode = "followUp", options?: RequestOptions) { return this.mutate("send", { target, message, mode, images: options?.images }, options); }
   stop(target: string, options?: RequestOptions) { return this.mutate("stop", { target }, options); }
-  disable(target: string, options?: RequestOptions) { return this.mutate("disable", { target }, options); }
+  archive(target: string, options?: RequestOptions) { return this.mutate("archive", { target }, options); }
+  unarchive(target: string, options?: RequestOptions) { return this.mutate("unarchive", { target }, options); }
   newAgent(agent: { name: string; cwd: string; model?: ModelRef; thinking?: ModelThinkingLevel }, options?: RequestOptions) { return this.mutate("new", agent, options); }
   remove(target: string, options?: RequestOptions) { return this.mutate("remove", { target }, options); }
   rename(target: string, name: string, options?: RequestOptions) { return this.mutate("rename", { target, name }, options); }

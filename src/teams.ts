@@ -26,6 +26,8 @@ export type MainRegistration = {
 };
 export type Agent = {
   id: string; name: string; parent?: string; enabled: boolean; removed?: boolean; paused?: boolean; cwd: string;
+  /** Human-only: stopped and out of default lists until unarchived; its sub-agents are archived with it. */
+  archived?: boolean;
   /** Last creation, registration or publication (ms); the list orders by recency with run times. */
   activeAt?: number;
   /** Retained conversation branches, newest first; identity is independent of the current conversation. */
@@ -370,8 +372,9 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     if ((!own || own.removed) && actor.id !== human.id) throw new Error("Unknown agent");
     if (args.action === "list") {
       return Object.values(state.agents).filter(agent => reach(state.agents, actor, "inspect", agent)
+        && (args.archived || !agent.archived)
         && (args.scope === "mains" ? !agent.parent : actor.id === human.id || agent.id === actor.id || Boolean(agent.parent) || agent.id === own?.parent))
-        .map(agent => ({ ...actorOf(agent), hosted: agent.where.kind === "hosted", enabled: agent.enabled, paused: agent.paused }));
+        .map(agent => ({ ...actorOf(agent), hosted: agent.where.kind === "hosted", enabled: agent.enabled, paused: agent.paused, ...(agent.archived ? { archived: true } : {}) }));
     }
     if ((args.action === "model" || args.action === "rename" || args.action === "newAgent") && !reach(state.agents, actor, args.action)) {
       throw new Error("Only the human can create top-level agents, rename agents or change models");
@@ -493,7 +496,8 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       if (!active(doc, actor.id)) throw new Error("Agent/team stopped or paused");
       let recipient = target;
       if (creating) {
-        if (Object.values(doc.agents).some(agent => !agent.removed && agent.where.kind === "hosted" && agent.parent === parent && agent.name === args.name)) throw new Error("Name already exists; reuse the agent or choose a distinct name");
+        const taken = Object.values(doc.agents).find(agent => !agent.removed && agent.where.kind === "hosted" && agent.parent === parent && agent.name === args.name);
+        if (taken) throw new Error(taken.archived ? "Name belongs to an archived agent; choose a distinct name" : "Name already exists; reuse the agent or choose a distinct name");
         const anchor = await tx.createTask(Anchor, null, { ownership: { kind: "conversation" }, background: true });
         const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
         recipient = { id: String(child.id), name: args.name!, ...(parent ? { parent } : {}), cwd: cwd!, enabled: true, activeAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
@@ -501,6 +505,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         await configure(tx, child.id, prepared!);
         doc.agents[recipient.id] = recipient;
       }
+      if (recipient?.archived) throw new Error("Agent archived; the human must unarchive it first");
       if (!recipient || !active(doc, recipient.id)) throw new Error("Agent stopped; start a new named agent");
       if (args.action === "newAgent") return doc.requests[requestKey] = { id: recipient.id };
       if (recipient.where.kind === "external") {
@@ -599,7 +604,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
           if (cached?.key === key && agent.where.kind === "hosted"
             && ![agent.where.conversationId, ...(agent.branches ?? [])].some(id => conversations.has(id))) return;
           const details = await inspectHosted(agent);
-          statusRows.set(agent.id, { key, row: { hosted: true, ...liveStatus(details), children: [] } });
+          statusRows.set(agent.id, { key, row: { hosted: true, ...liveStatus(details), ...(agent.archived ? { archived: true } : {}), children: [] } });
         }));
         // Build new tree objects: push and stream consumers may still hold the previous roster.
         const rows = agents.map(agent => ({ ...statusRows.get(agent.id)!.row, children: [] as AgentSummary[] }));
@@ -636,6 +641,30 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   });
   return {
     harness, action,
+    /** Human-only: stop the agent and its sub-agents and set them aside; `unarchive` brings them back idle. */
+    async archive(target: string, requestId: string) {
+      if (!requestId) throw new Error("A stable request ID is required");
+      const state = await read();
+      const agent = state.agents[target] ?? resolveTarget(state, human, target);
+      if (agent.where.kind !== "hosted") throw new Error("Only hosted agents can be archived");
+      if (agent.archived) return { archived: [] };
+      const { stopped } = await action(human, { action: "stop", target: agent.id }, `archive:${requestId}`) as { stopped: string[] };
+      await harness.commit(async tx => { const doc = await tx.doc(Teams); for (const id of stopped) doc.agents[id]!.archived = true; }, context);
+      notify();
+      return { archived: stopped };
+    },
+    async unarchive(target: string) {
+      const state = await read();
+      const agent = state.agents[target] ?? resolveTarget(state, human, target);
+      if (agent.parent && state.agents[agent.parent]?.archived) throw new Error("Unarchive its main agent instead");
+      const ids = [agent.id, ...Object.values(state.agents).filter(child => child.parent === agent.id && !child.removed).map(child => child.id)];
+      await harness.commit(async tx => {
+        const doc = await tx.doc(Teams);
+        for (const id of ids) { const stored = doc.agents[id]!; if (stored.archived) { delete stored.archived; stored.enabled = true; } }
+      }, context);
+      notify();
+      return { unarchived: ids };
+    },
     /** Human-only removal: retain conversations, but retire the registry subtree. */
     async remove(target: string, requestId: string) {
       if (!requestId) throw new Error("A stable request ID is required");

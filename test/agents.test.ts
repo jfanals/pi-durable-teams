@@ -397,3 +397,21 @@ test("a message sent during a manual /compact waits for the summary, shows as qu
     assert.ok(kinds.indexOf("compaction") >= 0 && kinds.indexOf("compaction") < kinds.findIndex(k => String(k).includes("After compaction")), JSON.stringify(kinds));
   } finally { release(); await service.close(); }
 });
+
+test("archived agents leave agents' default lists, refuse messages, and come back on unarchive", async () => {
+  const service = await openTeams(new MemoryStorage(), { models: fixture().models, agentModel: async () => model });
+  try {
+    const { id } = await service.action(human, { action: "newAgent", name: "lead", cwd: process.cwd() }, "lead") as { id: string };
+    const lead = (await roster(service)).find(agent => agent.id === id)!;
+    const { id: other } = await service.action(human, { action: "newAgent", name: "shelved", cwd: process.cwd() }, "shelved") as { id: string };
+    assert.deepEqual(await service.archive(other, "a1"), { archived: [other] });
+    const mains = async (archived?: boolean) => (await service.action(lead, { action: "list", scope: "mains", ...(archived ? { archived } : {}) }, "") as Actor[]).map(agent => agent.id);
+    assert.deepEqual(await mains(), [id], "hidden by default");
+    assert.deepEqual((await mains(true)).sort(), [id, other].sort(), "archived: true shows them");
+    await assert.rejects(service.action(lead, { action: "send", target: other, message: "hi" }, "s1"), /archived; the human must unarchive/);
+    await assert.rejects(service.action(human, { action: "newAgent", name: "shelved", cwd: process.cwd() }, "dup"), /archived agent/);
+    await service.unarchive(other);
+    assert.deepEqual((await mains()).sort(), [id, other].sort());
+    assert.ok(await service.action(lead, { action: "send", target: other, message: "hi again" }, "s2"));
+  } finally { await service.close(); }
+});

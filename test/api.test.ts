@@ -128,8 +128,13 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
     await until(() => roster[0]?.running === true);
     assert.deepEqual((await source.stop(target)).aborted, [target]);
     assert.equal((await source.list())[0]!.enabled, true);
-    await source.disable(target);
-    await until(() => roster[0]?.enabled === false && roster[0]?.children[0]?.enabled === false);
+    // Archive stops the agent and its team and hides them from agents' lists; unarchive brings them back idle.
+    const childId = roster[0]!.children[0]!.id;
+    assert.deepEqual(((await source.archive(target)) as { archived: string[] }).archived.sort(), [target, childId].sort());
+    await until(() => roster[0]?.archived === true && roster[0]?.enabled === false && roster[0]?.children[0]?.archived === true);
+    await assert.rejects(source.send(target, "while archived"), /archived; the human must unarchive/);
+    await source.unarchive(target);
+    await until(() => !roster[0]?.archived && roster[0]?.enabled === true && !roster[0]?.children[0]?.archived);
     await client.call("register", { ...identity, name: "Pi main", cwd: directory, model });
     await client.call("publish", { ...identity, latest: "Published observation" });
     observe(client.stream("events", identity, life.signal, () => {}));

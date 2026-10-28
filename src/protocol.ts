@@ -8,6 +8,7 @@ export const ActionSchema = Type.Object({
   message: Type.Optional(Type.String()),
   mode: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("followUp")])),
   scope: Type.Optional(Type.Union([Type.Literal("team"), Type.Literal("mains")])),
+  archived: Type.Optional(Type.Boolean({ description: "list: include agents the human archived (hidden by default)" })),
   cwd: Type.Optional(Type.String()),
   request: Type.Optional(Type.String({ description: "inspect: your request ID returned by spawn/send" })),
   timeoutSeconds: Type.Optional(Type.Number({ minimum: 0, maximum: 86400, description: "spawn/send: seconds you expect the work to take, like a bash timeout. No report by then: one reminder to inspect, nudge or stop the agent; an earlier report cancels it. Set your estimate (default 1800, 0 = never)" })),
@@ -32,5 +33,5 @@ export const IDENTITY_TYPE = "durable-team-identity";
 export const SENT_TYPE = "durable-team-sent";
 
 export type AgentSummary = WorkerStatus & {
-  hosted: boolean; latest?: string; children: AgentSummary[];
+  hosted: boolean; latest?: string; archived?: boolean; children: AgentSummary[];
 };

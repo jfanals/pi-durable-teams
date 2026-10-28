@@ -46,7 +46,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     const list = await wait("beta"); assert.match(list, /alpha/); print?.("list", list);
     assert.ok(list.indexOf("beta") < list.indexOf("alpha"), "most recent agent first");
     assert.match(list, /0 running · 2 idle · total \$/);
-    assert.match(list, /r rename.*x disable.*q quit/);
+    assert.match(list, /r rename · a archive · q quit/);
     await key("\x1b[B"); await key("\r"); await wait(`alpha · ${alphaId}`); // alpha is second: beta is newer.
     // Pi's slash list, Tab insertion, Escape dismissal, and cwd-relative @ paths.
     await key("/cl"); await wait("Clone this conversation");
@@ -209,8 +209,12 @@ export async function appScenario(width: number, height: number, print?: (name: 
     const quick = (await source.list()).find(agent => agent.name === basename(directory));
     assert.ok(quick); assert.equal(quick.cwd, await realpath(directory));
     assert.equal(quick.model, "faux-1"); assert.equal(quick.thinking, "medium");
-    await key("\x1b[D"); await wait("n new"); await source.remove(quick.id);
-    await until(async () => (await source.list()).length === 3);
+    // Archive sets the agent aside; tab shows the archived view, where d deletes it (with y).
+    await key("\x1b[D"); await wait("n new"); await source.archive(quick.id);
+    await wait("1 archived"); await key("\t"); const shelf = await wait("u unarchive"); print?.("archived view", shelf);
+    assert.match(shelf, new RegExp(basename(directory))); assert.doesNotMatch(shelf, /beta/);
+    await key("d"); await wait("can't be undone"); await key("y");
+    await until(async () => (await source.list()).length === 3); await wait("a archive");
     // The short path uses the suggested name and displayed configured defaults.
     await key("n"); await wait("Review ·");
     await key("\x1b[B"); await key("\x1b[B"); await key("\r");
@@ -278,17 +282,24 @@ export async function appScenario(width: number, height: number, print?: (name: 
     assert.doesNotMatch(childChat, /pi-agents|↓ to select|team \$/); print?.("sub-agent chat", childChat);
     await key("\x1b[D"); const parentChat = await wait("enter/→ open"); assert.match(parentChat, /renamed/); print?.("back to parent panel", parentChat);
     await key("\x1b[D"); await wait("n new");
-    await key("x"); await wait("Disable"); await key("y");
-    for (let i = 0; i < 100 && (await alpha())?.enabled; i++) await delay(10);
-    assert.equal((await alpha())?.enabled, false);
-    await key("d"); await wait("Remove renamed and 1 sub-agent? y/n"); await key("n");
+    // a archives the agent with its team (stopped, no confirmation); u in the archived view brings them back.
+    await key("a"); await wait("1 archived");
+    assert.equal((await alpha())?.archived, true); assert.equal((await alpha())?.enabled, false);
+    await key("\t"); const archivedView = await wait("u unarchive"); assert.match(archivedView, /renamed/); assert.doesNotMatch(archivedView, /beta/);
+    await key("u"); await wait("a archive");
+    await until(async () => (await alpha())?.enabled === true && !(await alpha())?.archived);
+    // d deletes, only from the archived view, after y.
+    await key("a"); await wait("1 archived"); await key("\t"); await wait("u unarchive");
+    await key("d"); await wait("Delete renamed and 1 sub-agent? This can't be undone. y/n"); await key("n");
     assert.ok(await alpha());
-    await key("d"); await wait("Remove renamed"); await key("y");
+    await key("d"); await wait("Delete renamed"); await key("y");
     await until(async () => !(await alpha()));
     assert.ok(!(await source.list()).some(agent => agent.id === readerId));
     // Ctrl+C is global, including the editor and modal confirmation screens. As in Pi, one press clears the prompt and
     // a second within 500 ms exits. Legacy \x03 and Kitty keyboard protocol ctrl+c (Ghostty, cmux) both count, and
     // Kitty's key-release report after a press is not a second press; q on the list exits at once.
+    const betaId = (await source.list()).find(agent => agent.name === "beta")!.id;
+    await source.archive(betaId); // the confirm screen is delete, offered in the archived view
     for (const [screen, exitKey] of [["list", "\x03"], ["chat", "\x03"], ["form", "\x03"], ["confirm", "\x03"], ["list", "\x1b[99;5u"], ["chat", "\x1b[99;5u"], ["list", "q"]] as const) {
       const term = new VirtualTerminal(width, height); const screenTui = new TuiAltScreen(term);
       let didExit = false;
@@ -296,7 +307,8 @@ export async function appScenario(width: number, height: number, print?: (name: 
       try {
         screenTui.addChild(screenApp); screenTui.setFocus(screenApp); screenTui.start();
         await delay(100);
-        if (screen !== "list") term.sendInput(screen === "chat" ? "\r" : screen === "form" ? "n" : "x");
+        if (screen === "confirm") { term.sendInput("\t"); await delay(50); }
+        if (screen !== "list") term.sendInput(screen === "chat" ? "\r" : screen === "form" ? "n" : "d");
         await delay(50);
         if (screen === "chat") { term.sendInput("draft"); await delay(20); }
         term.sendInput(exitKey); await delay(20);

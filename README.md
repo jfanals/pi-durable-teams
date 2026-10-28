@@ -17,7 +17,8 @@ is the only human-route authentication: any process running as the user (includi
   `liveStatus` fields (`contextWindow` is the model window). External Pi sessions
   expose only known identity, cwd, enabled, connection and latest publication data.
 - `POST /agents/new`, `/agents/send`, `/agents/model`: create, message, change model.
-- `POST /agents/stop`: abort the current run; `/agents/disable`: disable the subtree.
+- `POST /agents/stop`: abort the current run.
+- `POST /agents/archive` `{target, requestId}`: stop the agent and its sub-agents and set them aside; `/agents/unarchive` `{target}`: bring them back idle; `/agents/remove`: delete (see below).
 - `POST /agents/tree`: `{target}` reads the session tree; `{target, entryId, requestId}` navigates it while idle with an empty inbox.
 - `POST /agents/page`: `{target, cursor?}` transcript page; external sessions have no transcript.
 - `POST /agents/images`: `{target, entryId}` loads an entry’s images on demand; pages contain only image MIME types.
@@ -318,7 +319,8 @@ class (upstream export request). A single checked compatibility import loads the
 theme; the app uses public TUI keybindings, so your `keybindings.json` is not
 loaded yet.
 
-- List: **↑↓** select, **Enter/→** open, **n** create, **r** rename, **d** remove (confirm with **y**), **q** quit, **x** disable (confirm with **y**).
+- List: **↑↓** select, **Enter/→** open, **n** create, **r** rename, **a** archive, **Tab** archived view, **q** quit.
+  Archived view: **u** unarchive, **d** delete (confirm with **y**), **Tab** back.
 - New agent: review the launch directory, suggested name and visible model/thinking
   defaults, then choose **Create agent**. Change any setting from review.
   The first chat message is the task.
@@ -343,10 +345,12 @@ loaded yet.
   identity; it does not undo files or tool side effects. Branch summaries are not supported.
 - **Ctrl+C** exits.
 
-Remove is human-only (terminal **d**, web **⋮ → Remove**): it stops the agent and
-its subtree and hides them everywhere, including agents’ `team` tool. History is
-kept and names are reusable. External Pi sessions cannot be removed. Human
-interfaces show durable agents only, with no toggle.
+Archive, unarchive and delete are human-only (terminal **a**/**u**/**d**, web **⋮** menu and the
+**Archived** toggle). Archiving stops the agent and its sub-agents and hides them from agents'
+`team list` unless it passes `archived: true`; messages to them fail until unarchived, which
+brings them back idle. Delete is offered only for archived agents: it hides them everywhere for
+good. History is kept and a deleted agent's name is reusable. External Pi sessions cannot be archived
+or deleted. Human interfaces show durable agents only.
 
 Preview without touching the live host: `npm run screen -- small` (`narrow` or `wide`
 also work). These scenarios use a temporary host and faux model, as do `test/app.test.ts`.

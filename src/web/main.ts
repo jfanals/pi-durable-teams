@@ -3,7 +3,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
 import { escape as e, info, footerInfo, transcript } from "./render.ts";
-import { formatCost, formatDuration, statusWord, teamGlance } from "../status.ts";
+import { archiveView, formatCost, formatDuration, statusWord, teamGlance } from "../status.ts";
 import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
 import { agentNameError, suggestedAgentName } from "../agent-name.ts";
 import type { ChatItem } from "../chat.ts";
@@ -52,6 +52,8 @@ function base(content: string) {
 Host disconnected — reconnecting…</div>${content}<div id="notice" role="status"></div><div id="error" role="alert"></div>`;
 }
 let expiry: ReturnType<typeof setTimeout> | undefined;
+/** The list shows active agents or, toggled, archived ones; `agents` stays the host's full roster. */
+let showArchived = false;
 function list() {
   clearTimeout(expiry);
   const now = Date.now();
@@ -76,7 +78,10 @@ function list() {
 </div>
 <small data-time="${e(a.id)}">${e(info(a))}</small>
 </button>${child ? "" : team(a)}`;
-  const running = agents.filter((a) => a.running).length;
+  const view = archiveView(agents, showArchived);
+  if (!view.archivedCount) showArchived = false;
+  const shown = showArchived ? view.agents : archiveView(agents, false).agents;
+  const running = shown.filter((a) => a.running).length;
   const totalCost = formatCost(all().reduce((n, a) => n + (a.cost ?? 0), 0)) || "$0.000";
   const subscription = all().some((a) => a.subscription) ? " (sub)" : "";
   base(
@@ -85,9 +90,10 @@ function list() {
 <section class="notification-setting">
 <label><input type="checkbox" id="notify" ${notifications.enabled ? "checked" : ""} ${notifications.busy || !notifications.supported ? "disabled" : ""}> Notify when agents finish</label>
 <small role="status">${e(notifications.note)}</small></section>
-<main class="list">${agents.map((a) => row(a)).join("") || '<p class="notice">No agents yet. Tap + to create one.</p>'}</main>
+<main class="list">${shown.map((a) => row(a)).join("") || '<p class="notice">No agents yet. Tap + to create one.</p>'}</main>
 <footer>
-<small>${running} running · ${agents.length - running} idle · total ${totalCost}${subscription}</small>
+<small>${showArchived ? `${shown.length} archived` : `${running} running · ${shown.length - running} idle · total ${totalCost}${subscription}`}</small>
+${view.archivedCount ? button(showArchived ? "Active agents" : `Archived (${view.archivedCount})`, "archived") : ""}
 </footer>`,
   );
   document.querySelector(".list")!.scrollTop = scroll;
@@ -110,7 +116,7 @@ function status(clockOnly = false) {
     : "");
   if (clockOnly) return;
   (document.querySelector("#stop") as HTMLButtonElement).hidden = !a.running;
-  document.querySelector("#children")!.innerHTML = a.children
+  document.querySelector("#children")!.innerHTML = a.children.filter((c) => a.archived || !c.archived)
     .map((c) => `<button data-open="${e(c.id)}">${c.running ? "◌ " : ""}${e(c.name)}</button>`)
     .join("");
 }
@@ -559,6 +565,10 @@ root.addEventListener("click", async (event) => {
       case "back":
         history.back();
         break;
+      case "archived":
+        showArchived = !showArchived;
+        list();
+        break;
       case "bottom": {
         const view = document.querySelector("#messages")!;
         view.scrollTop = view.scrollHeight;
@@ -604,8 +614,8 @@ root.addEventListener("click", async (event) => {
           a.name,
           `<button type="button" data-menu="rename">Rename</button>
 <button type="button" data-menu="model">Model & thinking</button>
-<button type="button" data-menu="disable">Disable agent</button>
-<button type="button" data-menu="remove">Remove</button>`,
+${a.archived ? `<button type="button" data-menu="unarchive">Unarchive</button>
+<button type="button" data-menu="remove">Delete</button>` : '<button type="button" data-menu="archive">Archive</button>'}`,
         );
         dialog.querySelectorAll<HTMLElement>("[data-menu]").forEach(
           (item) =>
@@ -624,16 +634,16 @@ root.addEventListener("click", async (event) => {
                     },
                   );
                 if (item.dataset.menu === "model") await pickModel(a);
-                if (item.dataset.menu === "remove" && confirm(`Remove ${a.name}${a.children.length ? ` and ${a.children.length} sub-agent${a.children.length === 1 ? "" : "s"}` : ""}?`)) {
-                  await mutate("/remove", { target: a.id });
+                if (item.dataset.menu === "unarchive") await mutate("/unarchive", { target: a.id });
+                // Archive is undoable, so it needs no confirmation; delete is only offered for archived agents.
+                if (item.dataset.menu === "archive" || item.dataset.menu === "remove" && confirm(`Delete ${a.name}${a.children.length ? ` and ${a.children.length} sub-agent${a.children.length === 1 ? "" : "s"}` : ""}? This can't be undone.`)) {
+                  await mutate(`/${item.dataset.menu}`, { target: a.id });
                   stack = [];
                   history.replaceState({ screen: "list", stack: [] }, "", "/");
                   watchLife.abort();
                   agents = await api<Agent[]>("");
                   list();
                 }
-                if (item.dataset.menu === "disable" && confirm(`Disable ${a.name}?`))
-                  await mutate("/disable", { target: a.id });
               } catch (error) {
                 fail(error);
               }

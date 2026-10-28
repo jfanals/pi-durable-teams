@@ -154,6 +154,13 @@ export async function startHost(directory: string, socket: string, options: Team
         schedule();
         return;
       }
+      if (pathname === "/agents/archive" || pathname === "/agents/unarchive") {
+        if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
+        if (typeof body.target !== "string" || !body.target) throw new Error("target is required");
+        if (pathname === "/agents/unarchive") return reply(res, 200, await service.unarchive(body.target));
+        if (typeof body.requestId !== "string" || !body.requestId) throw new Error("requestId is required");
+        return reply(res, 200, await service.archive(body.target, body.requestId));
+      }
       if (pathname === "/agents/remove") {
         if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
         if (typeof body.target !== "string" || !body.target) throw new Error("target is required");
@@ -220,7 +227,7 @@ export async function startHost(directory: string, socket: string, options: Team
         return reply(res, 200, await service.fork(body.target, body.requestId, body.before));
       }
       if (pathname.startsWith("/agents/") && pathname !== "/agents/watch") {
-        const verbs: Record<string, Action["action"]> = { new: "newAgent", send: "send", stop: "abort", disable: "stop", model: "model", rename: "rename", page: "inspect" };
+        const verbs: Record<string, Action["action"]> = { new: "newAgent", send: "send", stop: "abort", model: "model", rename: "rename", page: "inspect" };
         const route = pathname.slice("/agents/".length);
         const verb = verbs[route];
         if (!verb) return reply(res, 404, { error: "Unknown operation" });

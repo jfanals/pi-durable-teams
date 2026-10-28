@@ -106,6 +106,16 @@ export function teamGlance(workers: WorkerStatus[], now: number, limit = Infinit
   return { shown: shown.slice(0, limit), summary, ...(expires.length ? { expiresAt: Math.min(...expires) } : {}) };
 }
 
+/**
+ * The dashboard's two views, the same in the terminal and on the web: active agents, or archived ones.
+ * Archiving an agent archives its team, so the archived view lists each archived agent whose parent isn't.
+ */
+export function archiveView<T extends { archived?: boolean; children: T[] }>(roster: T[], archived: boolean) {
+  const shelf = (rows: T[]): T[] => rows.flatMap(row => row.archived ? [row] : shelf(row.children));
+  const active = roster.filter(row => !row.archived).map(row => ({ ...row, children: row.children.filter(child => !child.archived) }));
+  const archivedRows = shelf(roster);
+  return { agents: archived ? archivedRows : active, archivedCount: archivedRows.length };
+}
 
 export const textOf = (message: any): string => typeof message?.content === "string" ? message.content
   : (message?.content ?? []).flatMap((part: any) => part.type === "text" ? [part.text] : []).join("\n");
