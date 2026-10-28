@@ -259,6 +259,9 @@ summary {
   border-radius: 8px;
   margin: 8px 0;
 }
+.tool summary { cursor: pointer; }
+.tool-body { color: var(--fg); }
+.tool-body pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .stamp {
   margin-top: 12px;
 }

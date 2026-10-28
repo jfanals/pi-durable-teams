@@ -1,4 +1,4 @@
-import { chatItems } from "../src/chat.ts";
+import { chatItems, type ChatItem } from "../src/chat.ts";
 import { transcript } from "../src/web/render.ts";
 import { markdownForSelection } from "../src/copy.ts";
 import { liveStatus, type WorkerStatus } from "../src/status.ts";
@@ -14,7 +14,7 @@ import { getMarkdownTheme, initTheme, type Theme } from "@earendil-works/pi-codi
 import { Markdown, stripTerminalSequences, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import { openTeams } from "../src/teams.ts";
 import { loadToolRenderers } from "../src/presentation.ts";
-import { renderDelivery, renderTeamResult, renderTranscript, TeamPanel, WorkerView, type ViewResult } from "../src/ui.ts";
+import { renderDelivery, renderSent, renderTeamCall, renderTeamResult, renderTranscript, TeamPanel, WorkerView, type ViewResult } from "../src/ui.ts";
 
 initTheme("dark"); await loadToolRenderers();
 const theme = { fg: (_: string, t: string) => t, bg: (_: string, t: string) => t, bold: (t: string) => t } as unknown as Theme;
@@ -32,6 +32,28 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   assert.doesNotMatch(collapsed.join("\n"), /acknowledgement|request 9/);
   const expanded = plain(renderDelivery(message, { expanded: true, outputPad: 1 }, theme).render(60)).join("\n");
   assert.match(expanded, /finding 30/); assert.match(expanded, /request 9/);
+  // Incoming, sent and team prompts use the same excerpt and global expansion rule.
+  const sent = { target: "reader", mode: "followUp" as const, text: body };
+  for (const component of [renderSent(sent, false, theme), renderTeamCall({ action: "spawn", name: "reader", message: body, timeoutSeconds: 1800 }, theme, { expanded: false })]) {
+    const text = plain(component.render(60)).join("\n");
+    assert.match(text, /more lines · ctrl\+o to expand/);
+    assert.doesNotMatch(text, /finding 30/);
+  }
+  assert.match(plain(renderSent(sent, true, theme).render(60)).join("\n"), /finding 30/);
+  const call = plain(renderTeamCall({ action: "send", target: "reader", message: body, timeoutSeconds: 1800 }, theme, { expanded: true }).render(60)).join("\n");
+  assert.match(call, /remind 30m/); assert.match(call, /finding 30/);
+  assert.match(plain(renderTeamCall({ action: "wait", timeoutSeconds: 1800 }, theme).render(60)).join("\n"), /up to 30m/);
+  // Tool image bytes are requested by result entry ID only when Pi's image setting is enabled.
+  const imageItems: ChatItem[] = [
+    { id: "1", kind: "reply", parts: [{ type: "tool", id: "read-image", name: "read", subject: "image.png", args: { path: "image.png" } }] },
+    { id: "2", kind: "result", callId: "read-image", ok: true, content: [{ type: "image", mimeType: "image/png" }] },
+  ];
+  const requested: string[] = [];
+  const images = (id: string) => { requested.push(id); return undefined; };
+  renderTranscript(imageItems, "reader", 60, theme, { showImages: false, images });
+  assert.deepEqual(requested, []);
+  renderTranscript(imageItems, "reader", 60, theme, { showImages: true, images });
+  assert.deepEqual(requested, ["2"]);
   // A left click toggles the card in place, like Pi's built-in blocks.
   const card = renderDelivery(message, { expanded: false, outputPad: 1 }, theme);
   const click = { type: "click", button: "left", x: 2, y: 1, screenX: 2, screenY: 1, width: 60, height: 10, shift: false, alt: false, ctrl: false } as const;
@@ -122,6 +144,7 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     const life = new AbortController();
     cleanup(() => life.abort()); // stops the view's clock even when an assertion fails
     const view = new WorkerView(tui, theme, "reader", {
+      images: async () => [],
       page: async () => ({ items: chatItems(entries) }),
       status: async () => ({ id: "1", name: "reader", enabled: true, running: true, since: Date.now() - 75_000, cost: 0.31,
         model: "opus-5-5", thinking: "medium", context: 50_000, contextWindow: 200_000, cwd: "/srv/app" }),

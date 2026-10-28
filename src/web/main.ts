@@ -164,7 +164,7 @@ function drawChat(older = false) {
   const height = view.scrollHeight;
   const top = view.scrollTop;
   const expanded = [...view.querySelectorAll<HTMLDetailsElement>("details[open]")].map(
-    (el) => el.dataset.compaction,
+    (el) => el.dataset.card,
   );
   document.querySelector("#history")!.innerHTML =
     `${next ? button("Load older", "older") : ""}${transcript(items) || '<p class="notice">Send a message to get started.</p>'}`;
@@ -188,7 +188,7 @@ function drawChat(older = false) {
     }).catch(() => { imageCache.delete(key); });
   });
   view.querySelectorAll<HTMLDetailsElement>("details").forEach((el) => {
-    el.open = expanded.includes(el.dataset.compaction);
+    el.open = expanded.includes(el.dataset.card);
   });
   if (older) view.scrollTop = top + view.scrollHeight - height;
   else if (bottom) view.scrollTop = view.scrollHeight;
@@ -209,7 +209,7 @@ async function refresh() {
       if (version !== generation || screen !== "chat") continue;
       // Pi's pending-message lines: messages waiting for the agent's next boundary.
       const queued = document.querySelector("#queued");
-      if (queued) queued.innerHTML = (page.queued ?? []).map((q) => `<p>${q.mode === "steer" ? "Steering" : "Follow-up"}: ${e(q.text)}</p>`).join("");
+      if (queued) queued.innerHTML = (page.queued ?? []).map((q) => `<p>${q.mode === "steer" ? "Steering" : "Follow-up"}: ${e(q.text)}</p>`).join("") + (page.queued?.length ? button("Edit queued", "dequeue", 'type="button"') : "");
       if (page.conversationId !== conversationId) { items = []; next = page.next; conversationId = page.conversationId; }
       const overlaps = page.items.some((item) => items.some((old) => old.id === item.id));
       if (!overlaps) {
@@ -543,6 +543,20 @@ root.addEventListener("click", async (event) => {
         const view = document.querySelector("#messages")!;
         view.scrollTop = view.scrollHeight;
         el.hidden = true;
+        break;
+      }
+      case "dequeue": {
+        const target = stack.at(-1)!;
+        const version = generation;
+        (el as HTMLButtonElement).disabled = true;
+        try {
+          const { texts } = await api<{ texts: string[] }>("/dequeue", { target });
+          if (version !== generation || screen !== "chat") break;
+          const input = document.querySelector<HTMLTextAreaElement>("#message")!;
+          input.value = [...texts, input.value].filter(Boolean).join("\n\n");
+          input.focus();
+          await refresh();
+        } finally { (el as HTMLButtonElement).disabled = false; }
         break;
       }
       case "model":

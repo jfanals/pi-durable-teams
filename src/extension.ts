@@ -190,7 +190,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
   pi.registerEntryRenderer(SENT_TYPE, (entry, { expanded }, theme) => renderSent(entry.data as any, expanded, theme));
   pi.registerTool({
     name: TOOL_NAME, label: "Durable team", description: TOOL_DESCRIPTION, parameters: ActionSchema,
-    renderCall: (args, theme) => renderTeamCall(args, theme),
+    renderCall: (args, theme, context) => renderTeamCall(args, theme, context),
     renderResult: (result, options, theme, context) => renderTeamResult(result, options, theme, context),
     async execute(toolCallId, args, signal, _onUpdate, ctx) {
       const current = active;
@@ -215,6 +215,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
   });
   async function openWorker(current: Current, ctx: ExtensionContext, worker: WorkerStatus): Promise<"back" | "close"> {
     const source = {
+      images: (entryId: string) => current.client.call<import("@earendil-works/pi-ai").ImageContent[]>("agents/images", { target: worker.id, entryId }),
       page: (cursor?: string) => current.client.call("page", { ...credentials(current), target: worker.id, cursor }),
       status: async () => liveStatus({ ...worker, ...await call(current, { action: "inspect", target: worker.id }) }),
       watch: (signal: AbortSignal, onFrame: () => void) => current.client.stream("watch", { ...credentials(current), target: worker.id }, signal, () => onFrame()),
