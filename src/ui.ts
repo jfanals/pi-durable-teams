@@ -159,6 +159,54 @@ export class TeamPanel implements Component, Focusable {
   dispose() { if (this.ticker) clearInterval(this.ticker); this.ticker = undefined; clearTimeout(this.expiry); }
 }
 
+/** Pane widths, the same breakpoints as the web app: under 80 columns only the active pane shows; from 140 the main agent's rail too. */
+export const RAIL_DASHBOARD_MIN = 80, RAIL_MAIN_MIN = 140;
+export const railWidth = (columns: number, share: number, min: number, max: number) => Math.max(min, Math.min(max, Math.round(columns * share)));
+
+/**
+ * A narrow, read-only column beside the open agent: the dashboard, or the main agent above an open sub-agent.
+ * The mouse reaches it, the keyboard never does: clicking the header collapses back to it, clicking a row opens
+ * that agent. It fills the screen's height so its right border runs the full column.
+ */
+export class Rail implements Component {
+  private rows: (WorkerStatus | "header" | undefined)[] = [];
+  private tui: TUI; private theme: Theme;
+  private width: (columns: number) => number;
+  private content: (frame: number) => { header: string; lines: { worker?: WorkerStatus; tree?: string; text?: string; open?: boolean }[] };
+  private frame: () => number; private onHeader: () => void; private onOpen: (worker: WorkerStatus) => void;
+  constructor(tui: TUI, theme: Theme, options: { width: (columns: number) => number; frame: () => number; onHeader: () => void; onOpen: (worker: WorkerStatus) => void;
+    content: (frame: number) => { header: string; lines: { worker?: WorkerStatus; tree?: string; text?: string; open?: boolean }[] } }) {
+    this.tui = tui; this.theme = theme; this.width = options.width; this.content = options.content;
+    this.frame = options.frame; this.onHeader = options.onHeader; this.onOpen = options.onOpen;
+  }
+  render(available: number): string[] {
+    const t = this.theme; const width = Math.min(available, this.width(this.tui.terminal.columns));
+    const inner = Math.max(1, width - 2);
+    const { header, lines } = this.content(this.frame());
+    const out: string[] = []; this.rows = [];
+    const push = (text: string, row?: WorkerStatus | "header") => {
+      const cut = truncateToWidth(text, inner, "…");
+      out.push(`${cut}${" ".repeat(Math.max(0, inner - visibleWidth(cut)))} ${t.fg("borderMuted", "│")}`); this.rows.push(row);
+    };
+    push(header, "header"); push(t.fg("borderMuted", "─".repeat(inner)));
+    for (const { worker, tree = "", text, open } of lines) {
+      if (!worker) { push(t.fg("dim", `${tree}${text ?? ""}`)); continue; }
+      const mark = !worker.enabled ? t.fg("muted", "■") : worker.running ? t.fg("accent", SPINNER[this.frame() % SPINNER.length]!) : t.fg("muted", "○");
+      const name = clean(worker.name);
+      push(`${t.fg("dim", tree)}${mark} ${open ? t.fg("accent", t.bold(name)) : worker.running ? name : t.fg("muted", name)}`, worker);
+    }
+    while (out.length < this.tui.terminal.rows) push("");
+    return out;
+  }
+  handleMouse(event: TuiMouseEvent) {
+    if (event.type !== "click" || event.button !== "left") return undefined;
+    const row = this.rows[event.y];
+    if (row === "header") this.onHeader(); else if (row) this.onOpen(row); else return undefined;
+    return { handled: true };
+  }
+  invalidate() {}
+}
+
 /** Shows the first `max` rendered lines and how many are hidden. */
 class Clamp implements Component {
   private child: Component; private max: number; private hint: (hidden: number) => string;
@@ -618,7 +666,7 @@ export class ChatView implements Component, Focusable {
   private lastEscapeTime = 0;
   private inFlight = 0;
   readonly layout: VStack;
-  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }, branch: () => string = () => "") {
+  constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }, branch: () => string = () => "", path: () => string = () => "") {
     this.actions = actions;
     this.tui = tui;
     this.transcript = new Transcript(tui, theme, name, source, parent, true);
@@ -643,7 +691,7 @@ export class ChatView implements Component, Focusable {
       const room = width - visibleWidth(right) - 2;
       const left = truncateToWidth(stats, right && room >= 24 ? room : width);
       const statsLine = right && room >= 24 ? left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right : left;
-      const hints = `${s?.name ?? name} · ${s?.id ?? "…"} · ← back · esc stop · ${keyText("app.message.followUp")} follow-up · ${keyText("app.tools.expand")} ${this.transcript.expanded ? "collapse" : "expand"} · ${keyText("app.thinking.toggle")} thinking`;
+      const hints = `${path() || s?.name || name} · ${s?.id ?? "…"} · ← back · esc stop · ${keyText("app.message.followUp")} follow-up · ${keyText("app.tools.expand")} ${this.transcript.expanded ? "collapse" : "expand"} · ${keyText("app.thinking.toggle")} thinking`;
       return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
     }, invalidate() {} };
     const working = { render: (width: number) => [...this.transcript.queuedLines(width), ...this.transcript.workingLine(width), ...(this.modelNote ? [truncateToWidth(theme.fg("muted", this.modelNote), width)] : [])], invalidate() {} };

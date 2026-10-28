@@ -70,11 +70,12 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("initial draft"); await key("\x07"); await wait("external draft");
     await key("\x15");
     await key("Hello"); await key("\r"); const chat = await wait("Hello from the faux agent."); print?.("chat", chat);
-    assert.doesNotMatch(chat, /pi-agents|beta/);
+    // From 80 columns the dashboard stays beside the chat as a narrow rail; below, only the chat shows and the footer names the path.
+    if (width >= 80) assert.match(chat, /^pi-agents +│/); else assert.doesNotMatch(chat, /beta/);
     assert.match(chat, /↑.*↓/);
     assert.match(chat, /faux-1/);
     assert.match(chat, /\(footer-test\) • alpha/);
-    assert.match(chat, new RegExp(`alpha · ${alphaId} · ← back`));
+    assert.match(chat, new RegExp(`${width >= 80 ? "" : "pi-agents › "}alpha · ${alphaId} · ← back`));
     assert.doesNotMatch(chat, /↓ to select/);
     // The open chat reuses Pi's selector and keybindings; changes persist in host status.
     await key("\x0c"); await wait("configured providers");
@@ -287,7 +288,29 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[B"); await key("\x1b"); assert.doesNotMatch(await frame(), /enter\/→ open/);
     await key("\x1b[B"); await key("draft"); assert.match(await frame(), /draft/); await key("\x15");
     await key("\x1b[B"); await key("\x1b[C"); const childChat = await wait("reader ·"); // → opens the selected sub-agent, like Enter
-    assert.doesNotMatch(childChat, /pi-agents|↓ to select|team \$/); print?.("sub-agent chat", childChat);
+    assert.doesNotMatch(childChat, /↓ to select|team \$/); print?.("sub-agent chat", childChat);
+    // Rails: the dashboard from 80 columns, the main agent above a sub-agent from 140; otherwise the footer path names them.
+    assert.equal(/pi-agents +│/.test(childChat), width >= 80);
+    assert.equal(/^pi-agents +│ renamed +│/.test(childChat), width >= 140);
+    if (width < 140) assert.match(childChat, /pi-agents › renamed › reader ·/);
+    // alt+2 collapses to the main agent, alt+1 to the dashboard; enter, ↓ and → then open as before.
+    await key("\x1b2"); await wait("enter/→ open"); await key("\x1b[C"); await wait("reader ·");
+    await key("\x1b1"); await wait("n new"); await key("\r"); await wait("renamed ·");
+    await key("\x1b[B"); await key("\x1b[C"); await wait("reader ·");
+    const click = async (x: number, y: number) => { await key(`\x1b[<0;${x + 1};${y + 1}M`); await key(`\x1b[<0;${x + 1};${y + 1}m`); };
+    const railRow = async (name: string) => (await frame()).split("\n").findIndex(line => new RegExp(`[○■⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ${name} +│`).test(line.slice(0, 40)));
+    if (width >= 140) {
+      // The main agent's rail header collapses the sub-agent, leaving its row selected in the team panel.
+      const x = (await frame()).split("\n")[0]!.indexOf("│") + 3;
+      await click(x, 0); await wait("enter/→ open"); await key("\x1b[C"); await wait("reader ·");
+    }
+    if (width >= 80) {
+      // The dashboard rail's header returns to the dashboard; its rows open agents, the open main listing its whole team.
+      await click(2, 0); await wait("n new"); await key("\r"); await wait("renamed ·");
+      await click(4, await railRow("beta")); await wait("beta ·");
+      await click(4, await railRow("renamed")); await wait("renamed ·");
+      await click(6, await railRow("reader")); await wait("reader ·");
+    }
     await key("\x1b[D"); const parentChat = await wait("enter/→ open"); assert.match(parentChat, /renamed/); print?.("back to parent panel", parentChat);
     await key("\x1b[D"); await wait("n new");
     // a archives the agent with its team (stopped, no confirmation); u in the archived view brings them back.

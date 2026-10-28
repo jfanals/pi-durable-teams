@@ -1,4 +1,7 @@
 import {
+  archiveView,
+  statusWord,
+  teamGlance,
   formatUsage,
   formatAgo,
   formatContext,
@@ -104,4 +107,25 @@ ${result?.content?.some(part => part.type === "image") ? `<span data-images="${e
 ${turn ? `<small class="stamp">${stamp}</small>` : ""}</article>`;
     })
     .join("");
+}
+
+/** Compact roster views only; status and team folding stay shared with the dashboard. */
+export function paneRails(agents: Agent[], stack: string[], now = Date.now()) {
+  const main = agents.find(a => a.id === stack[0]);
+  const row = (a: Agent, child = false) => `<button tabindex="-1" class="rail-row ${child ? "child" : ""} ${stack.includes(a.id) ? "open" : ""}" data-open="${escape(a.id)}" title="${escape(a.name)} · ${escape(statusWord(a))}" ${stack.includes(a.id) ? 'aria-current="true"' : ""}>
+<span aria-hidden="true">${a.running ? "◌" : a.enabled ? "○" : "■"}</span><span>${escape(a.name)}</span></button>`;
+  const dashboard = archiveView(agents, false).agents.map(a => {
+    const glance = teamGlance(a.children, now);
+    const children = a.id === main?.id ? a.children : glance.shown as Agent[];
+    return row(a) + children.map(c => row(c, true)).join("")
+      + (a.id !== main?.id && glance.summary ? `<small class="rail-summary">${escape(glance.summary)}</small>` : "");
+  }).join("");
+  return { dashboard: `<button tabindex="-1" class="rail-header" data-depth="0">Pi Agents</button>${dashboard}`,
+    main: main ? `<button tabindex="-1" class="rail-header" data-depth="1">${escape(main.name)}</button><small class="rail-activity">${escape(statusWord(main))}</small>${main.children.filter(c => main.archived || !c.archived).map(c => row(c, true)).join("")}` : "" };
+}
+export function panePath(agents: Agent[], stack: string[]) {
+  const all = agents.flatMap(a => [a, ...a.children]);
+  return `<span class="ancestor dashboard"><a href="/" data-depth="0">Pi Agents</a><span aria-hidden="true"> › </span></span>`
+    + stack.slice(0, -1).map((id, i) => `<span class="ancestor main"><a href="/#agent=${encodeURIComponent(id)}" data-depth="${i + 1}">${escape(all.find(a => a.id === id)?.name ?? id)}</a><span aria-hidden="true"> › </span></span>`).join("")
+    + `<span id="title">${escape(all.find(a => a.id === stack.at(-1))?.name ?? "Agent")}</span>`;
 }

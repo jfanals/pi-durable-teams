@@ -439,3 +439,33 @@ a:focus-visible {
 #attachments { display: flex; gap: 8px; flex-wrap: wrap; }
 .attach { font-size: .85em; }
 .attach input { max-width: 230px; }
+
+.panes { display: grid; grid-template-columns: minmax(0, 1fr); flex: 1; min-height: 0; overflow: hidden; }
+.pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.rail { display: none; min-width: 0; overflow: auto; border-right: 1px solid var(--line); background: var(--panel); padding: 8px; }
+.rail button { display: flex; width: 100%; text-align: left; border: 0; border-radius: 4px; background: transparent; min-height: 32px; padding: 4px; gap: 6px; font-size: .8rem; }
+.rail button span:last-child, .rail-header, .rail-activity, .rail-summary { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rail .rail-header { display: block; font-weight: bold; border-bottom: 1px solid var(--line); border-radius: 0; margin-bottom: 6px; }
+.rail .child { padding-left: 14px; }
+.rail .open { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+.rail-activity, .rail-summary { padding: 4px; }
+#path { font-size: 1rem; }
+#path a { text-decoration: none; }
+#path a:hover { text-decoration: underline; }
+@media (min-width: 700px) {
+  #app.chat-screen { max-width: none; }
+  .panes { grid-template-columns: clamp(150px, 16vw, 260px) minmax(0, 1fr); }
+  .rail.dash { display: block; }
+  .ancestor.dashboard { display: none; }
+}
+@media (min-width: 1100px) {
+  .depth-2 { grid-template-columns: clamp(150px, 16vw, 260px) clamp(170px, 18vw, 300px) minmax(0, 1fr); }
+  .depth-2 .rail.main { display: block; }
+  .ancestor.main { display: none; }
+}
+@media (max-width: 699px) and (prefers-reduced-motion: no-preference) {
+  .forward .pane { animation: pane-forward 180ms ease-out; }
+  .backward .pane, .backward > .list { animation: pane-backward 180ms ease-out; }
+}
+@keyframes pane-forward { from { transform: translateX(20%); opacity: .4; } }
+@keyframes pane-backward { from { transform: translateX(-20%); opacity: .4; } }

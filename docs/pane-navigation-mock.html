@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>pi-agents · pane navigation mock</title>
+<style>
+  :root {
+    --bg: #151820; --panel: #1b202b; --rail: #12151c; --fg: #eef0f7; --muted: #acb4c9; --dim: #6f7890;
+    --line: #2c3344; --accent: #a8c6ff; --ok: #9fd8b4; --warn: #e5c07b;
+    --dash-rail: 16%; --main-rail: 18%; --speed: 220ms;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  .bar { flex: 0 0 auto; display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); background: #10131a;
+    font: 12.5px system-ui, sans-serif; color: var(--muted); white-space: nowrap; overflow-x: auto; }
+  .bar button { background: var(--panel); color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px; cursor: pointer; font: inherit; }
+  .bar button.on { color: var(--bg); background: var(--accent); border-color: var(--accent); }
+  .bar .layout { margin-left: 8px; color: var(--dim); }
+  .bar .layout b { color: var(--fg); font-weight: 600; }
+  .room { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #0b0d12; }
+  .device { width: 100%; height: 100%; overflow: hidden; background: var(--bg); position: relative; }
+  .device.framed { border: 1px solid #3a4258; border-radius: 22px; box-shadow: 0 20px 60px #000a; max-height: calc(100% - 24px); }
+  .stage { display: flex; height: 100%; overflow: hidden; container-type: inline-size; }
+  .stage.one .col { transition: none; }
+  @keyframes fwd { from { transform: translateX(40%); opacity: .3; } }
+  @keyframes bwd { from { transform: translateX(-30%); opacity: .3; } }
+  .col.fwd > .inner { animation: fwd var(--speed) ease-out; }
+  .col.bwd > .inner { animation: bwd var(--speed) ease-out; }
+  .crumbs { display: flex; align-items: center; gap: 6px; white-space: nowrap; overflow: hidden; padding: 0 0 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .crumbs .backbtn { background: var(--panel); color: var(--accent); border: 1px solid var(--line); border-radius: 8px; min-width: 36px; height: 32px; font: inherit; font-size: 16px; cursor: pointer; }
+  .crumbs a { color: var(--accent); cursor: pointer; text-decoration: none; overflow: hidden; text-overflow: ellipsis; }
+  .crumbs a:hover { text-decoration: underline; }
+  .crumbs .sep { color: var(--dim); }
+  .crumbs b { overflow: hidden; text-overflow: ellipsis; }
+  @container (max-width: 640px) {
+    .row .right { display: none; }
+    .inner { padding: 10px; }
+    .hints, .footer:last-child { display: none; }
+    .composer textarea { font-size: 16px; }
+  }
+  .col { flex: 0 0 auto; min-width: 0; overflow: hidden; display: flex; flex-direction: column; border-right: 1px solid var(--line);
+    transition: width var(--speed) ease, background var(--speed) ease; position: relative; }
+  .col:last-child { border-right: 0; }
+  .col.closed { border-right: 0; }
+  .col.rail { background: var(--rail); cursor: pointer; }
+  .col.rail:hover { background: #161a23; }
+  .col.rail:hover .railhead { color: var(--accent); }
+  .col.active { box-shadow: inset 0 2px 0 var(--accent); }
+  .inner { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 10px 14px; min-width: 0; }
+  .rail .inner { padding: 10px 8px; }
+
+  /* Rows */
+  .title { color: var(--accent); font-weight: 700; white-space: nowrap; }
+  .title .dim { font-weight: 400; }
+  .railhead { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 4px 8px; border-bottom: 1px solid var(--line); margin-bottom: 6px; }
+  .railhead b { color: var(--fg); }
+  .list { flex: 1; overflow: auto; min-height: 0; }
+  .row { display: flex; gap: 8px; white-space: nowrap; padding: 1px 4px; border-radius: 4px; cursor: pointer; align-items: baseline; }
+  .row:hover { background: #ffffff08; }
+  .row .ptr { width: 1.2ch; color: var(--accent); flex: 0 0 auto; }
+  .row .tree { color: var(--dim); flex: 0 0 auto; }
+  .row .name { flex: 0 0 auto; }
+  .row .mid { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+  .row .right { color: var(--dim); flex: 0 0 auto; }
+  .row.idle .name, .row.stopped .name { color: var(--muted); }
+  .row.sel .name { color: var(--accent); font-weight: 700; }
+  .row.open { background: #a8c6ff1a; }
+  .row.open .name { color: var(--accent); }
+  .rail .row { gap: 4px; font-size: 12.5px; }
+  .rail .row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .mark { flex: 0 0 auto; width: 1ch; }
+  .mark.run { color: var(--accent); }
+  .mark.idle, .mark.stopped { color: var(--dim); }
+  .dim { color: var(--dim); }
+  .summary { color: var(--dim); margin-top: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hints { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Chat */
+  .chat { flex: 1; overflow: auto; min-height: 0; padding-right: 4px; }
+  .msg { margin: 0 0 14px; }
+  .msg.human { background: #222838; padding: 6px 10px; border-radius: 4px; }
+  .msg .who { color: var(--muted); font-size: 12px; }
+  .msg .stamp { color: var(--dim); font-size: 12px; margin-top: 2px; }
+  .msg.report { border-left: 3px solid var(--ok); padding-left: 10px; }
+  .msg.report .who { color: var(--ok); }
+  .tool { color: var(--muted); background: #1a2130; border: 1px solid var(--line); padding: 3px 8px; margin: 4px 0; border-radius: 4px; }
+  .working { color: var(--accent); margin: 4px 0 8px; }
+  .composer { border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin-top: 6px; }
+  .composer textarea { width: 100%; resize: none; background: transparent; color: var(--fg); border: 0; outline: 0; padding: 8px 0; font: inherit; height: 3.2em; }
+  .composer.blur textarea { color: var(--muted); }
+  .footer { color: var(--dim); font-size: 12.5px; padding-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .team { margin-top: 6px; }
+  .team .row { font-size: 13px; }
+  .team.focused { outline: 1px dashed #a8c6ff55; border-radius: 4px; }
+
+  /* Rail transcript tail */
+  .tail { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; color: var(--dim); font-size: 11.5px; overflow: hidden; flex: 1; min-height: 0;
+    -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+  .tail p { margin: 0 0 6px; overflow-wrap: anywhere; }
+
+  /* Tweak panel */
+  .tweaks { position: fixed; right: 14px; bottom: 14px; width: 300px; background: #1e2330ee; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+    font: 13px/1.4 system-ui, sans-serif; box-shadow: 0 10px 30px #0008; backdrop-filter: blur(6px); z-index: 10; }
+  .tweaks.hidden { display: none; }
+  .tweaks h3 { margin: 0 0 8px; font-size: 13px; color: var(--accent); display: flex; justify-content: space-between; }
+  .tweaks label { display: block; margin: 8px 0 2px; color: var(--muted); }
+  .tweaks input[type=range] { width: 100%; }
+  .tweaks select { width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 4px; }
+  .tweaks .keys { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; color: var(--muted); font-size: 12px; }
+  .tweaks kbd, .tweaks code { font: 11.5px ui-monospace, Menlo, monospace; background: #0003; border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; color: var(--fg); }
+  .tweaks button { background: var(--bg); color: var(--muted); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font: inherit; padding: 2px 8px; }
+  .toast { position: fixed; left: 50%; top: 10px; transform: translateX(-50%); background: #1e2330; border: 1px solid var(--line); border-radius: 8px; padding: 4px 12px;
+    color: var(--muted); font-size: 12px; opacity: 0; transition: opacity 200ms; pointer-events: none; }
+  .toast.show { opacity: 1; }
+</style>
+<body>
+<div class="bar" id="bar">
+  <span>Width:</span>
+  <button data-device="phone">Phone 390</button>
+  <button data-device="tablet">Tablet 820</button>
+  <button data-device="laptop">Laptop 1280</button>
+  <button data-device="full">Full window</button>
+  <span class="layout" id="layoutLabel"></span>
+</div>
+<div class="room"><div class="device" id="device">
+<div class="stage" id="stage">
+  <section class="col" id="c0"><div class="inner"></div></section>
+  <section class="col" id="c1"><div class="inner"></div></section>
+  <section class="col" id="c2"><div class="inner"></div></section>
+</div>
+</div></div>
+<div class="toast" id="toast"></div>
+
+<div class="tweaks" id="tweaks">
+  <h3><span>Pane mock · tweaks</span><button id="hideTweaks" title="Toggle with ?">hide</button></h3>
+  <label>Dashboard rail width: <b id="dashV"></b></label>
+  <input type="range" id="dashRail" min="8" max="35" step="1" />
+  <label>Main-agent rail width (with a sub-agent open): <b id="mainV"></b></label>
+  <input type="range" id="mainRail" min="8" max="40" step="1" />
+  <label>Main-agent rail shows</label>
+  <select id="mainRailMode">
+    <option value="team">its status + sub-agents</option>
+    <option value="tail">status + sub-agents + transcript tail</option>
+  </select>
+  <label>Dashboard rail shows</label>
+  <select id="dashRailMode">
+    <option value="tree">all agents (mains + sub-agents)</option>
+    <option value="mains">mains only (sub-agents of the open main)</option>
+  </select>
+  <label>Single pane below: <b id="oneBelowV"></b></label>
+  <input type="range" id="oneBelow" min="400" max="1200" step="20" />
+  <label>Three columns from: <b id="threeFromV"></b></label>
+  <input type="range" id="threeFrom" min="600" max="1800" step="20" />
+  <label>Animation: <b id="speedV"></b></label>
+  <input type="range" id="speed" min="0" max="600" step="20" />
+  <div class="keys">
+    <b>Keys</b> (same as the real app, plus columns)<br>
+    Dashboard: <kbd>↑</kbd><kbd>↓</kbd> select · <kbd>enter</kbd>/<kbd>→</kbd> open<br>
+    Agent: <kbd>←</kbd> on empty prompt = back (closes this pane)<br>
+    Agent: <kbd>↓</kbd> on empty prompt = into its sub-agents, then <kbd>enter</kbd>/<kbd>→</kbd><br>
+    Anywhere: <kbd>⌥←</kbd> back, even with a draft<br>
+    Anywhere: <kbd>⌥1</kbd> dashboard · <kbd>⌥2</kbd> main · <kbd>⌥3</kbd> sub<br>
+    Mouse: click a rail to collapse back to it; click a row in a rail to open that agent<br>
+    Hidden columns: tap ‹ or a name in the path header; swipe right from the left edge to go back<br>
+    <kbd>?</kbd> toggle this panel (when the prompt is empty)
+  </div>
+</div>
+
+<script>
+// ---------- Mock data (illustrative only) ----------
+const now = Date.now();
+const A = (id, name, o = {}) => ({ id, name, state: "idle", activity: "", model: "opus-5-5", thinking: "medium", since: now - 60_000, ctx: "4.1%/1M", cost: 0.12, children: [], chat: [], ...o });
+const agents = [
+  A("auth", "auth-review", { state: "running", activity: "reading src/auth.ts", thinking: "high", since: now - 312_000, ctx: "18.8%/1M", cost: 2.418,
+    chat: [
+      { who: "human", text: "What are our options for the authentication change? Use the team; don't edit files yet." },
+      { who: "agent", text: "I'll split this: reader maps the entry points, reviewer checks the session middleware, scout looks at the upstream library changelog." },
+      { tool: "team spawn reader · reviewer · scout" },
+      { who: "report", from: "reviewer", text: "Session middleware rotates tokens on every request; the callback race in #412 comes from that, not from the provider." },
+      { who: "agent", text: "Good, that narrows it. Waiting on reader before proposing the two options." },
+      { tool: "read src/auth.ts:1–120" },
+    ],
+    children: [
+      A("reader", "reader", { state: "running", activity: "bash: rg 'callback' src", model: "sonnet-5", thinking: "low", since: now - 95_000, ctx: "6.2%/1M", cost: 0.304,
+        chat: [
+          { who: "human", from: "auth-review", text: "Find the authentication entry points. Do not edit files." },
+          { who: "agent", text: "Found src/auth.ts (login, logout, callback) and src/routes/oauth.ts. Checking the callback route and its tests now." },
+          { tool: "read src/auth.ts:1–120" }, { tool: "bash: rg 'callback' src" },
+        ] }),
+      A("reviewer", "reviewer", { model: "opus-5-5", finished: true, cost: 0.871,
+        chat: [
+          { who: "human", from: "auth-review", text: "Review the session middleware for token rotation issues." },
+          { who: "agent", text: "Session middleware rotates tokens on every request; the callback race in #412 comes from that, not from the provider." },
+        ] }),
+      A("scout", "scout", { state: "stopped", model: "haiku-5", thinking: "", cost: 0.021,
+        chat: [{ who: "human", from: "auth-review", text: "Skim the upstream changelog for breaking auth changes since 3.2." }, { who: "agent", text: "Stopped before replying." }] }),
+    ] }),
+  A("billing", "billing-fix", { finished: true, cost: 1.07, ctx: "9.0%/1M",
+    chat: [
+      { who: "human", text: "The webhook retries double-charge sometimes. Find out why." },
+      { who: "agent", text: "Idempotency keys are generated after the retry decision, so a retry gets a fresh key. Fix is in src/billing/webhook.ts; repro confirms it." },
+    ],
+    children: [
+      A("repro", "repro", { model: "sonnet-5", finished: true, cost: 0.18,
+        chat: [{ who: "human", from: "billing-fix", text: "Write a failing test for the double charge." }, { who: "agent", text: "test/webhook-retry.test.ts fails on main and passes with the key moved before the retry check." }] }),
+    ] }),
+  A("docs", "docs-refresh", { state: "running", activity: "writing", model: "sonnet-5", since: now - 41_000, cost: 0.09,
+    chat: [{ who: "human", text: "Refresh the README quickstart for the new pairing flow." }, { who: "agent", text: "Rewriting the quickstart around `pi-agents pair`…" }] }),
+  A("panes", "pane-mock", { state: "running", activity: "editing docs/pane-navigation-mock.html", since: now - 600_000, cost: 0.66, ctx: "11.3%/1M",
+    chat: [{ who: "human", text: "Mock the split-pane navigation so we can feel it before touching the app." }, { who: "agent", text: "Building a standalone HTML mock with the same keys as pi-agents." }],
+    children: [
+      A("css", "css-tuner", { state: "running", activity: "editing rail widths", model: "sonnet-5", since: now - 22_000, cost: 0.04,
+        chat: [{ who: "human", from: "pane-mock", text: "Try rail widths between 12% and 20%." }, { who: "agent", text: "Comparing 14%, 16% and 18% at 1440px and 1920px." }] }),
+      A("copy", "copywriter", { finished: true, model: "haiku-5", thinking: "", cost: 0.01,
+        chat: [{ who: "human", from: "pane-mock", text: "Write the hint line for each pane." }, { who: "agent", text: "\"← back · ↓ team · ⌥1 dashboard\" fits in 40 columns." }] }),
+    ] }),
+  A("infra", "host-cpu", { cost: 0.33, chat: [{ who: "human", text: "Profile host CPU while idle." }, { who: "agent", text: "Idle CPU is the 1 Hz roster poll; see docs/host-cpu-reduction-prd.md." }] }),
+];
+const byId = new Map(); const parentOf = new Map();
+for (const m of agents) { byId.set(m.id, m); for (const c of m.children) { byId.set(c.id, c); parentOf.set(c.id, m); } }
+
+// ---------- State ----------
+const saved = JSON.parse(localStorage.getItem("pane-mock") || "{}");
+const cfg = { dashRail: 16, mainRail: 18, mainRailMode: "team", dashRailMode: "tree", speed: 220, tweaks: innerWidth > 700, device: "full", oneBelow: 700, threeFrom: 1100, ...saved };
+const DEVICES = { phone: [390, 844], tablet: [820, 1180], laptop: [1280, 800], full: null };
+let prevDepth = 0;
+const S = {
+  path: [],            // [] dashboard · [main] · [main, sub]
+  dashSel: 0,          // index into dashboard rows
+  teamSel: 0,          // index into the open main's children
+  focus: "prompt",     // in the rightmost agent pane: "prompt" | "team"
+  drafts: {},          // per-agent composer text
+};
+const SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"; let frame = 0;
+
+// ---------- Helpers ----------
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const dur = ms => { const s = Math.floor(ms / 1000); return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s` : `${Math.floor(s / 3600)}h`; };
+const mark = a => a.state === "running" ? `<span class="mark run spin">${SPIN[frame % SPIN.length]}</span>` : a.state === "stopped" ? `<span class="mark stopped">■</span>` : `<span class="mark idle">○</span>`;
+const middle = a => a.state === "running" ? a.activity : a.state === "stopped" ? "stopped" : a.finished ? "idle · last reply 2m ago" : "idle";
+const right = a => [a.model + (a.thinking ? ` ${a.thinking}` : ""), a.state === "running" ? `<span class="clock" data-since="${a.since}">${dur(Date.now() - a.since)}</span>` : "", a.ctx, a.cost ? `$${a.cost.toFixed(3)}` : ""].filter(Boolean).join(" · ");
+function dashRows() {
+  const rows = [];
+  const openMain = S.path[0];
+  for (const m of agents) {
+    rows.push({ a: m, tree: "" });
+    if (cfg.dashRailMode === "mains" && S.path.length && m.id !== openMain) continue;
+    m.children.forEach((c, i) => rows.push({ a: c, tree: i === m.children.length - 1 ? "└─ " : "├─ " }));
+  }
+  return rows;
+}
+const main = () => byId.get(S.path[0]);
+const sub = () => byId.get(S.path[1]);
+let toastTimer;
+function toast(text) { const t = document.getElementById("toast"); t.textContent = text; t.classList.add("show"); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove("show"), 1100); }
+
+// ---------- Navigation ----------
+function openAgent(id) {
+  const parent = parentOf.get(id);
+  S.path = parent ? [parent.id, id] : [id];
+  if (parent) S.teamSel = parent.children.findIndex(c => c.id === id);
+  S.focus = "prompt";
+  render();
+}
+function back() {
+  if (!S.path.length) return;
+  const closed = S.path.pop();
+  if (S.path.length === 1) { S.teamSel = main().children.findIndex(c => c.id === closed); S.focus = "team"; }
+  else { S.dashSel = Math.max(0, dashRows().findIndex(r => r.a.id === closed)); }
+  render();
+}
+function collapseTo(depth) {
+  if (depth >= S.path.length) return;
+  const was = S.path[depth];
+  S.path = S.path.slice(0, depth);
+  if (depth === 0) S.dashSel = Math.max(0, dashRows().findIndex(r => r.a.id === was));
+  else { S.teamSel = Math.max(0, main().children.findIndex(c => c.id === was)); S.focus = "prompt"; }
+  render();
+}
+function send(id) {
+  const text = (S.drafts[id] || "").trim(); if (!text) return;
+  const a = byId.get(id);
+  a.chat.push({ who: "human", text }); S.drafts[id] = "";
+  a.state = "running"; a.activity = "thinking"; a.since = Date.now(); a.pending = true;
+  render();
+  setTimeout(() => { a.chat.push({ who: "agent", text: `(mock reply to “${text.slice(0, 60)}”)` }); a.state = "idle"; a.finished = true; a.pending = false; render(); }, 1600);
+}
+
+// ---------- Rendering ----------
+// How many columns fit, from the device's width: 1 (phone), 2 (dashboard rail + active), or 3.
+function layout() {
+  const w = document.getElementById("device").clientWidth;
+  return w < cfg.oneBelow ? 1 : w < cfg.threeFrom ? 2 : 3;
+}
+function widths(cols) {
+  const d = S.path.length, r0 = cfg.dashRail, r1 = cfg.mainRail;
+  if (d === 0) return [100, 0, 0];
+  if (cols === 1) return [0, 1, 2].map(i => i === d ? 100 : 0);
+  if (d === 1) return [r0, 100 - r0, 0];
+  return cols === 2 ? [r0, 0, 100 - r0] : [r0, r1, 100 - r0 - r1];
+}
+// Path header, shown when some pane under the active one is not visible as a column.
+function crumbs(w) {
+  const d = S.path.length;
+  if (w.slice(0, d).every(x => x > 0)) return "";
+  const names = ["pi-agents", ...S.path.map(id => byId.get(id).name)];
+  return `<div class="crumbs"><button class="backbtn" data-back title="Back (←)">‹</button>${names.map((n, i) => i === d ? `<b>${esc(n)}</b>`
+    : `<a data-depth="${i}">${esc(n)}</a><span class="sep">›</span>`).join("")}</div>`;
+}
+function fullDashboard() {
+  const rows = dashRows();
+  S.dashSel = Math.max(0, Math.min(S.dashSel, rows.length - 1));
+  const running = [...byId.values()].filter(a => a.state === "running").length;
+  const total = [...byId.values()].reduce((s, a) => s + a.cost, 0);
+  return `<div class="title">pi-agents</div><div style="height:1em"></div>
+    <div class="list">${rows.map((r, i) => `
+      <div class="row ${r.a.state} ${i === S.dashSel ? "sel" : ""}" data-open="${r.a.id}">
+        <span class="ptr">${i === S.dashSel ? "›" : ""}</span><span class="tree">${r.tree}</span>${mark(r.a)}
+        <span class="name">${esc(r.a.name)}</span><span class="mid">${esc(middle(r.a))}</span><span class="right">${right(r.a)}</span>
+      </div>`).join("")}</div>
+    <div class="summary">${running} running · ${byId.size - running} idle · total $${total.toFixed(3)}</div>
+    <div class="hints">↑↓ select · enter/→ open · n new · r rename · a archive · q quit</div>`;
+}
+function railDashboard() {
+  const open = new Set(S.path);
+  const running = [...byId.values()].filter(a => a.state === "running").length;
+  return `<div class="railhead" title="Click to close panes and return to the dashboard"><b>pi-agents</b> · ${running} running</div>
+    <div class="list">${dashRows().map(r => `
+      <div class="row ${r.a.state} ${open.has(r.a.id) ? "open" : ""}" data-open="${r.a.id}" title="${esc(r.a.name)} · ${esc(middle(r.a))}">
+        <span class="tree">${r.tree}</span>${mark(r.a)}<span class="name">${esc(r.a.name)}</span>
+      </div>`).join("")}</div>
+    <div class="hints">⌥1</div>`;
+}
+function transcript(a) {
+  return a.chat.map(m => m.tool ? `<div class="tool">▸ ${esc(m.tool)}</div>`
+    : m.who === "human" ? `<div class="msg human"><div class="who">${esc(m.from ?? "Human")} → ${esc(a.name)}</div>${esc(m.text)}</div>`
+    : m.who === "report" ? `<div class="msg report"><div class="who">${esc(m.from)} · report</div>${esc(m.text)}</div>`
+    : `<div class="msg">${esc(m.text)}<div class="stamp">11:21 · 4s · 2.1k tok</div></div>`).join("")
+    + (a.state === "running" ? `<div class="working"><span class="spin">${SPIN[frame % SPIN.length]}</span> ${a.pending ? "Working" : esc(a.activity)} · <span class="clock" data-since="${a.since}">${dur(Date.now() - a.since)}</span> (esc to stop)</div>` : "");
+}
+function agentPane(a, isMain, header = "") {
+  const kids = isMain ? a.children : [];
+  const team = kids.length ? `<div class="team ${S.focus === "team" ? "focused" : ""}">${kids.map((c, i) => `
+      <div class="row ${c.state} ${S.focus === "team" && i === S.teamSel ? "sel" : ""}" data-open="${c.id}">
+        <span class="ptr">${S.focus === "team" && i === S.teamSel ? "›" : ""}</span><span class="tree">${i === kids.length - 1 ? "└─ " : "├─ "}</span>${mark(c)}
+        <span class="name">${esc(c.name)}</span><span class="mid">${esc(middle(c))}</span><span class="right">${right(c)}</span>
+      </div>`).join("")}</div>` : "";
+  const parent = parentOf.get(a.id);
+  const hint = [a.name, "← back", kids.length && "↓ sub-agents", parent ? "⌥1 dashboard · ⌥2 " + parent.name : "⌥1 dashboard", "enter send"].filter(Boolean).join(" · ");
+  return `${header}<div class="chat" id="chat-${a.id}">${transcript(a)}</div>
+    <div class="composer ${S.focus === "team" ? "blur" : ""}"><textarea data-draft="${a.id}" placeholder="Message ${esc(a.name)}…" spellcheck="false">${esc(S.drafts[a.id] || "")}</textarea></div>
+    ${team}
+    <div class="footer">${esc(a.model)}${a.thinking ? " • " + a.thinking : ""} · ${a.ctx} · $${a.cost.toFixed(3)}</div>
+    <div class="footer">${esc(hint)}</div>`;
+}
+function railMain(a) {
+  const tail = cfg.mainRailMode === "tail"
+    ? `<div class="tail">${a.chat.filter(m => m.text).slice(-3).map(m => `<p>${m.who === "human" ? "› " : ""}${esc(m.text)}</p>`).join("")}</div>` : "";
+  return `<div class="railhead" title="Click to close the sub-agent and return to ${esc(a.name)}">${mark(a)} <b>${esc(a.name)}</b></div>
+    <div class="dim" style="font-size:12px;padding:0 4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(middle(a))}</div>
+    <div class="list" style="flex:0 0 auto">${a.children.map((c, i) => `
+      <div class="row ${c.state} ${c.id === S.path[1] ? "open" : ""}" data-open="${c.id}" title="${esc(c.name)} · ${esc(middle(c))}">
+        <span class="tree">${i === a.children.length - 1 ? "└─ " : "├─ "}</span>${mark(c)}<span class="name">${esc(c.name)}</span>
+      </div>`).join("")}</div>${tail}<div style="flex:1"></div><div class="hints">⌥2</div>`;
+}
+function render() {
+  const d = S.path.length, n = layout(), w = widths(n);
+  const cols = [0, 1, 2].map(i => document.getElementById("c" + i));
+  document.getElementById("stage").classList.toggle("one", n === 1);
+  document.getElementById("layoutLabel").innerHTML = `Layout: <b>${n === 1 ? "single pane" : n === 2 ? "2 columns max" : "3 columns max"}</b> · ${document.getElementById("device").clientWidth}px`;
+  cols.forEach((c, i) => {
+    c.style.width = w[i] + "%";
+    c.classList.toggle("closed", w[i] === 0);
+    c.classList.toggle("rail", i < d);
+    c.classList.toggle("active", i === d && d > 0 && n > 1);
+    c.classList.remove("fwd", "bwd");
+  });
+  if (n === 1 && d !== prevDepth) { void cols[d].offsetWidth; cols[d].classList.add(d > prevDepth ? "fwd" : "bwd"); }
+  prevDepth = d;
+  const header = crumbs(w);
+  // Keep scroll positions of transcripts across re-renders.
+  const scrolls = {}; document.querySelectorAll(".chat").forEach(el => scrolls[el.id] = el.scrollHeight - el.scrollTop - el.clientHeight);
+  cols[0].firstElementChild.innerHTML = d === 0 ? fullDashboard() : railDashboard();
+  cols[1].firstElementChild.innerHTML = d === 0 ? "" : d === 1 ? agentPane(main(), true, header) : railMain(main());
+  cols[2].firstElementChild.innerHTML = d === 2 ? agentPane(sub(), false, header) : "";
+  document.querySelectorAll(".chat").forEach(el => { const gap = scrolls[el.id]; el.scrollTop = gap === undefined || gap < 40 ? el.scrollHeight : el.scrollHeight - el.clientHeight - gap; });
+  const ta = d ? document.querySelector(`#c${d} textarea`) : null;
+  if (ta && S.focus === "prompt") { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  else document.activeElement?.blur?.();
+  document.querySelector(".row.sel")?.scrollIntoView({ block: "nearest" });
+}
+
+// ---------- Input ----------
+document.getElementById("stage").addEventListener("click", e => {
+  if (e.target.closest("[data-back]")) return back();
+  const crumb = e.target.closest("[data-depth]");
+  if (crumb) return collapseTo(Number(crumb.dataset.depth));
+  const row = e.target.closest("[data-open]");
+  const col = e.target.closest(".col");
+  if (row && (col.classList.contains("rail") || S.path.length === 0 || row.closest(".team"))) { openAgent(row.dataset.open); return; }
+  if (col?.classList.contains("rail")) collapseTo(Number(col.id.slice(1)));
+  else if (e.target.closest(".col.active") && !e.target.closest("textarea")) { S.focus = "prompt"; render(); }
+});
+// Swipe right from the left edge goes back (touch or mouse drag).
+let swipe;
+document.getElementById("stage").addEventListener("pointerdown", e => {
+  const x = e.clientX - document.getElementById("device").getBoundingClientRect().left;
+  swipe = x < 28 && S.path.length ? { x: e.clientX, y: e.clientY } : undefined;
+});
+document.addEventListener("pointerup", e => {
+  if (swipe && e.clientX - swipe.x > 70 && Math.abs(e.clientY - swipe.y) < 60) back();
+  swipe = undefined;
+});
+document.getElementById("stage").addEventListener("input", e => { if (e.target.dataset.draft) S.drafts[e.target.dataset.draft] = e.target.value; });
+document.addEventListener("keydown", e => {
+  if (e.target.closest?.(".tweaks")) return;
+  const d = S.path.length;
+  const draft = d ? (S.drafts[S.path[d - 1]] || "") : "";
+  // Column jumps and forced back work everywhere.
+  if (e.altKey && /^Digit[123]$/.test(e.code)) { e.preventDefault(); const to = Number(e.code.slice(5)) - 1; to < d ? collapseTo(to) : toast("already there"); return; }
+  if (e.altKey && e.key === "ArrowLeft") { e.preventDefault(); back(); return; }
+  if (e.key === "?" && !draft) { e.preventDefault(); toggleTweaks(); return; }
+  if (d === 0) {
+    const rows = dashRows();
+    if (e.key === "ArrowDown") S.dashSel = Math.min(rows.length - 1, S.dashSel + 1);
+    else if (e.key === "ArrowUp") S.dashSel = Math.max(0, S.dashSel - 1);
+    else if (e.key === "Enter" || e.key === "ArrowRight") { e.preventDefault(); return openAgent(rows[S.dashSel].a.id); }
+    else return;
+    e.preventDefault(); render(); return;
+  }
+  const a = byId.get(S.path[d - 1]);
+  const kids = d === 1 ? a.children : [];
+  if (S.focus === "team") {
+    e.preventDefault();
+    if (e.key === "ArrowDown") S.teamSel = Math.min(kids.length - 1, S.teamSel + 1);
+    else if (e.key === "ArrowUp") { if (S.teamSel === 0) S.focus = "prompt"; else S.teamSel--; }
+    else if (e.key === "Enter" || e.key === "ArrowRight") return openAgent(kids[S.teamSel].id);
+    else if (e.key === "ArrowLeft") return back();
+    else if (e.key === "Escape") S.focus = "prompt";
+    else if (e.key.length === 1) { S.focus = "prompt"; S.drafts[a.id] = (S.drafts[a.id] || "") + e.key; }
+    else return;
+    render(); return;
+  }
+  // Prompt focused
+  if (e.key === "ArrowLeft" && !draft) { e.preventDefault(); back(); }
+  else if (e.key === "ArrowDown" && !draft && kids.length) { e.preventDefault(); S.focus = "team"; S.teamSel = Math.max(0, Math.min(S.teamSel, kids.length - 1)); render(); }
+  else if (e.key === "Enter" && !e.shiftKey && !e.altKey) { e.preventDefault(); send(a.id); }
+});
+
+// ---------- Tweaks ----------
+function applyCfg() {
+  const r = document.documentElement.style;
+  r.setProperty("--speed", cfg.speed + "ms");
+  for (const k of ["dashRail", "mainRail", "speed", "oneBelow", "threeFrom"]) document.getElementById(k).value = cfg[k];
+  document.getElementById("oneBelowV").textContent = cfg.oneBelow + "px";
+  document.getElementById("threeFromV").textContent = cfg.threeFrom + "px";
+  const dev = document.getElementById("device"), size = DEVICES[cfg.device];
+  dev.classList.toggle("framed", !!size);
+  dev.style.width = size ? size[0] + "px" : "";
+  dev.style.height = size ? size[1] + "px" : "";
+  document.querySelectorAll("[data-device]").forEach(b => b.classList.toggle("on", b.dataset.device === cfg.device));
+  document.getElementById("mainRailMode").value = cfg.mainRailMode;
+  document.getElementById("dashRailMode").value = cfg.dashRailMode;
+  document.getElementById("dashV").textContent = cfg.dashRail + "%";
+  document.getElementById("mainV").textContent = cfg.mainRail + "%";
+  document.getElementById("speedV").textContent = cfg.speed ? cfg.speed + "ms" : "off";
+  document.getElementById("tweaks").classList.toggle("hidden", !cfg.tweaks);
+  localStorage.setItem("pane-mock", JSON.stringify(cfg));
+}
+function toggleTweaks() { cfg.tweaks = !cfg.tweaks; applyCfg(); }
+document.getElementById("bar").addEventListener("click", e => { const b = e.target.closest("[data-device]"); if (b) { cfg.device = b.dataset.device; applyCfg(); render(); } });
+addEventListener("resize", () => render());
+for (const k of ["dashRail", "mainRail", "speed", "oneBelow", "threeFrom"]) document.getElementById(k).addEventListener("input", e => { cfg[k] = Number(e.target.value); applyCfg(); render(); });
+for (const k of ["mainRailMode", "dashRailMode"]) document.getElementById(k).addEventListener("change", e => { cfg[k] = e.target.value; applyCfg(); render(); });
+document.getElementById("hideTweaks").addEventListener("click", toggleTweaks);
+
+// Spinners and clocks tick without re-rendering (keeps the caret where it is).
+setInterval(() => {
+  frame++;
+  document.querySelectorAll(".spin").forEach(el => el.textContent = SPIN[frame % SPIN.length]);
+  document.querySelectorAll(".clock").forEach(el => el.textContent = dur(Date.now() - Number(el.dataset.since)));
+}, 100);
+
+applyCfg(); render();
+</script>
+</body>
+</html>

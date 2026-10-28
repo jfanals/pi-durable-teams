@@ -2,7 +2,7 @@ import { attachAutocomplete } from "./autocomplete.ts";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
-import { escape as e, info, footerInfo, transcript } from "./render.ts";
+import { escape as e, info, footerInfo, transcript, paneRails, panePath } from "./render.ts";
 import { archiveView, formatCost, formatDuration, statusWord, teamGlance } from "../status.ts";
 import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
 import { agentNameError, suggestedAgentName } from "../agent-name.ts";
@@ -47,7 +47,9 @@ function fail(error: unknown) {
   const el = document.querySelector<HTMLElement>("#error");
   if (el) el.textContent = error instanceof Error ? error.message : String(error);
 }
+let direction = "forward";
 function base(content: string) {
+  root.className = `${screen === "chat" ? "chat-screen" : ""} ${direction}`;
   root.innerHTML = `<div id="connection" role="status" ${reconnecting.size ? "" : "hidden"}>
 Host disconnected — reconnecting…</div>${content}<div id="notice" role="status"></div><div id="error" role="alert"></div>`;
 }
@@ -105,9 +107,12 @@ ${view.archivedCount ? button(showArchived ? "Active agents" : `Archived (${view
 }
 function status(clockOnly = false) {
   const a = current();
-  if (!a || screen !== "chat" || !document.querySelector("#title")) return;
+  if (!a || screen !== "chat" || !document.querySelector("#path")) return;
   if (!clockOnly) {
-    document.querySelector("#title")!.textContent = a.name;
+    document.querySelector("#path")!.innerHTML = panePath(agents, stack);
+    const rails = paneRails(agents, stack);
+    document.querySelector(".rail.dash")!.innerHTML = rails.dashboard;
+    document.querySelector(".rail.main")!.innerHTML = rails.main;
     document.querySelector("#status")!.textContent = statusWord(a);
     document.querySelector("#info")!.textContent = footerInfo(a);
   }
@@ -124,6 +129,7 @@ async function open(id: string, push = true) {
   attachments = [];
   imageCache.clear();
   if (push) {
+    direction = "forward";
     // A sub-agent opened from the list goes back to its main agent, not the list, as in the terminal.
     const parent = stack.length ? undefined : agents.find((a) => a.children.some((c) => c.id === id));
     if (parent) {
@@ -139,9 +145,9 @@ async function open(id: string, push = true) {
   generation++;
   watchLife.abort();
   base(
-    `<header>${button("←", "back", 'aria-label="Back"')}<div class="heading">
-<h1 id="title">
-</h1>
+    `<div class="panes depth-${stack.length}"><nav class="rail dash" aria-label="Dashboard"></nav><nav class="rail main" aria-label="Main agent"></nav><section class="pane">
+<header>${button("‹", "back", 'aria-label="Back"')}<div class="heading">
+<h1 id="path"></h1>
 <small id="status">
 </small>
 </div>${button("⋮", "menu", 'aria-label="Agent menu"')}</header>
@@ -171,11 +177,12 @@ ${button("Model & thinking", "model", 'type="button"')}
 </div>
 </div>
 </form>
-</footer>`,
+</footer></section></div>`,
   );
   attachAutocomplete(document.querySelector<HTMLTextAreaElement>("#message")!, id);
   document.querySelector("#messages")!.addEventListener("scroll", () => {
-    const view = document.querySelector("#messages")!;
+    const view = document.querySelector("#messages");
+    if (!view) return; // A queued scroll event can outlive a collapsed pane.
     if (view.scrollHeight - view.scrollTop - view.clientHeight < 70)
       (document.querySelector("#new-messages") as HTMLElement).hidden = true;
     // As in the terminal: nearing the top loads the previous page, so scrolling reaches the first message.
@@ -560,13 +567,27 @@ async function treePicker() {
     if (id !== tree.leafId) await rewind(id);
   });
 }
+// Rail navigation first returns to the shared parent history entry, then pushes a new pane.
+let railTarget: string | undefined;
+function collapseTo(depth: number) {
+  if (depth < stack.length) history.go(-(stack.length - depth));
+}
+function openFromRail(id: string) {
+  if (id === stack.at(-1)) return;
+  const parent = agents.find(a => a.children.some(c => c.id === id));
+  const depth = parent && stack[0] === parent.id ? 1 : 0;
+  if (stack.length > depth) { railTarget = id; collapseTo(depth); }
+  else void open(id).catch(fail);
+}
 root.addEventListener("click", async (event) => {
-  const el = (event.target as HTMLElement).closest<HTMLElement>("button");
+  const el = (event.target as HTMLElement).closest<HTMLElement>("button, [data-depth]");
   if (!el) return;
   try {
+    if (el.dataset.depth !== undefined) { event.preventDefault(); collapseTo(Number(el.dataset.depth)); return; }
     if (el.dataset.rewind) { await rewind(el.dataset.rewind); return; }
     if (el.dataset.open) {
-      await open(el.dataset.open);
+      if (el.closest(".rail")) openFromRail(el.dataset.open);
+      else await open(el.dataset.open);
       return;
     }
     if (el.dataset.dir) {
@@ -819,7 +840,14 @@ navigator.serviceWorker?.addEventListener("message", (event) => {
 window.addEventListener("popstate", (event) => {
   generation++;
   watchLife.abort();
+  const previousDepth = stack.length;
   stack = event.state?.stack ?? [];
+  direction = stack.length < previousDepth ? "backward" : "forward";
+  if (railTarget) {
+    const id = railTarget; railTarget = undefined;
+    void open(id).catch(fail);
+    return;
+  }
   if (stack.length) void open(stack.at(-1)!, false);
   else list();
 });
@@ -837,3 +865,29 @@ if (token()) {
   void notificationState().catch(error => { notifications.note = error instanceof Error ? error.message : String(error); }).finally(() => { if (screen === "list") list(); });
   if (initialAgent) void open(initialAgent);
 } else unpair();
+
+document.addEventListener("keydown", event => {
+  if (screen !== "chat" || document.querySelector("dialog[open]") || event.isComposing) return;
+  const input = document.querySelector<HTMLTextAreaElement>("#message");
+  if (input?.value || attachments.length) return;
+  const target = event.target as HTMLElement;
+  if (target.matches("input, select, textarea, [contenteditable]") && target !== input) return;
+  if (event.altKey && !event.ctrlKey && !event.metaKey && ["Digit1", "Digit2"].includes(event.code)) {
+    const depth = event.code === "Digit1" ? 0 : 1;
+    if (depth < stack.length) { event.preventDefault(); collapseTo(depth); }
+  } else if (event.key === "ArrowLeft" && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && target === input) {
+    event.preventDefault(); history.back();
+  }
+});
+let edgeSwipe: { x: number; y: number } | undefined;
+root.addEventListener("touchstart", event => {
+  const touch = event.touches[0];
+  edgeSwipe = matchMedia("(display-mode: standalone)").matches && !document.querySelector("dialog[open]") && stack.length && event.touches.length === 1 && touch && touch.clientX < 28
+    ? { x: touch.clientX, y: touch.clientY } : undefined;
+}, { passive: true });
+root.addEventListener("touchcancel", () => { edgeSwipe = undefined; });
+root.addEventListener("touchend", event => {
+  const touch = event.changedTouches[0];
+  if (edgeSwipe && touch && touch.clientX - edgeSwipe.x > 70 && Math.abs(touch.clientY - edgeSwipe.y) < 60) history.back();
+  edgeSwipe = undefined;
+}, { passive: true });

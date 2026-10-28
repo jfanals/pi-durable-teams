@@ -5,12 +5,12 @@ import { basename } from "node:path";
 import { DirPicker } from "./dir-picker.ts";
 import { agentNameError, suggestedAgentName } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
-import { Editor, Key, SelectList, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TuiAltScreen } from "@earendil-works/pi-tui";
+import { Editor, HStack, Key, SelectList, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TuiAltScreen } from "@earendil-works/pi-tui";
 import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { type WorkerModel } from "./config.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { workerSource, type HostSource } from "./source.ts";
-import { ChatView, statusRow } from "./ui.ts";
+import { ChatView, RAIL_DASHBOARD_MIN, RAIL_MAIN_MIN, Rail, railWidth, statusRow } from "./ui.ts";
 import { cmuxTab } from "./cmux.ts";
 import { markdownForSelection } from "./copy.ts";
 
@@ -92,6 +92,7 @@ export class AgentsApp implements Component, Focusable {
       if (this.view && !this.form && !this.renaming) this.view.setDraft(""); else this.editor.setText("");
       tui.requestRender(); return { consume: true };
     });
+    this.makeRails();
     this.setScreen();
     void this.roster();
   }
@@ -138,8 +139,70 @@ export class AgentsApp implements Component, Focusable {
   private setScreen() {
     this.updateFocus(); this.updateCmux();
     const list = { render: (width: number) => this.list(width), invalidate() {} };
-    const root = this.form || this.confirming || this.renaming ? this : this.view?.layout ?? list;
+    const root = this.form || this.confirming || this.renaming ? this : this.panes ?? list;
     this.tui.setLayoutRoot(root);
+  }
+  /** The open agent beside read-only rails: the dashboard from 80 columns, the main agent above a sub-agent from 140. */
+  private panes?: HStack;
+  private dashboardRail!: Rail;
+  private mainRail!: Rail;
+  private makeRails() {
+    const tree = (i: number, n: number) => i === n - 1 ? "└─ " : "├─ ";
+    this.dashboardRail = new Rail(this.tui, this.theme, {
+      width: columns => railWidth(columns, 0.16, 18, 28), frame: () => this.frame,
+      onHeader: () => this.collapseTo(0), onOpen: worker => this.openFromRail(worker.id),
+      content: () => {
+        const lines = this.dashboard(this.stack[0]).map(({ agent, tree, summary }) => ({ worker: agent, tree, text: summary, open: !!agent && this.stack.includes(agent.id) }));
+        return { header: this.theme.fg("accent", this.theme.bold("pi-agents")), lines };
+      },
+    });
+    this.mainRail = new Rail(this.tui, this.theme, {
+      width: columns => railWidth(columns, 0.18, 18, 30), frame: () => this.frame,
+      onHeader: () => this.collapseTo(1), onOpen: worker => this.openFromRail(worker.id),
+      content: () => {
+        const main = this.rows().find(row => row.agent.id === this.stack[0])?.agent;
+        if (!main) return { header: "", lines: [] };
+        const activity = !main.enabled ? "stopped" : main.running ? main.activity ?? "running" : "idle";
+        return { header: this.theme.bold(main.name), lines: [{ text: activity },
+          ...main.children.map((child, i) => ({ worker: child, tree: tree(i, main.children.length), open: child.id === this.stack[1] }))] };
+      },
+    });
+  }
+  /** Which panes beneath the open one are hidden at this width: their names lead the footer. */
+  private path() {
+    const columns = this.tui.terminal.columns;
+    const names = this.stack.map(id => this.rows().find(row => row.agent.id === id)?.agent.name ?? "…");
+    const hidden = columns < RAIL_DASHBOARD_MIN || (this.stack.length > 1 && columns < RAIL_MAIN_MIN);
+    return hidden ? ["pi-agents", ...names].join(" › ") : "";
+  }
+  private buildPanes() {
+    if (!this.view) { this.panes = undefined; return; }
+    const sub = this.stack.length > 1;
+    this.panes = new HStack([
+      { component: this.dashboardRail, basis: "auto", grow: 0, shrink: 0, visible: ({ width }) => width >= RAIL_DASHBOARD_MIN },
+      ...(sub ? [{ component: this.mainRail, basis: "auto" as const, grow: 0, shrink: 0, visible: ({ width }: { width: number }) => width >= RAIL_MAIN_MIN }] : []),
+      { component: this.view.layout, basis: 0, grow: 1 },
+    ], { gap: 1 });
+  }
+  /** Close every pane above `depth`: 0 is the dashboard, 1 the main agent. Rails and alt+1/alt+2 use it. */
+  private collapseTo(depth: number) {
+    if (depth >= this.stack.length) return;
+    const child = this.stack[depth];
+    this.stack = this.stack.slice(0, depth);
+    const parent = this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent;
+    if (parent) { this.open(parent, false); if (child) this.view?.focusChild(child); }
+    else {
+      this.view?.dispose(); this.view = undefined; this.panes = undefined;
+      this.setScreen();
+    }
+    this.tui.requestRender();
+  }
+  private openFromRail(id: string) {
+    const agent = this.rows().find(row => row.agent.id === id)?.agent;
+    if (!agent || id === this.stack.at(-1)) return;
+    // A sub-agent of the open main stacks on it; anything else starts from the dashboard.
+    this.stack = this.stack[0] && this.rows().find(row => row.agent.id === this.stack[0])?.agent.children.some(child => child.id === id) ? [this.stack[0]] : [];
+    this.open(agent);
   }
   private rows() {
     const out: { agent: AgentSummary; depth: number }[] = [];
@@ -154,13 +217,14 @@ export class AgentsApp implements Component, Focusable {
    * Dashboard rows: each top-level agent, then its team at a glance as in Pi's panel. Running and
    * recently finished sub-agents get a row; the rest fold into one summary line, listed when the agent is opened.
    */
-  private dashboard() {
+  private dashboard(expand?: string) {
     const out: { agent?: AgentSummary; tree: string; summary?: string; expiresAt?: number }[] = [];
     const now = Date.now();
     for (const agent of this.agents) {
       out.push({ agent, tree: "" });
       if (!agent.children.length) continue;
-      const { shown, summary, expiresAt } = teamGlance(agent.children, now);
+      // The open agent's rail row lists its whole team.
+      const { shown, summary, expiresAt } = agent.id === expand ? { shown: agent.children, summary: "", expiresAt: undefined } : teamGlance(agent.children, now);
       const children = shown.map(w => agent.children.find(child => child.id === w.id)!);
       children.forEach((child, i) => out.push({ agent: child, tree: i === children.length - 1 && !summary ? "└─ " : "├─ " }));
       if (summary) out.push({ tree: "└─ ", summary });
@@ -201,17 +265,11 @@ export class AgentsApp implements Component, Focusable {
           if (draft) this.view?.setDraft(draft);
         },
       } : {}),
-      back: () => {
-        const child = this.stack.pop();
-        const parent = this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent;
-        if (parent) { this.open(parent, false); if (child) this.view?.focusChild(child); }
-        else { this.stack = []; this.view?.dispose(); this.view = undefined; this.setScreen(); }
-        this.tui.requestRender();
-      },
+      back: () => this.collapseTo(this.stack.length - 1),
     }, () => this.note, !this.rows().some(row => row.agent.children.some(child => child.id === agent.id)) ? { open: worker => {
       const child = this.rows().find(row => row.agent.id === worker.id)?.agent;
       if (child) this.open(child);
-    } } : undefined, () => this.branches.get(agent.cwd ?? "") ?? ""); this.view.setChildren(agent.children); this.setScreen(); this.tui.requestRender();
+    } } : undefined, () => this.branches.get(agent.cwd ?? "") ?? "", () => this.path()); this.view.setChildren(agent.children); this.buildPanes(); this.setScreen(); this.tui.requestRender();
   }
   private nameError(name: string, target?: AgentSummary) {
     const siblings = target ? this.rows().find(row => row.agent.children.some(child => child.id === target.id))?.agent.children ?? this.agents : this.agents;
@@ -387,6 +445,8 @@ export class AgentsApp implements Component, Focusable {
       else this.editor.handleInput(data);
     }
     else if (this.confirming) { const target = this.confirming; this.confirming = undefined; if (data === "y") void this.source.remove(target.id).catch(error => this.fail(error)); }
+    // alt+1 the dashboard, alt+2 the main agent, from any open pane (Option+digit with Option-as-Alt on macOS).
+    else if (this.view && (matchesKey(data, Key.alt("1")) || matchesKey(data, Key.alt("2")))) this.collapseTo(matchesKey(data, Key.alt("1")) ? 0 : 1);
     else if (this.view) this.view.handleInput(data);
     else if (matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
     else if (matchesKey(data, Key.down)) this.selected = Math.min(this.selectable().length - 1, this.selected + 1);

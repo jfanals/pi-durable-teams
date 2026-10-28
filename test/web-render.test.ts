@@ -50,3 +50,24 @@ test("generic tool cards preserve full args, results and lazy result images with
   assert.doesNotMatch(html, /data-images="read"|<script>|<tag>/);
   assert.match(html, /data-card="compaction:4"/);
 });
+
+test("pane rails fold other teams, expose the open team and highlight the path safely", async () => {
+  const { paneRails, panePath } = await import("../src/web/render.ts");
+  const agent = (id: string, children: import("../src/web/api.ts").Agent[] = []): import("../src/web/api.ts").Agent => ({ id, name: id, enabled: true, hosted: true, children });
+  const agents = [agent("main<tag>", [agent("idle"), { ...agent("stopped"), enabled: false }]), agent("other", [agent("folded")])];
+  const stack = ["main<tag>", "stopped"];
+  const rails = paneRails(agents, stack, 1000);
+  assert.match(rails.dashboard, /main&lt;tag&gt;/);
+  assert.match(rails.dashboard, /data-open="idle"/);
+  assert.match(rails.dashboard, /data-open="stopped"/);
+  assert.doesNotMatch(rails.dashboard, /data-open="folded"/);
+  assert.match(rails.dashboard, /1 idle/);
+  assert.equal((rails.dashboard.match(/aria-current="true"/g) ?? []).length, 2);
+  assert.match(rails.main, /data-depth="1"/);
+  assert.match(rails.main, /■/);
+  const path = panePath(agents, stack);
+  assert.match(path, /data-depth="0"/);
+  assert.match(path, /data-depth="1"/);
+  assert.match(path, /id="title">stopped/);
+  assert.doesNotMatch(path + rails.dashboard + rails.main, /<tag>/);
+});

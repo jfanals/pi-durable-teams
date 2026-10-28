@@ -338,6 +338,11 @@ loaded yet.
 - Chat: **Enter** send/steer, **Alt+Enter** queue follow-up, **Esc** stop current run,
   **↓/Enter** on an empty editor select/open a sub-agent, **←** goes back
   to its parent or the list, **PgUp/PgDn** scroll.
+- Panes: from 80 columns the dashboard stays beside an open agent as a narrow column; from 140 the main
+  agent's column stays beside an open sub-agent too. Click a column's header to collapse back to it, or a
+  name in it to open that agent. **Alt+1** returns to the dashboard, **Alt+2** to the main agent (on macOS,
+  set Option as Alt). Narrower, only the open agent shows and its footer starts with the path. The web
+  app does the same from 700px and 1100px wide, with a tappable path; ← on an empty message box goes back.
 - **/tree** opens Pi's session-tree selector, as does **Esc Esc** within 500 ms while idle with an empty editor
   (honours Pi's `doubleEscapeAction` setting). Selecting a user message restores its text in the editor;
   selecting another message continues from there. The agent keeps its ID, name and children. Previous branches
