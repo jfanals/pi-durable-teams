@@ -62,13 +62,13 @@ test("native steer joins after the current tool round; follow-up waits for the a
   } finally { release(); view.dispose(); await service.close(); }
 });
 
-test("team stop aborts active tools and queued inputs; no late worker reports restart the main", { timeout: 5000 }, async () => {
+test("/team stop aborts active tools and queued inputs; no late worker reports restart the main", { timeout: 5000 }, async () => {
   const { service, main, first, worker, view, release } = await setup();
   try {
     await service.action(main, { action: "send", target: "busy", message: "FOLLOW_UP" }, "follow");
     await service.action(main, { action: "send", target: "busy", message: "STEER_NOW", mode: "steer" }, "steer");
     await waitForInbox(view);
-    await service.action(main, { action: "stop", team: true }, "stop");
+    await service.abortTeam(main);
     await worker.waitForIdle(ctx);
     release();
     const live = (await worker.viewState(ctx));

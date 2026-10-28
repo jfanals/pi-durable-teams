@@ -15,10 +15,10 @@ is the only human-route authentication: any process running as the user (includi
 
 - `GET` or `POST /agents`: top-level agents with nested `children` and committed
   `liveStatus` fields (`contextWindow` is the model window). External Pi sessions
-  expose only known identity, cwd, enabled, connection and latest publication data.
+  expose only known identity, cwd, connection and latest publication data.
 - `POST /agents/new`, `/agents/send`, `/agents/model`: create, message, change model.
 - `POST /agents/stop`: abort the current run.
-- `POST /agents/archive` `{target, requestId}`: stop the agent and its sub-agents and set them aside; `/agents/unarchive` `{target}`: bring them back idle; `/agents/remove`: delete (see below).
+- `POST /agents/archive` `{target, requestId}`: abort the agent and its sub-agents, withdraw their reports and set them aside; `/agents/unarchive` `{target}`: bring them back idle; `/agents/remove`: delete (see below).
 - `POST /agents/tree`: `{target}` reads the session tree; `{target, entryId, requestId}` navigates it while idle with an empty inbox.
 - `POST /agents/page`: `{target, cursor?}` transcript page; external sessions have no transcript.
 - `POST /agents/images`: `{target, entryId}` loads an entry’s images on demand; pages contain only image MIME types.
@@ -65,21 +65,23 @@ team({ action: "inspect", request: "<returned taskId>" })
 ```
 
 Reports arrive automatically. Use the same worker for related follow-ups; do not
-poll or send acknowledgement-only messages. Worker names stay reserved after stop.
-Inspecting an agent returns its latest assistant message, which may be intermediate;
-inspecting a request returns that request's settled outcome/answer.
+poll or send acknowledgement-only messages. An idle worker costs nothing; leave it.
+`list` shows what the dashboard shows: running agents get a row, idle ones fold into a
+count (`all: true` lists them). Inspecting an agent returns its status, model, cwd, cost,
+context use and latest assistant message, which may be intermediate; `transcript: true`
+pages the same chat items the human sees, in brief. Inspecting a request returns that
+request's settled outcome/answer.
 
 Main commands: `/team` (pick a worker), `/team open <worker>`, `/team models`, `/team stop`,
-`/team resume`, `/team reconnect`. A panel under the prompt shows each running worker
+`/team reconnect`. A panel under the prompt shows each running worker
 on its own line (spinner, current activity, elapsed time, context use as in Pi's footer,
-e.g. `18.8%/1.0M`, and list-price cost) and counts idle and
-stopped ones. Pressing Down in an empty prompt (past the end of input history) moves
+e.g. `18.8%/1.0M`, and list-price cost) and counts idle ones. Pressing Down in an empty prompt (past the end of input history) moves
 into the panel, where every worker is listed: ↑↓ select, Enter opens, Esc/Up or typing
 returns to the prompt. All of it comes from committed host state. `/team` lists only this
 session's workers; other sessions' workers are never shown.
 The worker view reads the worker's persisted transcript and live activity: scroll
 with ↑↓/PgUp/PgDn, `o` loads older pages, `f` sends a follow-up, `s` steers, `x`
-stops it (confirmed), `esc` returns. Messages sent there go straight to the worker
+aborts its current work, `esc` returns. Messages sent there go straight to the worker
 with a stable request ID, are noted in this session for you (not the model), and
 the worker's report arrives like any other. Viewing never triggers a model request
 and does not inject tool-by-tool activity into model context.
@@ -130,8 +132,8 @@ workers keep their model unless the human changes it through the service's
 Like Pi's interactive `/model`, this uses `configure()` directly: the next model
 request uses the new choice, including a continuation after tools in an active run.
 Model selection and top-level creation are not exposed to agent tools.
-`abort` cancels current work without disabling the agent; `stop`
-disables it.
+Agents are running, idle or archived. `abort` cancels current work and the agent stays
+usable; only the human archives agents.
 
 A missing config means no worker models (sub-agents use the parent's model); a malformed
 config refuses startup or spawn. `providerExtensions` is read at host startup: restart
@@ -204,12 +206,10 @@ follow Durable's replay policy. No daemon supervisor is installed: after a crash
 or reboot the next connected Pi client starts the host. Reconnection may resume
 previously authorized work and incur model usage.
 
-Stopping a worker aborts its current work, queued inputs and associated reporters;
-its name/context remains inspectable. Aborting a run instead leaves the agent enabled
-and reports the unanswered submission to its sender. `/team stop` additionally pauses new
-delegation, withdraws pending worker reports, and leaves other teams alone.
-`/team resume` permits new workers, not resurrection of stopped ones. Main Esc does
-not stop background workers. Generic tool side effects, daemonized external
+Aborting a run leaves the agent usable and reports the unanswered submission to its
+sender. `/team stop` (confirmed) aborts every worker's current work and withdraws their
+pending reports, leaving other teams alone; the workers stay available. Archiving
+does the same and sets the agent aside. Main Esc does not stop background workers. Generic tool side effects, daemonized external
 services, Git state and worktrees are not undone by an abort.
 
 ## Upstream basis and deliberate deviations
@@ -232,7 +232,7 @@ IDs and session documents do not declare `history`. We adapt to the pinned packa
 API, not unpublished API shapes. Domain IDs are strings at the external boundary.
 
 Local additions are team membership/scoping, peer/cross-main messaging, ordinary-Pi
-transport/receipts, provider restrictions, and explicit stop/pause. Whole-team stop
+transport/receipts, provider restrictions, and human archive. Whole-team stop
 is a human command/confirmation, not a prompt asking workers to stop.
 The worker-host transport is necessary across independent Pi processes. Its
 single-owner guard uses SQLite's OS lock on `owner.sqlite` held for process lifetime;
@@ -351,9 +351,8 @@ loaded yet.
 - **Ctrl+C** exits.
 
 Archive, unarchive and delete are human-only (terminal **a**/**u**/**d**, web **⋮** menu and the
-**Archived** toggle). Archiving stops the agent and its sub-agents and hides them from agents'
-`team list` unless it passes `archived: true`; messages to them fail until unarchived, which
-brings them back idle. Delete is offered only for archived agents: it hides them everywhere for
+**Archived** toggle). Archiving aborts the agent and its sub-agents and hides them from agents'
+`team list`; messages to them fail until unarchived, which brings them back idle. Delete is offered only for archived agents: it hides them everywhere for
 good. History is kept and a deleted agent's name is reusable. External Pi sessions cannot be archived
 or deleted. Human interfaces show durable agents only.
 
@@ -384,7 +383,7 @@ Open the pairing URL on your phone in Chrome to use the web app. In Chrome's men
 choose **Install app** (sometimes under **Add to Home screen**) to install Pi Agents.
 Launch the installed app for a standalone window without an address bar. The app keeps the token on that
 phone and removes it from the address bar. You can read chats, use `/tree` or **Rewind here** on a message, send or steer messages,
-stop agents, and create agents with a folder, model and thinking level. Creation opens
+abort agents' current work, and create agents with a folder, model and thinking level. Creation opens
 on review using the most recent top-level agent’s folder; if none exists, choose a
 folder first. The browser never silently uses the host process’s working directory.
 The shell is available offline; agent data and actions always require the host.

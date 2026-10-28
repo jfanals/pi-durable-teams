@@ -1,4 +1,4 @@
-import { chatItems, type ChatItem } from "../src/chat.ts";
+import { chatItems, type ChatItem, type TranscriptEntry } from "../src/chat.ts";
 import { transcript } from "../src/web/render.ts";
 import { markdownForSelection } from "../src/copy.ts";
 import { liveStatus, type WorkerStatus } from "../src/status.ts";
@@ -7,7 +7,7 @@ import { after as cleanup, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, MemoryStorage } from "@earendil-works/pi-durable";
+import { createRegistry, MemoryStorage, type ConversationId } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { getMarkdownTheme, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
@@ -92,29 +92,25 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   } } });
   assert.deepEqual(totals.tokens, { input: 11, output: 22, cacheRead: 33, cacheWrite: 44 });
   reviewer.context = 188_364;
-  panel.setWorkers([{ id: "2", name: "scout", enabled: true, since: now - 90_000, finishedAt: now - 30_000 }, reviewer, { id: "3", name: "old", enabled: false, cost: 1.5 }]);
+  panel.setWorkers([{ id: "2", name: "scout", since: now - 90_000, finishedAt: now - 30_000 }, reviewer, { id: "3", name: "old", cost: 1.5 }]);
   const summary = plain(panel.render(80));
-  assert.equal(summary.length, 3, summary.join("\n"));
+  assert.equal(summary.length, 2, summary.join("\n"));
   assert.match(summary[0]!, /reviewer +reading src\/ui\.ts +opus-5-5 medium · 2m 1[45]s · 18\.8%\/1\.0M · \$9\.812$/);
   assert.doesNotMatch(plain(panel.render(70))[0]!, /opus/); // model drops first on narrow terminals, then the cost
   assert.doesNotMatch(plain(panel.render(69))[0]!, /\$/);
-  assert.match(summary[1]!, /scout +idle · last reply just now +1m 00s$/); // finished 30 s ago: still listed
-  assert.match(summary[2]!, /^ +1 stopped · team \$11\.312 \(sub\) · ↓ to select/); // stopped workers' cost counts too
+  assert.match(summary[1]!, /^ +2 idle · team \$11\.312 \(sub\) · ↓ to select/); // idle workers are counted, their cost too
   assert.ok(panel.render(30).every(line => visibleWidth(line) <= 30));
   // Down focuses it: every worker listed, running first; Up from the top returns to the prompt.
   const editor = { handleInput: (d: string) => focus.push(`typed ${d}`), render: () => [], invalidate() {} };
   panel.enter(editor); panel.focused = true;
   const open = plain(panel.render(80));
-  assert.equal(open.length, 4); assert.match(open[0]!, /› .*reviewer/); assert.match(open[1]!, /scout +idle · last reply/); assert.match(open[2]!, /old +stopped/);
+  assert.equal(open.length, 4); assert.match(open[0]!, /› .*reviewer/); assert.match(open[1]!, /scout +idle · last reply/); assert.match(open[2]!, /old +idle/);
   panel.handleInput("\x1b[B"); panel.handleInput("\r");
   assert.equal(opened[0]?.name, "scout");
   panel.handleInput("\x1b[A"); panel.handleInput("\x1b[A");
   assert.equal(focus.at(-1), editor);
   panel.handleInput("x"); assert.equal(focus.at(-1), "typed x"); // typing goes back to the prompt
-  // A minute after its last reply an idle worker leaves the list and is only counted.
   panel.focused = false;
-  panel.setWorkers([reviewer, { id: "2", name: "scout", enabled: true, since: now - 150_000, finishedAt: now - 61_000 }]);
-  assert.match(plain(panel.render(80)).at(-1)!, /1 idle · team \$9\.812 \(sub\) · ↓ to select/);
   panel.setWorkers([]); panel.dispose();
 
   // Real Durable transcript: input attribution, paired tool call/error, assistant Markdown, no system noise.
@@ -126,7 +122,8 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     const main = await service.register({ sessionId: "ui", secret: "x".repeat(36), cwd: process.cwd(), name: "Main", model: { provider: "faux", modelId: "faux-1" } });
     const spawned = await service.action(main, { action: "spawn", name: "reader", message: "Read missing.txt" }, "s") as any;
     await service.harness.waitForTask(spawned.taskId, BACKGROUND_CONTEXT);
-    const page = await service.action(main, { action: "inspect", target: "reader", transcript: true }, "") as any;
+    const reader = (await service.team(main))[0]!;
+    const page = { entries: (await (await service.harness.conversation(Number(reader.id) as ConversationId, BACKGROUND_CONTEXT))!.entries({ order: "ascending" }, 200, undefined, BACKGROUND_CONTEXT)).items };
     const lines = plain(renderTranscript(chatItems(page.entries), "reader", 50, theme));
     const text = lines.join("\n");
     // Pi's read renderer: title and path, then the error inside the tool box.
@@ -138,14 +135,14 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     // Worker view: fills the screen, fits the width, follows live until scrolled, never yanks a scrolled view.
     let rows = 8; const renders: number[] = [];
     const tui = { terminal: { get rows() { return rows; } }, requestRender: () => renders.push(1) } as unknown as TUI;
-    let entries = [...page.entries];
+    let entries: TranscriptEntry[] = [...page.entries];
     let result: ViewResult | undefined;
     const life = new AbortController();
     cleanup(() => life.abort()); // stops the view's clock even when an assertion fails
     const view = new WorkerView(tui, theme, "reader", {
       images: async () => [],
       page: async () => ({ items: chatItems(entries) }),
-      status: async () => ({ id: "1", name: "reader", enabled: true, running: true, since: Date.now() - 75_000, cost: 0.31,
+      status: async () => ({ id: "1", name: "reader", running: true, since: Date.now() - 75_000, cost: 0.31,
         model: "opus-5-5", thinking: "medium", context: 50_000, contextWindow: 200_000, cwd: "/srv/app" }),
       watch: signal => new Promise(resolve => signal.addEventListener("abort", () => resolve())),
     }, value => { result = value; }, life.signal);

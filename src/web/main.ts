@@ -53,22 +53,17 @@ function base(content: string) {
   root.innerHTML = `<div id="connection" role="status" ${reconnecting.size ? "" : "hidden"}>
 Host disconnected — reconnecting…</div>${content}<div id="notice" role="status"></div><div id="error" role="alert"></div>`;
 }
-let expiry: ReturnType<typeof setTimeout> | undefined;
 /** The list shows active agents or, toggled, archived ones; `agents` stays the host's full roster. */
 let showArchived = false;
 function list() {
-  clearTimeout(expiry);
-  const now = Date.now();
   const scroll = document.querySelector(".list")?.scrollTop ?? 0;
   const focus = (document.activeElement as HTMLElement)?.dataset.open;
   screen = "list";
-  // Each agent's team at a glance, as in the terminal: running and recently finished sub-agents
-  // get a row; the rest fold into one summary line, listed when the agent is opened.
-  const expiries: number[] = [];
+  // Each agent's team at a glance, as in the terminal: running sub-agents get a row;
+  // the rest fold into one summary line, listed when the agent is opened.
   const team = (a: Agent): string => {
     if (!a.children.length) return "";
-    const { shown, summary, expiresAt } = teamGlance(a.children, now);
-    if (expiresAt) expiries.push(expiresAt);
+    const { shown, summary } = teamGlance(a.children);
     return shown.map((w) => row(a.children.find((c) => c.id === w.id)!, true)).join("")
       + (summary ? `<div class="team-summary">${e(summary)}</div>` : "");
   };
@@ -103,7 +98,6 @@ ${view.archivedCount ? button(showArchived ? "Active agents" : `Archived (${view
     (el) => el.dataset.open === focus,
   );
   focused?.focus({ preventScroll: true });
-  if (expiries.length) expiry = setTimeout(() => { if (screen === "list") list(); }, Math.max(0, Math.min(...expiries) - now));
 }
 function status(clockOnly = false) {
   const a = current();

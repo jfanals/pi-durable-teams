@@ -1,5 +1,5 @@
 import { piCompletionTool } from "./presentation.ts";
-import { archiveView, formatCost, teamGlance } from "./status.ts";
+import { archiveView, formatCost, statusWord, teamGlance } from "./status.ts";
 import { execFile } from "node:child_process";
 import { basename } from "node:path";
 import { DirPicker } from "./dir-picker.ts";
@@ -60,7 +60,6 @@ export class AgentsApp implements Component, Focusable {
   private dirPicker?: DirPicker;
   private confirming?: AgentSummary;
   private ticker?: ReturnType<typeof setInterval>;
-  private expiry?: ReturnType<typeof setTimeout>;
   private frame = 0;
   private launchCwd: string;
   private exit: () => void;
@@ -107,10 +106,6 @@ export class AgentsApp implements Component, Focusable {
           for (const { agent } of this.rows()) this.loadBranch(agent.cwd);
           const index = this.selectable().findIndex(agent => agent.id === selectedId);
           if (index >= 0) this.selected = index;
-          // A recently finished sub-agent folds into its team's summary a minute after its reply.
-          clearTimeout(this.expiry);
-          const expiries = this.dashboard().flatMap(row => row.expiresAt ? [row.expiresAt] : []);
-          if (expiries.length) this.expiry = setTimeout(() => this.tui.requestRender(), Math.max(0, Math.min(...expiries) - Date.now()));
           this.view?.setChildren(this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent.children ?? []); this.note = ""; delay = 250;
           const running = this.rows().some(row => row.agent.running);
           if (running && !this.ticker) this.ticker = setInterval(() => { this.frame++; this.tui.requestRender(); }, 100);
@@ -162,7 +157,7 @@ export class AgentsApp implements Component, Focusable {
       content: () => {
         const main = this.rows().find(row => row.agent.id === this.stack[0])?.agent;
         if (!main) return { header: "", lines: [] };
-        const activity = !main.enabled ? "stopped" : main.running ? main.activity ?? "running" : "idle";
+        const activity = statusWord(main);
         return { header: this.theme.bold(main.name), lines: [{ text: activity },
           ...main.children.map((child, i) => ({ worker: child, tree: tree(i, main.children.length), open: child.id === this.stack[1] }))] };
       },
@@ -214,21 +209,19 @@ export class AgentsApp implements Component, Focusable {
     visit(this.agents, 0); return out;
   }
   /**
-   * Dashboard rows: each top-level agent, then its team at a glance as in Pi's panel. Running and
-   * recently finished sub-agents get a row; the rest fold into one summary line, listed when the agent is opened.
+   * Dashboard rows: each top-level agent, then its team at a glance as in Pi's panel. Running
+   * sub-agents get a row; the rest fold into one summary line, listed when the agent is opened.
    */
   private dashboard(expand?: string) {
-    const out: { agent?: AgentSummary; tree: string; summary?: string; expiresAt?: number }[] = [];
-    const now = Date.now();
+    const out: { agent?: AgentSummary; tree: string; summary?: string }[] = [];
     for (const agent of this.agents) {
       out.push({ agent, tree: "" });
       if (!agent.children.length) continue;
       // The open agent's rail row lists its whole team.
-      const { shown, summary, expiresAt } = agent.id === expand ? { shown: agent.children, summary: "", expiresAt: undefined } : teamGlance(agent.children, now);
+      const { shown, summary } = agent.id === expand ? { shown: agent.children, summary: "" } : teamGlance(agent.children);
       const children = shown.map(w => agent.children.find(child => child.id === w.id)!);
       children.forEach((child, i) => out.push({ agent: child, tree: i === children.length - 1 && !summary ? "└─ " : "├─ " }));
       if (summary) out.push({ tree: "└─ ", summary });
-      if (expiresAt) out[out.length - 1]!.expiresAt = expiresAt;
     }
     return out;
   }
@@ -352,7 +345,7 @@ export class AgentsApp implements Component, Focusable {
         if (this.form !== form) return;
         this.form = undefined; this.note = "";
         // The first chat message is the task; creation itself starts no work.
-        this.open({ id: id!, name: form.name, cwd: form.cwd, enabled: true, hosted: true, children: [] });
+        this.open({ id: id!, name: form.name, cwd: form.cwd, hosted: true, children: [] });
       } catch (error) { form.error = String(error); }
       finally { form.creating = false; }
     }
@@ -473,5 +466,5 @@ export class AgentsApp implements Component, Focusable {
   invalidate() { this.view?.invalidate(); this.editor.invalidate(); }
   /** What copy-on-select puts on the clipboard: the markdown behind the selected text in the open chat. */
   copyText(selected: string) { return markdownForSelection(selected, this.view?.markdown() ?? []); }
-  dispose() { this.life.abort(); this.view?.dispose(); clearInterval(this.ticker); clearTimeout(this.expiry); this.removeInput(); this.cmux?.dispose(); }
+  dispose() { this.life.abort(); this.view?.dispose(); clearInterval(this.ticker); this.removeInput(); this.cmux?.dispose(); }
 }

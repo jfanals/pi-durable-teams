@@ -1,5 +1,7 @@
 export type WorkerStatus = {
-  id: string; name: string; enabled: boolean; running?: boolean;
+  id: string; name: string; running?: boolean;
+  /** Set aside by the human: out of the default views until unarchived. */
+  archived?: boolean;
   /** Plain-words current activity while running: "reading src/ui.ts", "thinking", … */
   activity?: string;
   /** Start of the current or last request; end of the last answer. */
@@ -22,7 +24,8 @@ export const clean = (value: unknown): string => String(value ?? "")
   .replace(/\x1b[ -/]*[@-Z\\-_]/g, "")
   .replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
 export const firstLine = (text: unknown) => clean(text).split("\n").find(line => line.trim())?.trim() ?? "";
-export const statusWord = (w: WorkerStatus) => !w.enabled ? "stopped" : w.running ? (w.activity ?? "running") : "idle";
+/** An agent is running, idle or archived: the one vocabulary of every view. */
+export const statusWord = (w: WorkerStatus) => w.archived ? "archived" : w.running ? (w.activity ?? "running") : "idle";
 
 const VERBS: Record<string, string> = { read: "reading", edit: "editing", write: "writing", bash: "bash:" };
 /** What a running worker is doing, from its committed live state. Never infers success. */
@@ -49,7 +52,7 @@ const costOf = (usage: any) => {
 const shortModel = (id: unknown) => typeof id === "string" && id ? clean(id).split("/").pop()!.replace(/^claude-/, "") : undefined;
 /** Tokens a request processed, for transcript stamps: everything except cache reads. */
 export const replyTokens = (u: any) => (u?.input ?? 0) + (u?.output ?? 0) + (u?.cacheWrite ?? 0);
-export function liveStatus(worker: { id: string; name: string; enabled?: boolean; agent?: any; live?: any; usage?: any; latest?: any; since?: unknown; contextWindow?: unknown; subscription?: unknown }): WorkerStatus {
+export function liveStatus(worker: { id: string; name: string; archived?: boolean; agent?: any; live?: any; usage?: any; latest?: any; since?: unknown; contextWindow?: unknown; subscription?: unknown }): WorkerStatus {
   const running = Boolean(worker.live?.run);
   const buckets = Object.values(worker.usage?.models ?? {}) as any[];
   const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -59,7 +62,7 @@ export function liveStatus(worker: { id: string; name: string; enabled?: boolean
   const promptTokens = (prompt?.input ?? 0) + (prompt?.cacheRead ?? 0) + (prompt?.cacheWrite ?? 0);
   const thinking = worker.agent?.thinkingLevel ?? worker.latest?.providerThinkingLevel;
   return {
-    id: worker.id, name: worker.name, enabled: worker.enabled !== false, running,
+    id: worker.id, name: worker.name, ...(worker.archived ? { archived: true } : {}), running,
     activity: running ? describe(worker.live, worker.latest) : undefined,
     since: typeof worker.since === "number" ? worker.since : undefined,
     finishedAt: typeof worker.latest?.timestamp === "number" ? worker.latest.timestamp : undefined,
@@ -88,22 +91,17 @@ export const formatContext = (w: WorkerStatus) => w.context === undefined ? ""
   : w.contextWindow ? `${(100 * w.context / w.contextWindow).toFixed(1)}%/${formatTokens(w.contextWindow)}` : `${formatTokens(w.context)} ctx`;
 export const formatCost = (cost?: number) => cost ? `$${cost.toFixed(3)}` : "";
 
-/** Idle workers keep their own row this long after their last reply, then join the summary count. */
-export const RECENT_MS = 60_000;
-export const recent = (w: WorkerStatus, now: number) => w.enabled && !w.running && !!w.finishedAt && now - w.finishedAt < RECENT_MS;
 /**
- * A team at a glance, the same in Pi's panel, the dashboard and the web list: running and
- * recently finished workers get their own row (up to `limit`); the rest are counted, with the team's cost.
+ * A team at a glance, the same in Pi's panel, the dashboard, the web list and agents' `list`:
+ * running workers get their own row (up to `limit`); the rest are counted, with the team's cost.
  */
-export function teamGlance(workers: WorkerStatus[], now: number, limit = Infinity) {
-  const shown = [...workers.filter(w => w.running), ...workers.filter(w => recent(w, now))];
-  const idle = workers.filter(w => w.enabled && !w.running && !shown.includes(w)).length;
-  const stopped = workers.filter(w => !w.enabled).length;
+export function teamGlance<T extends WorkerStatus>(workers: T[], limit = Infinity) {
+  const running = workers.filter(w => w.running);
+  const idle = workers.length - running.length;
   const cost = formatCost(workers.reduce((sum, w) => sum + (w.cost ?? 0), 0));
-  const summary = [shown.length > limit && `+${shown.length - limit} more`, idle && `${idle} idle`, stopped && `${stopped} stopped`,
+  const summary = [running.length > limit && `+${running.length - limit} more`, idle && `${idle} idle`,
     cost && `team ${cost}${workers.some(w => w.subscription) ? " (sub)" : ""}`].filter(Boolean).join(" · ");
-  const expires = shown.filter(w => !w.running).map(w => w.finishedAt! + RECENT_MS);
-  return { shown: shown.slice(0, limit), summary, ...(expires.length ? { expiresAt: Math.min(...expires) } : {}) };
+  return { shown: running.slice(0, limit), summary };
 }
 
 /**

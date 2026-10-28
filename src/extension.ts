@@ -1,4 +1,4 @@
-import { textOf, liveStatus, statusWord, type WorkerStatus } from "./status.ts";
+import { textOf, statusWord, type WorkerStatus } from "./status.ts";
 import { selectableModels } from "./model-choices.ts";
 import { randomUUID } from "node:crypto";
 import { realpath, mkdir, writeFile } from "node:fs/promises";
@@ -13,7 +13,7 @@ import { ActionSchema, IDENTITY_TYPE, MESSAGE_TYPE, SENT_TYPE, TOOL_DESCRIPTION,
 import { agentDir, stateDir } from "./paths.ts";
 import { contextLimit, LIMIT_PRESETS, writeContextLimit } from "./limits.ts";
 import { readConfig, writeWorkerModels, type WorkerModel } from "./config.ts";
-import { glyph, renderDelivery, renderSent, renderTeamCall, renderTeamResult, TeamPanel, teamResultSummary, WorkerView, type ViewResult } from "./ui.ts";
+import { glyph, renderDelivery, renderSent, renderTeamCall, renderTeamResult, TeamPanel, WorkerView, type ViewResult } from "./ui.ts";
 
 export default function durableTeams(pi: ExtensionAPI, createClient = () => new Client()) {
   let active: { ctx: ExtensionContext; sessionId: string; secret: string; life: AbortController; client: Client; queued: Set<string> } | undefined;
@@ -86,10 +86,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
   const call = (current: Current, args: object, requestId?: string, signal?: AbortSignal) =>
     current.client.call("action", { ...credentials(current), args, ...(requestId ? { requestId } : {}) }, signal ?? current.life.signal);
   async function roster(current: Current): Promise<WorkerStatus[]> {
-    const listed = await call(current, { action: "list" }) as { id: string; name: string; role: string; enabled?: boolean }[];
-    return Promise.all(listed.filter(agent => agent.role === "worker").map(async agent => agent.enabled === false
-      ? { id: agent.id, name: agent.name, enabled: false }
-      : liveStatus({ ...agent, ...await call(current, { action: "inspect", target: agent.id }) })));
+    return current.client.call<WorkerStatus[]>("team", credentials(current), current.life.signal);
   }
   // Team panel under the prompt, fed from committed host state. Refreshed after our actions and
   // deliveries, and polled every 2 s while some worker runs; the clock and spinner tick locally.
@@ -197,7 +194,6 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
       if (!current || current.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("Team session not initialized");
       current.ctx = ctx;
       if (args.action === "spawn") args = { ...args, cwd: await realpath(resolve(ctx.cwd, args.cwd ?? ctx.cwd)) };
-      if (args.action === "stop" && args.team && (!ctx.hasUI || !await ctx.ui.confirm("Stop Durable team?", "Pause this team, stop its workers/reporters, and withdraw pending worker reports?"))) throw new Error("Team stop requires human confirmation; use /team stop");
       await current.client.ensureHost(signal);
       await register(current); // model/name changes apply to newly spawned workers
       if (active !== current) throw new Error("Originating session changed");
@@ -217,18 +213,20 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
     const source = {
       images: (entryId: string) => current.client.call<import("@earendil-works/pi-ai").ImageContent[]>("agents/images", { target: worker.id, entryId }),
       page: (cursor?: string) => current.client.call("page", { ...credentials(current), target: worker.id, cursor }),
-      status: async () => liveStatus({ ...worker, ...await call(current, { action: "inspect", target: worker.id }) }),
+      status: async () => {
+        const row = (await roster(current)).find(w => w.id === worker.id);
+        if (!row) throw new Error("Worker not found");
+        return row;
+      },
       watch: (signal: AbortSignal, onFrame: () => void) => current.client.stream("watch", { ...credentials(current), target: worker.id }, signal, () => onFrame()),
     };
     while (active === current) {
       const result = await ctx.ui.custom<ViewResult>((tui, theme, _keys, done) => new WorkerView(tui, theme, worker.name, source, done, current.life.signal),
         { overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", anchor: "center" } });
       if (!result || result.type === "back") return "back";
-      if (result.type === "stop") {
-        if (await ctx.ui.confirm(`Stop ${worker.name}?`, "Abort its current work and withdraw its pending reports. A stopped worker cannot be restarted; its transcript stays readable.")) {
-          await call(current, { action: "stop", target: worker.id }, randomUUID());
-          ctx.ui.notify(`${worker.name} stopped`, "info"); void refreshRoster(current);
-        }
+      if (result.type === "abort") {
+        await call(current, { action: "abort", target: worker.id }, randomUUID());
+        ctx.ui.notify(`${worker.name}: current work aborted`, "info"); void refreshRoster(current);
         continue;
       }
       await compose(current, ctx, worker, result.mode);
@@ -327,8 +325,8 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
     return { provider: model.provider, modelId: model.id, ...(thinking === levels[0] ? {} : { thinking: thinking as WorkerModel["thinking"] }) };
   }
   pi.registerCommand("team", {
-    description: "Durable team: open the worker view, or open <worker> | models | stop | resume | reconnect",
-    getArgumentCompletions: prefix => ["open", "models", "stop", "resume", "reconnect"].filter(c => c.startsWith(prefix)).map(c => ({ value: c, label: c })),
+    description: "Durable team: open the worker view, or open <worker> | models | stop | reconnect",
+    getArgumentCompletions: prefix => ["open", "models", "stop", "reconnect"].filter(c => c.startsWith(prefix)).map(c => ({ value: c, label: c })),
     async handler(raw, ctx) {
       if (raw.trim() === "models") return editModels(ctx);
       const current = active;
@@ -342,16 +340,12 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
         void connect(next); return;
       }
       await current.client.ensureHost(); await register(current);
-      if (command === "resume") {
-        if (!await ctx.ui.confirm("Resume team?", "Allow new delegated work? Stopped workers remain stopped.")) return;
-        await current.client.call("resume", credentials(current)); ctx.ui.notify("Team resumed", "info"); return;
-      }
       if (command === "stop") {
-        if (!await ctx.ui.confirm("Stop Durable team?", "Pause delegation and stop every worker/report task in this team? Other teams are untouched.")) return;
-        const result = await call(current, { action: "stop", team: true }, randomUUID());
-        ctx.ui.notify(teamResultSummary({ action: "stop", team: true }, result), "info"); void refreshRoster(current); return;
+        if (!await ctx.ui.confirm("Stop this team's work?", "Abort every worker's current work and withdraw their pending reports. Workers stay available for new messages.")) return;
+        const result = await current.client.call<{ aborted: string[] }>("abort-team", credentials(current));
+        ctx.ui.notify(`aborted ${result.aborted.length} worker(s)`, "info"); void refreshRoster(current); return;
       }
-      if (command && command !== "open") throw new Error("Use /team, /team open <worker>, /team models, /team stop, /team resume or /team reconnect");
+      if (command && command !== "open") throw new Error("Use /team, /team open <worker>, /team models, /team stop or /team reconnect");
       if (ctx.mode !== "tui") {
         const workers = await roster(current);
         ctx.ui.notify(workers.map(w => `${glyph(w)} ${w.name} · ${statusWord(w)}`).join("\n") || "No workers in this session", "info"); return;

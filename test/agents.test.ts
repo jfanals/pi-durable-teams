@@ -11,6 +11,7 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import { AgentDoc, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool, Harness, MemoryStorage, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { human, openTeams, Teams, type TeamsService } from "../src/teams.ts";
+import { textOf } from "../src/status.ts";
 import { ActionSchema, type Actor } from "../src/protocol.ts";
 
 const model = { provider: "faux", modelId: "faux-1" };
@@ -28,7 +29,19 @@ async function settle(service: TeamsService, result: any) {
   const task = await service.harness.waitForTask(result.taskId as TaskId, ctx);
   assert.equal(task.state.outcome.status, "completed", JSON.stringify(task.state));
 }
-const roster = async (service: TeamsService, actor = human) => await service.action(actor, { action: "list" }, "") as Actor[];
+type Row = { id: string; name: string; status: string; children?: Row[] };
+/** Every agent the actor's `list` shows, flattened, as actors. */
+const roster = async (service: TeamsService, actor = human, scope?: "mains") => {
+  const flat = (rows: Row[]): Row[] => rows.flatMap(row => row.id === undefined ? [] : [row, ...flat(row.children ?? [])]);
+  const state = (await service.harness.snapshot(Teams, ctx))!;
+  return flat(await service.action(actor, { action: "list", all: true, ...(scope ? { scope } : {}) }, "") as Row[])
+    .map(row => ({ id: row.id, name: row.name, teamId: state.agents[row.id]!.parent ?? row.id, role: state.agents[row.id]!.parent ? "worker" : "main" }) as Actor);
+};
+/** The agent's latest assistant message, as stored. */
+async function conversationLatest(service: TeamsService, id: string) {
+  const view = await (await service.harness.conversation(Number(id) as ConversationId, ctx))!.viewState(ctx);
+  try { return view.value.entries.flatMap(entry => entry.model ?? []).findLast(m => m.role === "assistant") as any; } finally { view.dispose(); }
+}
 const page = (service: TeamsService, target: string) => service.action(human, { action: "inspect", target, transcript: true }, "");
 async function idle(service: TeamsService, id: string) {
   await (await service.harness.conversation(Number(id) as ConversationId, ctx))!.waitForIdle(ctx);
@@ -54,11 +67,10 @@ test("hosted agents delegate, exchange reports, obey tree reach and persist acro
     await service.action(human, { action: "newAgent", name: "B", cwd: directory }, "b");
     const a = (await roster(service)).find(agent => agent.name === "A")!;
     const b = (await roster(service)).find(agent => agent.name === "B")!;
-    await assert.rejects(service.action(a, { action: "stop", team: true }, "invalid-team-stop"), /external Pi sessions/);
     await assert.rejects(service.action(a, { action: "newAgent", name: "forbidden", cwd: directory }, "x"), /human/);
-    await assert.rejects(service.action(b, { action: "stop", target: a.id }, "x"), /accessible/);
+    await assert.rejects(service.action(b, { action: "abort", target: a.id }, "x"), /accessible/);
     assert.ok(!(await roster(service, a)).some(agent => agent.id === b.id));
-    assert.ok((await service.action(a, { action: "list", scope: "mains" }, "") as Actor[]).some(agent => agent.id === b.id));
+    assert.ok((await roster(service, a, "mains")).some(agent => agent.id === b.id));
     const childB = await service.action(a, { action: "spawn", name: "B", message: "A child sharing a peer's name" }, "child-b") as any;
     await settle(service, childB);
     assert.equal((await service.action(a, { action: "inspect", target: "B" }, "") as any).id, childB.workerId);
@@ -75,14 +87,14 @@ test("hosted agents delegate, exchange reports, obey tree reach and persist acro
     const reports = (await service.harness.inspect(ctx)).tasks.filter(task => task.record.kind === "teams.reporter");
     for (const task of reports) await service.harness.waitForTask(task.record.id, ctx);
     await idle(service, a.id);
-    assert.match(JSON.stringify(await page(service, a.id)), /teams.report/);
+    assert.match(JSON.stringify(await page(service, a.id)), /"from":"reader"/);
     assert.ok(!(await roster(service, b)).some(agent => agent.id === reader.id));
-    for (const action of ["send", "inspect", "stop", "abort"] as const) await assert.rejects(service.action(b, { action, target: reader.id, message: "no", model }, action), /accessible/);
+    for (const action of ["send", "inspect", "abort"] as const) await assert.rejects(service.action(b, { action, target: reader.id, message: "no", model }, action), /accessible/);
     await assert.rejects(service.action(reader, { action: "spawn", name: "nested", message: "no" }, "x"), /cannot spawn/);
     await settle(service, await service.action(a, { action: "send", target: b.id, message: "Coordinate" }, "peer"));
     await idle(service, a.id);
     const history = JSON.stringify(await page(service, a.id));
-    assert.match(history, /teams.report/); assert.match(history, /"name":"B"/);
+    assert.match(history, /"from":"B"/);
     await settle(service, await service.action(human, { action: "send", target: reader.id, message: "Human follow-up" }, "human"));
     assert.match(JSON.stringify(await page(service, reader.id)), /Human follow-up/);
     assert.deepEqual(await service.pending(human), []);
@@ -90,24 +102,23 @@ test("hosted agents delegate, exchange reports, obey tree reach and persist acro
     await service.action(human, { action: "model", target: reader.id, model: alternate, thinking: "high" }, "model");
     await settle(service, await service.action(human, { action: "send", target: reader.id, message: "Next model" }, "next"));
     const configured = await service.action(human, { action: "inspect", target: reader.id }, "") as any;
-    assert.deepEqual(configured.agent.model, alternate); assert.equal(configured.latest.model, "faux-2");
-    assert.equal(configured.agent.thinkingLevel, "high");
+    assert.equal(configured.model, "faux/faux-2"); assert.equal(configured.thinking, "high");
     await assert.rejects(service.action(a, { action: "rename", target: a.id, name: "renamed" }, "denied-rename"), /human/);
     await assert.rejects(service.action(human, { action: "rename", target: a.id, name: "B" }, "duplicate-rename"), /Name already exists/);
     await assert.rejects(service.action(human, { action: "rename", target: a.id, name: "main" }, "invalid-rename"), /unique/);
     await service.action(human, { action: "rename", target: a.id, name: "renamed" }, "rename");
-    const renamed = await service.action(human, { action: "inspect", target: a.id }, "") as any;
-    assert.match(renamed.agent.instructions, /^You are agent renamed\./);
-    assert.match(renamed.agent.instructions, /Project instructions/);
+    const renamed = (await service.harness.snapshot(AgentDoc, Number(a.id) as ConversationId, ctx))!;
+    assert.match(renamed.instructions!, /^You are agent renamed\./);
+    assert.match(renamed.instructions!, /Project instructions/);
     await service.close(); service = await open();
     assert.equal((await roster(service)).find(agent => agent.id === a.id)!.name, "renamed");
     assert.equal((await roster(service)).length, 4);
     assert.match(JSON.stringify(await page(service, reader.id)), /Human follow-up/);
     await settle(service, await service.action(a, { action: "send", target: reader.id, message: "After restart" }, "restart"));
-    await service.action(human, { action: "stop", target: a.id }, "stop-parent");
-    const stopped = (await service.harness.snapshot(Teams, ctx))!;
-    for (const id of [a.id, reader.id, childB.workerId]) assert.equal(stopped.agents[id]!.enabled, false);
-    assert.equal(stopped.agents[b.id]!.enabled, true);
+    await service.archive(a.id, "archive-parent");
+    const archived = (await service.harness.snapshot(Teams, ctx))!;
+    for (const id of [a.id, reader.id, childB.workerId]) assert.equal(archived.agents[id]!.archived, true);
+    assert.equal(archived.agents[b.id]!.archived, undefined);
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -132,8 +143,8 @@ test("abort cancels a current hosted run without disabling the agent; human mode
     await started;
     await service.action(human, { action: "model", target: created.id, model: alternate }, "model");
     release(); await settle(service, run);
-    const first = await service.action(human, { action: "inspect", target: created.id }, "") as any;
-    assert.equal(first.latest.model, "faux-2", "the next request uses the new model, including a tool-round continuation");
+    const latest = await conversationLatest(service, created.id);
+    assert.equal(latest.model, "faux-2", "the next request uses the new model, including a tool-round continuation");
     const registration = { sessionId: "sender", secret: "s".repeat(36), name: "Sender", cwd: tmpdir(), model: alternate };
     await assert.rejects(service.register({ ...registration, sessionId: "123" }), /Invalid main identity/);
     const sender = await service.register(registration);
@@ -148,10 +159,10 @@ test("abort cancels a current hosted run without disabling the agent; human mode
     assert.match(unanswered?.text ?? "", /unanswered \(aborted\)/);
     assert.equal((await service.harness.getTask(aborted.taskId, ctx))!.state.status, "terminal");
     assert.ok((await roster(service)).some(agent => agent.id === abortTarget));
-    assert.equal((await service.harness.snapshot(Teams, ctx))!.agents[abortTarget]!.enabled, true);
+    assert.equal((await service.harness.snapshot(Teams, ctx))!.agents[abortTarget]!.archived, undefined);
     await settle(service, await service.action(human, { action: "send", target: abortTarget, message: "Try again" }, "again"));
     const status = await service.action(human, { action: "inspect", target: abortTarget }, "") as any;
-    assert.equal(status.latest.model, "faux-2");
+    assert.equal(status.model, "faux/faux-2");
   } finally { release(); await service.close(); }
 });
 
@@ -207,7 +218,7 @@ test("v1 SQLite registry and in-flight reporter migrate to v2 without losing inb
     await service.action(human, { action: "newAgent", name: "hosted", cwd: directory, model }, "hosted");
     await service.register({ ...main, name: "hosted" }); // external names may also match hosted names
     await service.register({ ...main, name: "hosted" });
-    assert.equal(doc.agents.paused!.paused, true);
+    assert.equal("paused" in doc.agents.paused!, false, "version 3 drops pause");
     assert.equal(doc.reported["old-receipt"], true);
     assert.equal(doc.requests[`${from.id}:old-request`]!.taskId, taskId);
     const pending = await service.pending(actor);
@@ -276,10 +287,10 @@ test("inspection matches active view across paged tool tails, resets and compact
       try {
         const messages = view.value.entries.flatMap(entry => entry.model ?? []);
         const inspected = await service.action(human, { action: "inspect", target: id }, "") as any;
-        assert.deepEqual(inspected.latest, messages.findLast(m => m.role === "assistant"));
-        assert.equal(inspected.since, (messages.findLast(m => m.role === "user") as { timestamp?: number } | undefined)?.timestamp);
-        assert.deepEqual(inspected.agent, view.value.docs["pi.agent"]);
-        assert.deepEqual(inspected.live, view.value.docs["pi.live"]);
+        assert.equal(inspected.latest, textOf(messages.findLast(m => m.role === "assistant")));
+        const row = (await service.agents()).find(agent => agent.id === id)!;
+        assert.equal(row.since, (messages.findLast(m => m.role === "user") as { timestamp?: number } | undefined)?.timestamp);
+        assert.equal(row.running, Boolean((view.value.docs["pi.live"] as any)?.run));
       } finally { view.dispose(); }
     };
     await equivalent(); // Empty conversation.
@@ -405,13 +416,37 @@ test("archived agents leave agents' default lists, refuse messages, and come bac
     const lead = (await roster(service)).find(agent => agent.id === id)!;
     const { id: other } = await service.action(human, { action: "newAgent", name: "shelved", cwd: process.cwd() }, "shelved") as { id: string };
     assert.deepEqual(await service.archive(other, "a1"), { archived: [other] });
-    const mains = async (archived?: boolean) => (await service.action(lead, { action: "list", scope: "mains", ...(archived ? { archived } : {}) }, "") as Actor[]).map(agent => agent.id);
-    assert.deepEqual(await mains(), [id], "hidden by default");
-    assert.deepEqual((await mains(true)).sort(), [id, other].sort(), "archived: true shows them");
+    const mains = async () => (await roster(service, lead, "mains")).map(agent => agent.id);
+    assert.deepEqual(await mains(), [id], "archived agents are the human's concern");
     await assert.rejects(service.action(lead, { action: "send", target: other, message: "hi" }, "s1"), /archived; the human must unarchive/);
     await assert.rejects(service.action(human, { action: "newAgent", name: "shelved", cwd: process.cwd() }, "dup"), /archived agent/);
     await service.unarchive(other);
     assert.deepEqual((await mains()).sort(), [id, other].sort());
     assert.ok(await service.action(lead, { action: "send", target: other, message: "hi again" }, "s2"));
   } finally { await service.close(); }
+});
+
+test("registry v2 migrates to v3: stopped hosted agents become archived; enabled and paused go", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "agents-v2-"));
+  const db = join(directory, "teams.sqlite");
+  const V2 = defineDoc<any>({ kind: "teams.registry", version: 2, scope: "session", initial: () => ({ agents: {}, requests: {}, reported: {} }), checkpointWhen: () => false });
+  const old = await Harness.open(await openNodeSqliteStorage(db), { registry: createRegistry(), models: fixture().models }, ctx);
+  try {
+    await (await old.root(ctx)).commit(async tx => {
+      const child = await tx.createConversation({ ownership: { kind: "ownerless" } });
+      const doc = await tx.doc(V2);
+      doc.agents = {
+        lead: { id: "lead", name: "lead", cwd: directory, enabled: true, where: { kind: "external", session: {}, inbox: {} }, paused: true },
+        done: { id: "done", name: "done", parent: "lead", cwd: directory, enabled: false, where: { kind: "hosted", conversationId: child.id } },
+      };
+      doc.requests = { r: { stopped: ["done"] } };
+    }, ctx);
+  } finally { await old.close(ctx); }
+  const service = await openTeams(await openNodeSqliteStorage(db), { models: fixture().models });
+  try {
+    const doc = (await service.harness.snapshot(Teams, ctx))!;
+    assert.deepEqual(Object.values(doc.agents).map(a => [a.id, a.archived ?? false, "enabled" in a, "paused" in a]),
+      [["lead", false, false, false], ["done", true, false, false]]);
+    assert.deepEqual(doc.requests.r, { stopped: ["done"] }, "stored request results are replayed as they were");
+  } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });

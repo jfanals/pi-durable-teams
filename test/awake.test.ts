@@ -5,7 +5,7 @@ import type { ChildProcess } from "node:child_process";
 import { keepAwake } from "../src/awake.ts";
 import type { AgentSummary } from "../src/protocol.ts";
 
-const row = (id: string, running: boolean, children: AgentSummary[] = [], hosted = true): AgentSummary => ({ id, name: id, running, hosted, children, enabled: true });
+const row = (id: string, running: boolean, children: AgentSummary[] = [], hosted = true): AgentSummary => ({ id, name: id, running, hosted, children });
 const settle = () => new Promise(resolve => setTimeout(resolve, 1100));
 
 test("keepAwake holds one assertion while any hosted agent or sub-agent runs", { timeout: 10000 }, async () => {

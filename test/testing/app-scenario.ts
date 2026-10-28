@@ -120,7 +120,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await until(async () => (await alpha())?.running === false);
     await until(async () => !(await frame()).includes("(esc to stop)"));
     print?.("idle after stop", await frame());
-    assert.equal((await alpha())?.enabled, true);
+    assert.equal((await alpha())?.archived, undefined);
     // An accepted Enter clears the editor before status catches up: Esc must still stop, not open /tree.
     const send = source.send.bind(source), stop = source.stop.bind(source);
     let stopped = 0;
@@ -253,7 +253,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await until(async () => (await alpha())!.children.length > 0);
     const identity = { sessionId: "external", secret: "s".repeat(36) };
     await source.client.call("register", { ...identity, name: "Pi main", cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
-    const roster = await wait("└─ ○ reader"); // a recently finished sub-agent keeps its own row, nested under its parent
+    const roster = await wait("└─ 1 idle"); // an idle sub-agent folds into its team's count under its parent
     assert.doesNotMatch(roster, /Pi main|offline|\(Pi\)/);
     print?.("nested hosted agents", roster);
     await key("r"); await wait("Rename agent");
@@ -267,7 +267,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\r");
     const renamed = await wait("renamed"); assert.equal((await alpha())!.name, "renamed"); print?.("renamed", renamed);
     await key("\r"); const collapsedTeam = await wait("1 idle");
-    assert.match(collapsedTeam, /1 idle · 0 stopped · team \$0\.000 · ↓ to select/); print?.("team collapsed", collapsedTeam);
+    assert.match(collapsedTeam, /team · 1 idle · ↓ to select/); print?.("team collapsed", collapsedTeam);
     const readerId = (await alpha())!.children[0]!.id;
     await source.send(readerId, "SLOW");
     const spinner = (screen: string) => screen.split("\n").find(line => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏].*reader/.test(line))?.match(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/)?.[0];
@@ -313,12 +313,12 @@ export async function appScenario(width: number, height: number, print?: (name: 
     }
     await key("\x1b[D"); const parentChat = await wait("enter/→ open"); assert.match(parentChat, /renamed/); print?.("back to parent panel", parentChat);
     await key("\x1b[D"); await wait("n new");
-    // a archives the agent with its team (stopped, no confirmation); u in the archived view brings them back.
+    // a archives the agent with its team (no confirmation); u in the archived view brings them back.
     await key("a"); await wait("1 archived");
-    assert.equal((await alpha())?.archived, true); assert.equal((await alpha())?.enabled, false);
+    assert.equal((await alpha())?.archived, true);
     await key("\t"); const archivedView = await wait("u unarchive"); assert.match(archivedView, /renamed/); assert.doesNotMatch(archivedView, /beta/);
     await key("u"); await wait("a archive");
-    await until(async () => (await alpha())?.enabled === true && !(await alpha())?.archived);
+    await until(async () => !(await alpha())?.archived);
     // d deletes, only from the archived view, after y.
     await key("a"); await wait("1 archived"); await key("\t"); await wait("u unarchive");
     await key("d"); await wait("Delete renamed and 1 sub-agent? This can't be undone. y/n"); await key("n");

@@ -86,9 +86,8 @@ test("main transport queues until persisted acknowledgement; duplicate main clie
   try {
     for (const identity of [a, b]) await client.call("register", { ...identity, name: identity.sessionId, cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
     const hosted = await host.service.action(human, { action: "newAgent", name: "hosted", cwd: directory, model: { provider: "faux", modelId: "faux-1" } }, "hosted") as any;
-    const listed = await client.call("action", { ...a, args: { action: "list", scope: "mains" } }) as any[];
-    assert.ok(listed.filter(agent => !agent.hosted).every(agent => typeof agent.connected === "boolean"));
-    assert.ok(!Object.hasOwn(listed.find(agent => agent.id === hosted.id)!, "connected"));
+    const listed = await client.call("action", { ...a, args: { action: "list", scope: "mains", all: true } }) as any[];
+    assert.deepEqual(listed.map(agent => agent.id).sort(), ["a", "b", hosted.id].sort());
     const message = "hello " + "large-report ".repeat(20000);
     await client.call("action", { ...a, args: { action: "send", target: "b", message }, requestId: "hello" });
     const life = new AbortController(); lives.push(life);
@@ -126,7 +125,7 @@ test("human rosters show hosted trees only; agent mains and messaging retain ext
       assert.deepEqual(rows[0].children.map((row: any) => row.name), ["hosted-child"]);
     };
     check(await client.call("agents")); // Offline external root and its hosted child are both absent.
-    const mains = await client.call("action", { ...identity, args: { action: "list", scope: "mains" } }) as any[];
+    const mains = await client.call("action", { ...identity, args: { action: "list", scope: "mains", all: true } }) as any[];
     assert.ok(mains.some(row => row.id === identity.sessionId));
     let received!: () => void;
     const delivery = new Promise<void>(resolve => { received = resolve; });
@@ -172,7 +171,7 @@ test("human removal retires a hosted subtree without deleting history and frees 
     const untouched = await host.service.action(otherActor, { action: "spawn", name: "untouched", message: "other work" }, "untouched") as any;
     while (removedRuns === 0) await delay(5);
     const removal = { target: parent.id, requestId: "remove" };
-    assert.deepEqual((await client.call("agents/remove", removal)).stopped.sort(), [parent.id, child.workerId].sort());
+    assert.deepEqual((await client.call("agents/remove", removal)).removed.sort(), [parent.id, child.workerId].sort());
     const removed = await host.service.harness.waitForTask(child.taskId, ctx);
     assert.equal(removed.state.status === "terminal" && removed.state.outcome.status, "aborted");
     const otherState = await host.service.action(otherActor, { action: "inspect", request: String(untouched.taskId) }, "") as any;
@@ -185,8 +184,8 @@ test("human removal retires a hosted subtree without deleting history and frees 
       await assert.rejects(client.call("action", { ...identity, args: { action: "send", target, message: "hello" }, requestId: `send-${target}` }), /No accessible agent/);
       await assert.rejects(client.call("action", { ...identity, args: { action: "inspect", target } }), /No accessible agent/);
     }
-    assert.deepEqual(await client.call("agents/remove", removal), { stopped: [] });
-    assert.deepEqual(await client.call("agents/remove", { ...removal, requestId: "again" }), { stopped: [] });
+    assert.deepEqual(await client.call("agents/remove", removal), { removed: [] });
+    assert.deepEqual(await client.call("agents/remove", { ...removal, requestId: "again" }), { removed: [] });
     assert.deepEqual((await conversation.entries({ order: "descending" }, 100, undefined, ctx)).items, before.items);
     await assert.rejects(client.call("action", { ...identity, args: { action: "remove", target: parent.id }, requestId: "forbidden" }), /Invalid team action/);
     const runsBeforeRestart = removedRuns;

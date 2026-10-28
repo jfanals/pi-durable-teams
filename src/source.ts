@@ -13,7 +13,7 @@ export type TreeResult = { nodes: TreeNode[]; leafId: string | null; id?: string
 export type TranscriptPage = { conversationId?: string; items: ChatItem[]; queued?: Queued[]; next?: string };
 export type RequestOptions = { requestId?: string; signal?: AbortSignal; images?: ImageContent[] };
 export type CompactResult = { taskId: number; outcome: "compacted" | "nothing" | "running" | "failed"; error?: string };
-export type MutationResult = { id?: string; taskId?: number; workerId?: string; delivery?: string; aborted?: string[]; stopped?: string[]; model?: ModelRef; thinking?: ModelThinkingLevel };
+export type MutationResult = { id?: string; taskId?: number; workerId?: string; delivery?: string; aborted?: string[]; model?: ModelRef; thinking?: ModelThinkingLevel };
 export interface HostSource {
   images(target: string, entryId: string): Promise<ImageContent[]>;
   models(signal?: AbortSignal): Promise<ModelChoice[]>;

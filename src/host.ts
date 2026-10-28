@@ -21,7 +21,7 @@ import { human, openTeams, type TeamsOptions } from "./teams.ts";
 
 const HumanActionSchema = Type.Object({
   ...ActionSchema.properties,
-  action: StringEnum(["newAgent", "send", "abort", "stop", "model", "rename", "inspect"]),
+  action: StringEnum(["newAgent", "send", "abort", "model", "rename", "inspect"]),
   model: Type.Optional(Type.Object({ provider: Type.String(), modelId: Type.String() })),
   thinking: Type.Optional(StringEnum(["off", "minimal", "low", "medium", "high", "xhigh", "max"])),
 });
@@ -247,10 +247,7 @@ export async function startHost(directory: string, socket: string, options: Team
       switch (pathname) {
         case "/action": {
           if (!Value.Check(ActionSchema, body.args)) throw new Error("Invalid team action arguments");
-          const result = await service.action(actor, body.args, body.requestId);
-          return reply(res, 200, body.args.action === "list" && Array.isArray(result)
-            ? result.map(agent => agent.role === "main" && !agent.hosted ? { ...agent, connected: streams.has(agent.id) } : agent)
-            : result);
+          return reply(res, 200, await service.action(actor, body.args, body.requestId));
         }
         case "/page": {
           if (typeof body.target !== "string") throw new Error("target is required");
@@ -259,7 +256,8 @@ export async function startHost(directory: string, socket: string, options: Team
         }
         case "/ack": await service.ack(actor, body.id); return reply(res, 200, { acknowledged: body.id });
         case "/publish": await service.publish(actor, String(body.latest)); return reply(res, 200, { published: true });
-        case "/resume": await service.resume(actor); return reply(res, 200, { resumed: true });
+        case "/team": return reply(res, 200, await service.team(actor));
+        case "/abort-team": return reply(res, 200, await service.abortTeam(actor));
         case "/events": {
           if (streams.has(actor.id)) throw new Error("This main session already has a connected client; close it before reconnecting");
           res.writeHead(200, { "content-type": "application/x-ndjson" });

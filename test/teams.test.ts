@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { createRegistry, MemoryStorage, type TaskId } from "@earendil-works/pi-durable";
+import { AgentDoc, createRegistry, MemoryStorage, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -47,13 +47,19 @@ test("two teams: discovery, attribution, persistent follow-ups, latest vs reques
       const r = await service.action(actor, { action: "spawn", name, message: `hello ${name}` }, name);
       results.push(r); await settle(service, r);
     }
-    const roster = await service.action(a, { action: "list" }, "list") as any[];
-    assert.equal(roster.length, 3);
-    assert.ok(!JSON.stringify(roster).includes("three"));
-    const peers = await service.action(a, { action: "list", scope: "mains" }, "mains") as any[];
-    assert.equal(peers.length, 2);
-    const worker = roster.find(w => w.name === "one");
-    assert.equal((await service.action(worker, { action: "list", scope: "mains" }, "bad") as any[]).length, 1);
+    // Idle agents fold into a count; all lists them.
+    assert.deepEqual(await service.action(a, { action: "list" }, "list"), [{ id: a.id, name: a.name, status: "idle", summary: "2 idle" }]);
+    const [team] = await service.action(a, { action: "list", all: true }, "list-all") as any[];
+    assert.deepEqual(team.children.map((w: any) => w.name).sort(), ["one", "two"]);
+    assert.ok(!JSON.stringify(team).includes("three"));
+    assert.deepEqual(await service.action(a, { action: "list", scope: "mains" }, "mains"), [{ summary: "2 idle" }]);
+    const peers = await service.action(a, { action: "list", scope: "mains", all: true }, "mains-all") as any[];
+    assert.deepEqual(peers.map(p => p.id).sort(), [a.id, b.id].sort());
+    assert.deepEqual(peers.find(p => p.id === a.id).children.map((w: any) => w.name).sort(), ["one", "two"], "all: its own team too");
+    assert.equal(peers.find(p => p.id === b.id).children, undefined, "another main's children are out of reach");
+    const one = team.children.find((w: any) => w.name === "one");
+    const worker = { id: one.id, name: one.name, teamId: a.id, role: "worker" as const };
+    assert.equal((await service.action(worker, { action: "list", scope: "mains", all: true }, "bad") as any[]).length, 1);
     await assert.rejects(service.action(worker, { action: "spawn", name: "nested", message: "no" }, "bad"), /cannot spawn/);
     await assert.rejects(service.action(worker, { action: "send", target: "main-b", message: "no" }, "bad"), /accessible/);
     const peer = await service.action(worker, { action: "send", target: "two", message: "question for sibling" }, "peer");
@@ -64,8 +70,8 @@ test("two teams: discovery, attribution, persistent follow-ups, latest vs reques
     const inspected = await service.action(a, { action: "inspect", target: "one" }, "inspect") as any;
     assert.ok(inspected.latest);
     const transcript = await service.action(a, { action: "inspect", target: "one", transcript: true }, "log") as any;
-    assert.match(JSON.stringify(transcript.entries), /hello one/);
-    assert.match(JSON.stringify(transcript.entries), /follow up/);
+    assert.match(JSON.stringify(transcript.items), /hello one/);
+    assert.match(JSON.stringify(transcript.items), /follow up/);
     const result = await service.action(a, { action: "inspect", request: String((follow as any).taskId) }, "request") as any;
     assert.equal(result.answer.role, "assistant");
     assert.match(JSON.stringify(result.answer), /follow up/);
@@ -91,7 +97,7 @@ test("concurrent spawn is atomic and request retries reuse one worker/report tas
     const [one, two] = await Promise.all([service.action(actor, args, "same-request"), service.action(actor, args, "same-request")]);
     assert.deepEqual(one, two); await settle(service, one);
     await assert.rejects(service.action(actor, args, "other-request"), /Name already exists/);
-    assert.equal((await service.action(actor, { action: "list" }, "list") as any[]).length, 2);
+    assert.equal((await service.action(actor, { action: "list", all: true }, "list") as any[])[0].children.length, 1);
   } finally { await service.close(); }
 });
 
@@ -122,8 +128,11 @@ test("worker model can invoke team; model policy and project configuration are p
     workerModel: async name => workerModelFor(await readConfig(state), name),
     validateModel: m => { if (m.provider !== "faux") throw new Error(`Provider ${m.provider} blocked`); },
   });
-  const agentOf = async (paidMain: any, name: string) =>
-    ((await pinned.action(paidMain, { action: "inspect", target: name }, `i-${name}`)) as any).agent;
+  const agentOf = async (paidMain: any, name: string) => {
+    const [team] = await pinned.action(paidMain, { action: "list", all: true }, `l-${name}`) as any[];
+    const id = team.children.find((w: any) => w.name === name).id;
+    return (await pinned.harness.snapshot(AgentDoc, Number(id) as ConversationId, ctx))!;
+  };
   try {
     const paidMain = await pinned.register({ sessionId: "paid2", secret: "q".repeat(36), name: "Paid", cwd: directory, model: { provider: "paid", modelId: "model" }, thinking: "medium" });
     // No worker models yet: the main's (blocked) model.
@@ -131,7 +140,7 @@ test("worker model can invoke team; model policy and project configuration are p
     // Edited while the host runs. Any name containing "review" gets its rule, other names the default.
     await writeWorkerModels({ workerModel: { provider: "faux", modelId: "faux-1" }, workerModels: { review: { provider: "claude", modelId: "opus" } } }, state);
     await settle(pinned, await pinned.action(paidMain, { action: "spawn", name: "pinned", message: "USE_TEAM_LIST" }, "pinned"));
-    assert.deepEqual(await agentOf(paidMain, "pinned").then(a => [a.model.modelId, a.thinkingLevel]), ["faux-1", "medium"]); // thinking follows the main
+    assert.deepEqual(await agentOf(paidMain, "pinned").then(a => [a.model!.modelId, a.thinkingLevel]), ["faux-1", "medium"]); // thinking follows the main
     await assert.rejects(pinned.action(paidMain, { action: "spawn", name: "review", message: "x" }, "r1"), /Provider claude blocked/);
     await assert.rejects(pinned.action(paidMain, { action: "spawn", name: "code-Reviewer", message: "x" }, "r2"), /Provider claude blocked/);
     // A rule's thinking level wins over the main's; other config keys survive the write.
@@ -164,19 +173,17 @@ test("pending reports and request results survive reopening SQLite; no duplicate
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("team stop withdraws reports and freezes new delegation without touching another team", async () => {
+test("/team stop aborts a team's work and withdraws its reports without touching another team", async () => {
   const service = await openTeams(new MemoryStorage(), { models: models().models });
   try {
     const a = await main(service, "stop-a", tmpdir()); const b = await main(service, "stop-b", tmpdir());
     const a1 = await service.action(a, { action: "spawn", name: "a1", message: "work" }, "a1");
     const b1 = await service.action(b, { action: "spawn", name: "b1", message: "work" }, "b1");
     await settle(service, a1); await settle(service, b1);
-    await service.action(a, { action: "stop", team: true }, "stop");
+    assert.deepEqual(await service.abortTeam(a), { aborted: [(a1 as any).workerId] });
     assert.equal((await service.pending(a)).length, 0);
     assert.equal((await service.pending(b)).length, 1);
-    await assert.rejects(service.action(a, { action: "spawn", name: "new", message: "no" }, "no"), /paused/);
-    await service.resume(a);
-    await assert.rejects(service.action(a, { action: "send", target: "a1", message: "no" }, "no2"), /stopped/);
+    await settle(service, await service.action(a, { action: "send", target: "a1", message: "still usable" }, "again-a"));
     await settle(service, await service.action(b, { action: "send", target: "b1", message: "still works" }, "again"));
   } finally { await service.close(); }
 });

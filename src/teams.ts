@@ -15,7 +15,7 @@ import { cacheMissText, piCacheMisses, piCacheWarming } from "./presentation.ts"
 import { CACHE_WARM_KIND, cacheWarming, type CacheWarmData } from "./warming.ts";
 import { agentNameError } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
-import { clean, firstLine, formatDuration, formatTokens, liveStatus, textOf } from "./status.ts";
+import { clean, firstLine, formatContext, formatCost, formatDuration, formatTokens, liveStatus, statusWord, teamGlance, textOf, type WorkerStatus } from "./status.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { ActionSchema, TOOL_DESCRIPTION, TOOL_NAME, type Action, type Actor, type Delivery, type Mode } from "./protocol.ts";
 
@@ -25,8 +25,8 @@ export type MainRegistration = {
   model: ModelRef; thinking?: AgentChange["thinkingLevel"]; latest?: string;
 };
 export type Agent = {
-  id: string; name: string; parent?: string; enabled: boolean; removed?: boolean; paused?: boolean; cwd: string;
-  /** Human-only: stopped and out of default lists until unarchived; its sub-agents are archived with it. */
+  id: string; name: string; parent?: string; removed?: boolean; cwd: string;
+  /** Human-only: its work is aborted and it is out of agents' lists until unarchived; its sub-agents are archived with it. */
   archived?: boolean;
   /** Last creation, registration or publication (ms); the list orders by recency with run times. */
   activeAt?: number;
@@ -37,25 +37,29 @@ export type Agent = {
 };
 type Registry = {
   agents: Record<string, Agent>;
-  requests: Record<string, { taskId?: TaskId; delivery?: string; workerId?: string; id?: string; stopped?: string[]; aborted?: string[]; paused?: boolean; model?: ModelRef; thinking?: WorkerModel["thinking"]; editorText?: string; note?: boolean }>;
+  requests: Record<string, { taskId?: TaskId; delivery?: string; workerId?: string; id?: string; aborted?: string[]; model?: ModelRef; thinking?: WorkerModel["thinking"]; editorText?: string; note?: boolean }>;
   reported: Record<string, boolean>;
 };
 export const human: Actor = { id: "human", teamId: "human", role: "main", name: "Human" };
 export const Teams = defineDoc<Registry>({
-  kind: "teams.registry", version: 2, scope: "session", checkpointWhen: () => false,
+  kind: "teams.registry", version: 3, scope: "session", checkpointWhen: () => false,
   initial: () => ({ agents: {}, requests: {}, reported: {} }),
   migrate(value, version) {
-    if (version !== 1) throw new Error(`Unsupported registry version ${version}`);
-    const agents: Record<string, Agent> = {};
-    for (const [id, team] of Object.entries(value.teams as Record<string, any>)) {
-      agents[id] = { id, name: team.main.name, cwd: team.main.cwd, enabled: true, paused: team.paused,
-        where: { kind: "external", session: team.main, inbox: team.pending } };
+    if (version !== 1 && version !== 2) throw new Error(`Unsupported registry version ${version}`);
+    const doc = version === 2 ? value as unknown as Registry : { agents: {} as Record<string, Agent>, requests: (value.requests ?? {}) as Registry["requests"], reported: (value.reported ?? {}) as Registry["reported"] };
+    if (version === 1) for (const [id, team] of Object.entries(value.teams as Record<string, any>)) {
+      doc.agents[id] = { id, name: team.main.name, cwd: team.main.cwd, where: { kind: "external", session: team.main, inbox: team.pending } };
       for (const worker of Object.values(team.workers) as any[]) {
-        agents[worker.actor.id] = { id: worker.actor.id, name: worker.actor.name, parent: id,
-          cwd: team.main.cwd, enabled: worker.enabled, where: { kind: "hosted", conversationId: worker.conversationId } };
+        doc.agents[worker.actor.id] = { id: worker.actor.id, name: worker.actor.name, parent: id, cwd: team.main.cwd,
+          ...(worker.enabled ? {} : { enabled: false }), where: { kind: "hosted", conversationId: worker.conversationId } } as Agent;
       }
     }
-    return { agents, requests: (value.requests ?? {}) as Registry["requests"], reported: (value.reported ?? {}) as Registry["reported"] };
+    // Version 3 has one lifecycle flag: stopped hosted agents become archived; stop and pause are gone.
+    for (const agent of Object.values(doc.agents) as (Agent & { enabled?: boolean; paused?: boolean })[]) {
+      if (agent.enabled === false && !agent.removed && agent.where.kind === "hosted") agent.archived = true;
+      delete agent.enabled; delete agent.paused;
+    }
+    return doc;
   },
 });
 const actorOf = (agent: Agent): Actor => ({ id: agent.id, name: agent.name, teamId: agent.parent ?? agent.id, role: agent.parent ? "worker" : "main" });
@@ -68,7 +72,7 @@ export function reach(agents: Record<string, Agent>, actor: Actor, verb: string,
   if (verb === "model" || verb === "rename" || verb === "newAgent") return false;
   if (verb === "spawn") return !own.parent;
   if (!target) return false;
-  if (["stop", "abort"].includes(verb)) return target.parent === own.id;
+  if (verb === "abort") return target.parent === own.id;
   return target.id === own.id || own.parent === target.id || target.parent === own.id || target.parent === own.parent;
 }
 const terminal = () => ({ status: "terminal", outcome: { status: "completed", result: null } }) as const;
@@ -203,7 +207,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     const live = await harness.snapshot(LiveDoc, target.where.conversationId, context);
     const { latest, since } = await latestMessages(target);
     const info = agent?.model && options.modelInfo?.(agent.model);
-    return { ...actorOf(target), enabled: target.enabled, agent, contextWindow: info?.window, subscription: info?.subscription, live, usage: await totalUsage(target), latest, since };
+    return { ...actorOf(target), archived: target.archived, agent, contextWindow: info?.window, subscription: info?.subscription, live, usage: await totalUsage(target), latest, since };
   }
   // UsageDoc starts empty on every fork. Sum each conversation once, including abandoned branches.
   async function totalUsage(agent: Agent) {
@@ -226,7 +230,24 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   function active(state: Registry, id: string): boolean {
     if (id === human.id) return true;
     const agent = state.agents[id];
-    return Boolean(agent?.enabled && !agent.removed && !agent.paused && (!agent.parent || active(state, agent.parent)));
+    return Boolean(agent && !agent.removed && !agent.archived && (!agent.parent || active(state, agent.parent)));
+  }
+  /** Abort the agents' current work. `withdraw` also cancels reports to and from them, so nothing arrives late. */
+  async function halt(targets: Agent[], withdraw: boolean) {
+    const ids = new Set(targets.map(agent => agent.id));
+    if (withdraw) {
+      for (const { record: task } of (await harness.inspect(context)).tasks) {
+        const input = task.input as ReporterInput;
+        if (task.kind === "teams.reporter" && task.state.status !== "terminal" && (ids.has(input.recipient) || ids.has(input.from.id))) await harness.abortTask(task.id, context);
+      }
+      await harness.commit(async tx => {
+        for (const agent of Object.values((await tx.doc(Teams)).agents)) if (agent.where.kind === "external") {
+          for (const [id, delivery] of Object.entries(agent.where.inbox)) if (ids.has(delivery.from.id)) delete agent.where.inbox[id];
+        }
+      }, context);
+    }
+    for (const agent of targets) if (agent.where.kind === "hosted") await (await conversationOf(agent)).abort(context, { background: true });
+    notify();
   }
   // All deliveries, including answers, enter through this mailbox. Hosted request IDs and external
   // inbox IDs make retries safe across a crash between posting and checkpointing the reporter.
@@ -269,7 +290,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const state = await read();
         const current = state.agents[recipient];
         if (!current || !active(state, recipient) || !active(state, from.id)) {
-          await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: { status: "stopped" } } }), ctx);
+          await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: { status: "withdrawn" } } }), ctx);
           return;
         }
         // As in Pi, input sent during a manual /compact waits for it, so the agent reads it after the summary.
@@ -308,7 +329,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
           const doc = await tx.doc(Teams);
           if (external) await reportDelivery(String(task.id), task.input, checkpoint.text, doc, tx);
           return { status: "terminal", outcome: { status: "completed", result: {
-            status: active(doc, recipient) && active(doc, from.id) ? "reported" : "stopped", ...(checkpoint.answer === undefined ? {} : { answer: checkpoint.answer }),
+            status: active(doc, recipient) && active(doc, from.id) ? "reported" : "withdrawn", ...(checkpoint.answer === undefined ? {} : { answer: checkpoint.answer }),
           } } } as const;
         }, ctx);
         notify();
@@ -328,7 +349,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const worker = state.agents[recipient];
         if (reporter && reporter.state.status !== "terminal" && worker) {
           await post(from.id, { id: `teams-remind:${request}`, from: actorOf(worker), mode: "followUp", request,
-            text: `Reminder: no report for request ${request} after ${formatDuration(seconds * 1000)}. Inspect it, send a nudge, or stop the agent; the report still arrives on its own.` });
+            text: `Reminder: no report for request ${request} after ${formatDuration(seconds * 1000)}. Inspect it, send a nudge, or abort its work; the report still arrives on its own.` });
         }
         await runtime.commit(terminal, ctx);
       },
@@ -366,72 +387,123 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       text, mode: "followUp", request: id }, true, tx);
   }
 
+  /** The transcript as chat items, newest page first: the one view of a conversation for the terminal, the web and agents. */
+  async function page(actor: Actor, target: string, cursor?: string) {
+    const destination = resolveTarget(await read(), actor, target);
+    if (destination.where.kind === "external") {
+      const latest = destination.where.session.latest;
+      return { items: chatItems([{ id: "publication", kind: latest ? "pi.assistant" : "teams.placeholder",
+        ...(latest ? { model: [{ content: latest }] } : { data: { text: "This Pi session has no hosted transcript." } }) }]) };
+    }
+    const conversation = await conversationOf(destination);
+    const page = await conversation.entries({ order: "descending" }, 40, cursor ? JSON.parse(cursor) : undefined, context);
+    // Read backwards in bounded chunks only when the page begins mid-request.
+    const prefix: (typeof page.items)[number][] = [];
+    const input = (entry: { kind: string }) => ["teams.message", "teams.report", "pi.user"].includes(entry.kind);
+    let oldest: (typeof page.items)[number] | undefined = [...page.items].sort((a, b) => Number(a.id) - Number(b.id))[0];
+    while (oldest && !input(oldest)) {
+      const before = await conversation.entries({ order: "descending", maxEntryId: (Number(oldest.id) - 1) as EntryId }, 40, undefined, context);
+      if (!before.items.length) break;
+      const ordered = [...before.items].sort((a, b) => Number(b.id) - Number(a.id));
+      const boundary = ordered.findIndex(input);
+      prefix.push(...(boundary < 0 ? ordered : ordered.slice(0, boundary + 1)));
+      if (boundary >= 0) break;
+      oldest = ordered.at(-1);
+    }
+    const items = chatItems([...page.items], prefix);
+    if (options.showCacheMissNotices?.()) await addCacheMisses(items, [...prefix, ...page.items]);
+    const inbox = (await harness.snapshot(InboxDoc, destination.where.conversationId, context))?.items ?? [];
+    const held = await heldByCompaction(destination);
+    const queued: Queued[] = [...held, ...inbox.filter(item => item.mode !== "write").map(item => ({ mode: item.mode, text: firstLine((item.entry?.data as { message?: string } | undefined)?.message ?? textOf({ content: item.content })) + (Array.isArray(item.content) && item.content.some((p: any) => p.type === "image") ? " [image]" : "") }))];
+    return { conversationId: String(destination.where.conversationId), items, queued, next: page.next ? JSON.stringify(page.next) : undefined };
+  }
+  /** An agent's row as every view shows it (see status.ts); the cached roster row when hosted. */
+  async function statusOf(agent: Agent): Promise<WorkerStatus> {
+    await agents();
+    const { hosted: _hosted, children: _children, ...row } = statusRows.get(agent.id)?.row ?? { id: agent.id, name: agent.name, hosted: false, children: [] };
+    return row;
+  }
+  /**
+   * Agents' `list`: the dashboard's view. Your own team, or with `mains` every top-level agent; running agents get
+   * a row and idle ones fold into a count, as in teamGlance. `all` lists every agent. Archived agents are the human's concern.
+   */
+  async function list(state: Registry, actor: Actor, mains: boolean, all: boolean) {
+    const visible = Object.values(state.agents).filter(agent => !agent.archived && reach(state.agents, actor, "inspect", agent));
+    type Row = { id: string; name: string; status: string; children?: Row[]; summary?: string };
+    const row = async (agent: Agent, folded: (Row | { summary: string })[] = []): Promise<Row> => {
+      const kids = folded.filter((r): r is Row => "id" in r); const summary = folded.find(r => !("id" in r))?.summary;
+      return { id: agent.id, name: agent.name, status: statusWord(await statusOf(agent)), ...(kids.length ? { children: kids } : {}), ...(summary ? { summary } : {}) };
+    };
+    const fold = async (team: Agent[], nest: boolean): Promise<(Row | { summary: string })[]> => {
+      const statuses = await Promise.all(team.map(async agent => ({ ...await statusOf(agent), agent })));
+      const { shown, summary } = all ? { shown: statuses, summary: "" } : teamGlance(statuses);
+      const rows = await Promise.all(shown.map(async ({ agent }) => row(agent, nest ? await fold(visible.filter(child => child.parent === agent.id), false) : [])));
+      return summary ? [...rows, { summary }] : rows;
+    };
+    if (mains || actor.id === human.id) return fold(visible.filter(agent => !agent.parent), true);
+    const own = state.agents[actor.id];
+    const root = visible.find(agent => agent.id === (own?.parent ?? own?.id));
+    if (!root) return [];
+    return [await row(root, await fold(visible.filter(child => child.parent === root.id), false))];
+  }
+  /** Agents' `inspect`: what the dashboard shows for the agent, and its latest reply. */
+  async function summary(agent: Agent) {
+    if (agent.where.kind === "external") return { ...actorOf(agent), latest: agent.where.session.latest, observed: "last main publication; may be stale/offline" };
+    const row = await statusOf(agent);
+    const { latest } = await latestMessages(agent);
+    return { id: agent.id, name: agent.name, status: statusWord(row), model: [row.provider, row.modelId].filter(Boolean).join("/"),
+      ...(row.thinking ? { thinking: row.thinking } : {}), cwd: agent.cwd, cost: formatCost(row.cost), context: formatContext(row), latest: textOf(latest) };
+  }
+  /** A transcript item for agents: text kept short, tool calls by name and subject, no thinking. */
+  const BRIEF = 2_000;
+  const short = (text: string) => text.length <= BRIEF ? text : `${text.slice(0, BRIEF)}\n… ${text.length - BRIEF} more characters`;
+  function brief(item: ChatItem) {
+    if (item.kind === "input") return { id: item.id, kind: item.kind, from: item.from, text: short(item.text) };
+    if (item.kind === "reply") return { id: item.id, kind: item.kind, ...(item.error ? { error: item.error } : {}),
+      parts: item.parts.flatMap((part): ({ text: string } | { tool: string; subject: string })[] => part.type === "text" ? [{ text: short(part.text) }] : part.type === "tool" ? [{ tool: part.name, subject: part.subject }] : []) };
+    if (item.kind === "result") return { id: item.id, kind: item.kind, ok: item.ok,
+      text: short(item.error ?? (item.content ?? []).map(part => part.type === "text" ? part.text : "[image]").join("\n")) };
+    if (item.kind === "compaction") return { id: item.id, kind: item.kind, summary: short(item.summary) };
+    return item;
+  }
+  /** A hosted agent the human can archive or remove, and its sub-agents. */
+  function teamOf(state: Registry, target: string) {
+    const agent = state.agents[target] ?? resolveTarget(state, human, target);
+    if (agent.where.kind !== "hosted") throw new Error("Only hosted agents can be archived or removed");
+    return [agent, ...Object.values(state.agents).filter(child => child.parent === agent.id && !child.removed)];
+  }
   async function action(actor: Actor, args: Action, requestId: string) {
     const state = await read();
     const own = state.agents[actor.id];
     if ((!own || own.removed) && actor.id !== human.id) throw new Error("Unknown agent");
-    if (args.action === "list") {
-      return Object.values(state.agents).filter(agent => reach(state.agents, actor, "inspect", agent)
-        && (args.archived || !agent.archived)
-        && (args.scope === "mains" ? !agent.parent : actor.id === human.id || agent.id === actor.id || Boolean(agent.parent) || agent.id === own?.parent))
-        .map(agent => ({ ...actorOf(agent), hosted: agent.where.kind === "hosted", enabled: agent.enabled, paused: agent.paused, ...(agent.archived ? { archived: true } : {}) }));
-    }
+    if (args.action === "list") return list(state, actor, args.scope === "mains", Boolean(args.all));
     if ((args.action === "model" || args.action === "rename" || args.action === "newAgent") && !reach(state.agents, actor, args.action)) {
       throw new Error("Only the human can create top-level agents, rename agents or change models");
     }
     if (args.action === "spawn" && !reach(state.agents, actor, "spawn")) throw new Error("Sub-agents cannot spawn: maximum depth is 2");
     const creating = args.action === "spawn" || args.action === "newAgent";
-    const teamStop = args.action === "stop" && args.team;
-    const target = creating || (args.action === "inspect" && args.request) || teamStop ? undefined : resolveTarget(state, actor, args.target, args.action);
+    const target = creating || (args.action === "inspect" && args.request) ? undefined : resolveTarget(state, actor, args.target, args.action);
     if (args.action === "inspect") {
       if (args.request) {
         return inspectRequest(actor, args.request);
       }
-      if (target!.where.kind === "external") {
-        if (args.transcript) throw new Error("External Pi sessions do not have hosted transcripts");
-        return { ...actorOf(target!), latest: target!.where.session.latest, observed: "last main publication; may be stale/offline" };
-      }
-      const conversation = await conversationOf(target!);
       if (args.transcript) {
-        const page = await conversation.entries({ order: "descending" }, 40, args.cursor ? JSON.parse(args.cursor) : undefined, context);
-        return { ...actorOf(target!), entries: page.items, next: page.next ? JSON.stringify(page.next) : undefined };
+        const { items, next } = await page(actor, target!.id, args.cursor);
+        return { id: target!.id, name: target!.name, items: items.map(brief), ...(next ? { next } : {}) };
       }
-      return inspectHosted(target!);
+      return summary(target!);
     }
     if (!requestId) throw new Error("A stable request ID is required");
     const requestKey = actor.id === human.id ? `human:${args.action}:${requestId}` : `${actor.id}:${requestId}`;
     const accepted = (result: NonNullable<Registry["requests"][string]>) => actor.id !== human.id && result.taskId !== undefined
       ? { ...result, next: result.note ? "delivered to your parent; no report comes back" : "end your turn; the report arrives automatically" } : result;
     if (state.requests[requestKey]) return accepted(state.requests[requestKey]);
-    if (!active(state, actor.id)) throw new Error("Agent/team stopped or paused");
+    if (!active(state, actor.id)) throw new Error("Agent archived");
 
-    if (args.action === "stop" || args.action === "abort") {
-      if (teamStop && own?.where.kind !== "external") throw new Error("Whole-team stop is only available to external Pi sessions");
-      if (args.action === "abort" && target!.where.kind === "external") throw new Error("Pi sessions control their own runs");
-      const targets = teamStop ? Object.values(state.agents).filter(agent => agent.parent === actor.id) : [target!];
-      // Disabling a parent also disables its subtree. Aborting never changes enabled state.
-      if (!teamStop && args.action === "stop") targets.push(...Object.values(state.agents).filter(agent => agent.parent === target!.id));
-      await harness.commit(async tx => {
-        const doc = await tx.doc(Teams);
-        if (teamStop) doc.agents[actor.id]!.paused = true;
-        if (args.action === "stop") {
-          for (const agent of targets) doc.agents[agent.id]!.enabled = false;
-          for (const agent of Object.values(doc.agents)) if (agent.where.kind === "external") {
-            for (const [id, delivery] of Object.entries(agent.where.inbox)) if (targets.some(target => target.id === delivery.from.id)) delete agent.where.inbox[id];
-          }
-        }
-      }, context);
-      const inspection = await harness.inspect(context);
-      for (const { record: task } of inspection.tasks) {
-        if (args.action === "stop" && task.kind === "teams.reporter" && targets.some(agent => agent.id === (task.input as ReporterInput).recipient || agent.id === (task.input as ReporterInput).from.id)) await harness.abortTask(task.id, context);
-      }
-      for (const agent of targets) if (agent.where.kind === "hosted") {
-        await (await conversationOf(agent)).abort(context, { background: true });
-      }
-      notify();
-      const result = args.action === "abort"
-        ? { aborted: targets.map(agent => agent.id) }
-        : { stopped: targets.map(agent => agent.id), paused: Boolean(teamStop) };
+    if (args.action === "abort") {
+      if (target!.where.kind === "external") throw new Error("Pi sessions control their own runs");
+      await halt([target!], false);
+      const result = { aborted: [target!.id] };
       await harness.commit(async tx => { (await tx.doc(Teams)).requests[requestKey] = result; }, context);
       return result;
     }
@@ -493,20 +565,19 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     const result = await control.commit(async tx => {
       const doc = await tx.doc(Teams);
       if (doc.requests[requestKey]) return { ...doc.requests[requestKey]! };
-      if (!active(doc, actor.id)) throw new Error("Agent/team stopped or paused");
+      if (!active(doc, actor.id)) throw new Error("Agent archived");
       let recipient = target;
       if (creating) {
         const taken = Object.values(doc.agents).find(agent => !agent.removed && agent.where.kind === "hosted" && agent.parent === parent && agent.name === args.name);
         if (taken) throw new Error(taken.archived ? "Name belongs to an archived agent; choose a distinct name" : "Name already exists; reuse the agent or choose a distinct name");
         const anchor = await tx.createTask(Anchor, null, { ownership: { kind: "conversation" }, background: true });
         const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
-        recipient = { id: String(child.id), name: args.name!, ...(parent ? { parent } : {}), cwd: cwd!, enabled: true, activeAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
+        recipient = { id: String(child.id), name: args.name!, ...(parent ? { parent } : {}), cwd: cwd!, activeAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
         if (doc.agents[recipient.id]) throw new Error("Agent ID collision with a registered Pi session");
         await configure(tx, child.id, prepared!);
         doc.agents[recipient.id] = recipient;
       }
-      if (recipient?.archived) throw new Error("Agent archived; the human must unarchive it first");
-      if (!recipient || !active(doc, recipient.id)) throw new Error("Agent stopped; start a new named agent");
+      if (!recipient || !active(doc, recipient.id)) throw new Error("Agent archived; the human must unarchive it first");
       if (args.action === "newAgent") return doc.requests[requestKey] = { id: recipient.id };
       if (recipient.where.kind === "external") {
         if (args.images?.length) throw new Error("Image attachments require a hosted agent");
@@ -531,8 +602,9 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     tools: [defineTool({
       name: TOOL_NAME, description: TOOL_DESCRIPTION, parameters: ActionSchema, replay: "unsafe",
       execute: async (args, api) => {
-        const worker = Object.values((await read()).agents).find(agent => agent.where.kind === "hosted" && agent.where.conversationId === api.conversationId);
-        if (!worker?.enabled) throw new Error("Worker not active");
+        const state = await read();
+        const worker = Object.values(state.agents).find(agent => agent.where.kind === "hosted" && agent.where.conversationId === api.conversationId);
+        if (!worker || !active(state, worker.id)) throw new Error("Agent archived");
         const value = await action(actorOf(worker), args, String(api.taskId));
         return { output: [{ type: "text", text: JSON.stringify(value) }] };
       },
@@ -604,7 +676,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
           if (cached?.key === key && agent.where.kind === "hosted"
             && ![agent.where.conversationId, ...(agent.branches ?? [])].some(id => conversations.has(id))) return;
           const details = await inspectHosted(agent);
-          statusRows.set(agent.id, { key, row: { hosted: true, ...liveStatus(details), ...(agent.archived ? { archived: true } : {}), children: [] } });
+          statusRows.set(agent.id, { key, row: { hosted: true, ...liveStatus(details), children: [] } });
         }));
         // Build new tree objects: push and stream consumers may still hold the previous roster.
         const rows = agents.map(agent => ({ ...statusRows.get(agent.id)!.row, children: [] as AgentSummary[] }));
@@ -641,45 +713,42 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   });
   return {
     harness, action,
-    /** Human-only: stop the agent and its sub-agents and set them aside; `unarchive` brings them back idle. */
+    /** Human-only: abort the agent and its sub-agents, withdraw their reports and set them aside; `unarchive` brings them back idle. */
     async archive(target: string, requestId: string) {
       if (!requestId) throw new Error("A stable request ID is required");
-      const state = await read();
-      const agent = state.agents[target] ?? resolveTarget(state, human, target);
-      if (agent.where.kind !== "hosted") throw new Error("Only hosted agents can be archived");
-      if (agent.archived) return { archived: [] };
-      const { stopped } = await action(human, { action: "stop", target: agent.id }, `archive:${requestId}`) as { stopped: string[] };
-      await harness.commit(async tx => { const doc = await tx.doc(Teams); for (const id of stopped) doc.agents[id]!.archived = true; }, context);
-      notify();
-      return { archived: stopped };
+      const team = teamOf(await read(), target);
+      if (team[0]!.archived) return { archived: [] };
+      await harness.commit(async tx => { const doc = await tx.doc(Teams); for (const { id } of team) doc.agents[id]!.archived = true; }, context);
+      await halt(team, true);
+      return { archived: team.map(agent => agent.id) };
     },
     async unarchive(target: string) {
       const state = await read();
-      const agent = state.agents[target] ?? resolveTarget(state, human, target);
-      if (agent.parent && state.agents[agent.parent]?.archived) throw new Error("Unarchive its main agent instead");
-      const ids = [agent.id, ...Object.values(state.agents).filter(child => child.parent === agent.id && !child.removed).map(child => child.id)];
-      await harness.commit(async tx => {
-        const doc = await tx.doc(Teams);
-        for (const id of ids) { const stored = doc.agents[id]!; if (stored.archived) { delete stored.archived; stored.enabled = true; } }
-      }, context);
+      const team = teamOf(state, target);
+      if (team[0]!.parent && state.agents[team[0]!.parent]?.archived) throw new Error("Unarchive its main agent instead");
+      await harness.commit(async tx => { const doc = await tx.doc(Teams); for (const { id } of team) delete doc.agents[id]!.archived; }, context);
       notify();
-      return { unarchived: ids };
+      return { unarchived: team.map(agent => agent.id) };
     },
     /** Human-only removal: retain conversations, but retire the registry subtree. */
     async remove(target: string, requestId: string) {
       if (!requestId) throw new Error("A stable request ID is required");
+      const team = teamOf(await read(), target);
+      if (team[0]!.removed) return { removed: [] };
+      await harness.commit(async tx => { const doc = await tx.doc(Teams); for (const { id } of team) doc.agents[id]!.removed = true; }, context);
+      await halt(team, true);
+      return { removed: team.map(agent => agent.id) };
+    },
+    /** A Pi session's own sub-agents, as the dashboard shows them: what its team panel renders. */
+    async team(actor: Actor) {
       const state = await read();
-      const agent = state.agents[target] ?? resolveTarget(state, human, target);
-      // The human may remove any hosted agent, including another team’s child; external sessions are refused.
-      if (agent.where.kind !== "hosted") throw new Error("Only hosted agents can be removed");
-      if (agent.removed) return { stopped: [] };
-      const result = await action(human, { action: "stop", target: agent.id }, `remove:${requestId}`) as { stopped: string[] };
-      await harness.commit(async tx => {
-        const doc = await tx.doc(Teams);
-        for (const id of result.stopped) doc.agents[id]!.removed = true;
-      }, context);
-      notify();
-      return result;
+      return Promise.all(Object.values(state.agents).filter(agent => agent.parent === actor.id && active(state, agent.id)).map(statusOf));
+    },
+    /** `/team stop` in a Pi session: abort every sub-agent's work and withdraw their reports. They stay usable. */
+    async abortTeam(actor: Actor) {
+      const team = Object.values((await read()).agents).filter(agent => agent.parent === actor.id && !agent.removed);
+      await halt(team, true);
+      return { aborted: team.map(agent => agent.id) };
     },
     async images(target: string, entryId: string) {
       const destination = resolveTarget(await read(), human, target);
@@ -690,35 +759,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       const content = entry?.model?.[0]?.content;
       return Array.isArray(content) ? content.filter(part => part.type === "image") : [];
     },
-    async page(actor: Actor, target: string, cursor?: string) {
-      const destination = resolveTarget(await read(), actor, target);
-      if (destination.where.kind === "external") {
-        const latest = destination.where.session.latest;
-        return { items: chatItems([{ id: "publication", kind: latest ? "pi.assistant" : "teams.placeholder",
-          ...(latest ? { model: [{ content: latest }] } : { data: { text: "This Pi session has no hosted transcript." } }) }]) };
-      }
-      const conversation = await conversationOf(destination);
-      const page = await conversation.entries({ order: "descending" }, 40, cursor ? JSON.parse(cursor) : undefined, context);
-      // Read backwards in bounded chunks only when the page begins mid-request.
-      const prefix: (typeof page.items)[number][] = [];
-      const input = (entry: { kind: string }) => ["teams.message", "teams.report", "pi.user"].includes(entry.kind);
-      let oldest: (typeof page.items)[number] | undefined = [...page.items].sort((a, b) => Number(a.id) - Number(b.id))[0];
-      while (oldest && !input(oldest)) {
-        const before = await conversation.entries({ order: "descending", maxEntryId: (Number(oldest.id) - 1) as EntryId }, 40, undefined, context);
-        if (!before.items.length) break;
-        const ordered = [...before.items].sort((a, b) => Number(b.id) - Number(a.id));
-        const boundary = ordered.findIndex(input);
-        prefix.push(...(boundary < 0 ? ordered : ordered.slice(0, boundary + 1)));
-        if (boundary >= 0) break;
-        oldest = ordered.at(-1);
-      }
-      const items = chatItems([...page.items], prefix);
-      if (options.showCacheMissNotices?.()) await addCacheMisses(items, [...prefix, ...page.items]);
-      const inbox = (await harness.snapshot(InboxDoc, destination.where.conversationId, context))?.items ?? [];
-      const held = await heldByCompaction(destination);
-      const queued: Queued[] = [...held, ...inbox.filter(item => item.mode !== "write").map(item => ({ mode: item.mode, text: firstLine((item.entry?.data as { message?: string } | undefined)?.message ?? textOf({ content: item.content })) + (Array.isArray(item.content) && item.content.some((p: any) => p.type === "image") ? " [image]" : "") }))];
-      return { conversationId: String(destination.where.conversationId), items, queued, next: page.next ? JSON.stringify(page.next) : undefined };
-    },
+    page,
     /**
      * Human-only `/compact [instructions]`: Durable's manual compaction. Waits a while for the outcome, so the client can
      * say "compacted", "nothing to compact" or the error; a longer one stays visible as the agent's `compacting` status.
@@ -870,7 +911,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         if (stored.instructions?.startsWith(prefix)) await configure(tx, child.id, { instructions: `You are agent ${name}.` + stored.instructions.slice(prefix.length) });
         const id = String(child.id);
         if (doc.agents[id]) throw new Error("Agent ID collision with a registered Pi session");
-        doc.agents[id] = { id, name, cwd: source.cwd, enabled: true, activeAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
+        doc.agents[id] = { id, name, cwd: source.cwd, activeAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
         return doc.requests[requestKey] = { id };
       }, context);
       notify();
@@ -886,7 +927,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const existing = doc.agents[main.sessionId];
         if (existing && (existing.where.kind !== "external" || existing.where.session.secret !== main.secret)) throw new Error("Main identity secret mismatch");
         if (existing?.where.kind === "external") { existing.where.session = main; existing.name = main.name; existing.cwd = main.cwd; existing.activeAt = Date.now(); }
-        else doc.agents[main.sessionId] = { id: main.sessionId, name: main.name, cwd: main.cwd, enabled: true, activeAt: Date.now(), where: { kind: "external", session: main, inbox: {} } };
+        else doc.agents[main.sessionId] = { id: main.sessionId, name: main.name, cwd: main.cwd, activeAt: Date.now(), where: { kind: "external", session: main, inbox: {} } };
       }, context);
       return actorOf((await read()).agents[main.sessionId]!);
     },
@@ -894,9 +935,6 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       const agent = (await read()).agents[sessionId];
       if (!agent || agent.where.kind !== "external" || agent.where.session.secret !== secret) throw new Error("Unknown main identity/secret");
       return actorOf(agent);
-    },
-    async resume(actor: Actor) {
-      await harness.commit(async tx => { (await tx.doc(Teams)).agents[actor.id]!.paused = false; }, context);
     },
     async pending(actor: Actor) { const agent = (await read()).agents[actor.id]; return agent?.where.kind === "external" ? Object.values(agent.where.inbox) : []; },
     async ack(actor: Actor, id: string) {

@@ -15,7 +15,7 @@ import {
   Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth,
   type Component, type DefaultTextStyle, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import { clean, firstLine, textOf, liveStatus, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, teamGlance, type WorkerStatus } from "./status.ts";
+import { clean, firstLine, textOf, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, teamGlance, type WorkerStatus } from "./status.ts";
 import type { TreeResult } from "./source.ts";
 import type { ChatItem, Queued } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
@@ -23,7 +23,7 @@ import type { ImageContent, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { nextModel, modelThinking, modelNotice, thinkingSelection } from "./model-selection.ts";
 import type { Action, Delivery, Mode } from "./protocol.ts";
 
-export type ViewResult = { type: "back" } | { type: "send"; mode: Mode } | { type: "stop" };
+export type ViewResult = { type: "back" } | { type: "send"; mode: Mode } | { type: "abort" };
 
 const COLLAPSED_LINES = 4;
 // Same small formatter as Pi's footer (not exported by its public package index).
@@ -34,14 +34,14 @@ const formatCwd = (cwd: string) => {
 const expandKey = () => { try { return keyText("app.tools.expand") || "ctrl+o"; } catch { return "ctrl+o"; } };
 
 
-export const glyph = (w: WorkerStatus) => !w.enabled ? "■" : w.running ? "●" : "○";
+export const glyph = (w: WorkerStatus) => w.running ? "●" : "○";
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const VISIBLE_RUNNING = 5;
 const VISIBLE_FOCUSED = 8;
 
 export function statusRow(w: WorkerStatus, width: number, selected: boolean, now: number, theme: Theme, nameWidth: number, frame = 0, idleText?: string, modelMinWidth = 80, tree = "") {
   const t = theme;
-  const mark = !w.enabled ? t.fg("muted", "■") : w.running ? t.fg("accent", SPINNER[frame % SPINNER.length]!) : t.fg("muted", "○");
+  const mark = w.running ? t.fg("accent", SPINNER[frame % SPINNER.length]!) : t.fg("muted", "○");
   const name = truncateToWidth(clean(w.name), nameWidth, "…", true);
   const left = `${selected ? t.fg("accent", "› ") : "  "}${t.fg("dim", tree)}${mark} ${selected ? t.fg("accent", t.bold(name)) : w.running ? name : t.fg("muted", name)}  `;
   const time = w.running && w.since ? formatDuration(now - w.since)
@@ -50,7 +50,7 @@ export function statusRow(w: WorkerStatus, width: number, selected: boolean, now
   const model = width >= modelMinWidth && w.model ? `${w.model}${w.thinking ? ` ${w.thinking}` : ""}` : "";
   const right = [model, time, formatContext(w), width >= 70 && formatCost(w.cost)].filter(Boolean).join(" · ");
   const showRight = width >= 40 && right;
-  const middle = !w.enabled ? "stopped" : w.running ? w.activity ?? "running"
+  const middle = w.running ? w.activity ?? "running"
     : idleText ?? `idle${w.finishedAt ? ` · last reply ${formatAgo(now - w.finishedAt)}` : ""}`;
   const space = width - visibleWidth(left) - (showRight ? visibleWidth(right) + 2 : 0);
   const mid = width >= 60 && space > 4 ? truncateToWidth(w.running ? middle : t.fg("dim", middle), space, "…", true) : " ".repeat(Math.max(0, space));
@@ -68,7 +68,6 @@ export class TeamPanel implements Component, Focusable {
   private selected = 0;
   private frame = 0;
   private ticker?: ReturnType<typeof setInterval>;
-  private expiry?: ReturnType<typeof setTimeout>;
   private rows: (WorkerStatus | undefined)[] = [];
   private returnTo?: Component;
   private focus: (component: Component) => void;
@@ -81,17 +80,13 @@ export class TeamPanel implements Component, Focusable {
   currentFocus() { return (this.tui as { getFocusedComponent?: () => unknown }).getFocusedComponent?.(); }
   setWorkers(workers: WorkerStatus[]) {
     const keep = this.workers[this.selected]?.id;
-    const rank = (w: WorkerStatus) => !w.enabled ? 2 : w.running ? 0 : 1;
+    const rank = (w: WorkerStatus) => w.running ? 0 : 1;
     this.workers = [...workers].sort((a, b) => rank(a) - rank(b)
       || (rank(a) === 0 ? (a.since ?? 0) - (b.since ?? 0) : (b.finishedAt ?? 0) - (a.finishedAt ?? 0)));
     const index = this.workers.findIndex(w => w.id === keep);
     this.selected = index >= 0 ? index : Math.min(this.selected, Math.max(0, this.workers.length - 1));
     if (!this.workers.length && this.focused) this.leave();
-    // Animate only running workers; recent idle rows need just one expiry render.
-    clearTimeout(this.expiry);
-    const now = Date.now();
-    const { expiresAt } = teamGlance(this.workers, now);
-    if (expiresAt && !this.compact) this.expiry = setTimeout(() => this.setWorkers(this.workers), expiresAt - now);
+    // Animate only running workers.
     const running = this.workers.some(w => w.running);
     if (running && !this.ticker) this.ticker = setInterval(() => { this.frame++; this.tui.requestRender(); }, 100);
     if (!running && this.ticker) { clearInterval(this.ticker); this.ticker = undefined; }
@@ -123,18 +118,8 @@ export class TeamPanel implements Component, Focusable {
       push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · enter/→ open · esc back`), width));
       return lines;
     }
-    if (this.compact) {
-      const running = this.workers.filter(w => w.running);
-      for (const w of running) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
-      const idle = this.workers.filter(w => w.enabled && !w.running).length;
-      const stopped = this.workers.filter(w => !w.enabled).length;
-      const total = formatCost(this.workers.reduce((sum, w) => sum + (w.cost ?? 0), 0));
-      push(truncateToWidth(t.fg("dim", `  ${idle} idle · ${stopped} stopped · team ${total || "$0.000"}${this.workers.some(w => w.subscription) ? " (sub)" : ""} · ↓ to select`), width));
-      return lines;
-    }
-    const { shown, summary } = teamGlance(this.workers, now, VISIBLE_RUNNING);
+    const { shown, summary } = teamGlance(this.workers, this.compact ? Infinity : VISIBLE_RUNNING);
     for (const w of shown) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
-    if (this.ticker && !shown.length) { clearInterval(this.ticker); this.ticker = undefined; } // last recent row expired
     push(truncateToWidth(t.fg("dim", `  ${shown.length || summary.includes("team ") ? "" : "team · "}${summary ? `${summary} · ` : ""}↓ to select`), width));
     return lines;
   }
@@ -156,7 +141,7 @@ export class TeamPanel implements Component, Focusable {
     return { handled: true };
   }
   invalidate() {}
-  dispose() { if (this.ticker) clearInterval(this.ticker); this.ticker = undefined; clearTimeout(this.expiry); }
+  dispose() { if (this.ticker) clearInterval(this.ticker); this.ticker = undefined; }
 }
 
 /** Pane widths, the same breakpoints as the web app: under 80 columns only the active pane shows; from 140 the main agent's rail too. */
@@ -191,7 +176,7 @@ export class Rail implements Component {
     push(header, "header"); push(t.fg("borderMuted", "─".repeat(inner)));
     for (const { worker, tree = "", text, open } of lines) {
       if (!worker) { push(t.fg("dim", `${tree}${text ?? ""}`)); continue; }
-      const mark = !worker.enabled ? t.fg("muted", "■") : worker.running ? t.fg("accent", SPINNER[this.frame() % SPINNER.length]!) : t.fg("muted", "○");
+      const mark = worker.running ? t.fg("accent", SPINNER[this.frame() % SPINNER.length]!) : t.fg("muted", "○");
       const name = clean(worker.name);
       push(`${t.fg("dim", tree)}${mark} ${open ? t.fg("accent", t.bold(name)) : worker.running ? name : t.fg("muted", name)}`, worker);
     }
@@ -276,7 +261,7 @@ function sentNote(data: { target: string; mode: Mode; text: string; request?: st
 }
 
 export function renderTeamCall(args: Partial<Action> & { timeoutSeconds?: number }, theme: Theme, context: { expanded: boolean } = { expanded: false }) {
-  const subject = args.action === "spawn" ? args.name : args.target ?? (args.action === "stop" && args.team ? "whole team" : "");
+  const subject = args.action === "spawn" ? args.name : args.target ?? "";
   let text = theme.fg("toolTitle", theme.bold("team ")) + theme.fg("accent", args.action ?? "") + (subject ? ` ${clean(subject)}` : "");
   const extras = [args.timeoutSeconds !== undefined && `remind ${formatDuration(args.timeoutSeconds * 1000)}`, args.mode === "steer" && "steer", args.scope === "mains" && "sessions", args.transcript && "transcript", args.request && `request ${args.request}`].filter(Boolean);
   if (extras.length) text += theme.fg("muted", ` · ${extras.join(" · ")}`);
@@ -290,16 +275,16 @@ export function renderTeamCall(args: Partial<Action> & { timeoutSeconds?: number
 export function teamResultSummary(args: Partial<Action>, details: any): string {
   if (args.action === "list") {
     if (!Array.isArray(details)) return "";
-    return details.filter(a => args.scope === "mains" || a.role === "worker").map(a => a.role === "main"
-      ? `${clean(a.name)} · ${a.connected ? "connected" : "offline"}`
-      : `${a.enabled === false ? "■" : "○"} ${clean(a.name)}${a.enabled === false ? " · stopped" : ""}`).join("\n") || "no workers";
+    const lines = (rows: any[], indent: string): string[] => rows.flatMap(a => a.id === undefined ? [`${indent}${clean(a.summary)}`]
+      : [`${indent}${clean(a.name)} · ${clean(a.status)}`, ...lines(a.children ?? [], `${indent}  `), ...(a.summary ? [`${indent}  ${clean(a.summary)}`] : [])]);
+    return lines(details, "").join("\n") || "no agents";
   }
   if (args.action === "spawn" || args.action === "send") {
     if (details?.taskId !== undefined) return `accepted · request ${details.taskId} · report arrives automatically`;
     if (details?.delivery) return "accepted · queued for that session";
     return "accepted";
   }
-  if (args.action === "stop") return `stopped ${details?.stopped?.length ?? 0} worker(s)${details?.paused ? " · team paused" : ""}`;
+  if (args.action === "abort") return `aborted ${details?.aborted?.length ?? 0} agent(s)`;
   if (args.action === "inspect") {
     if (args.request) {
       const state = details?.state;
@@ -307,9 +292,9 @@ export function teamResultSummary(args: Partial<Action>, details: any): string {
       const answer = firstLine(textOf(details?.answer));
       return `request ${details?.request} · ${status ?? "unknown"}${answer ? `\n${answer}` : ""}`;
     }
-    if (args.transcript) return `${details?.entries?.length ?? 0} entries${details?.next ? " · older pages available" : ""}`;
-    const latest = firstLine(details?.role === "main" ? details?.latest : textOf(details?.latest));
-    const head = details?.role === "main" ? "latest publication · may be stale" : statusWord(liveStatus(details ?? {}));
+    if (args.transcript) return `${details?.items?.length ?? 0} items${details?.next ? " · older pages available" : ""}`;
+    const latest = firstLine(details?.latest);
+    const head = details?.role === "main" ? "latest publication · may be stale" : clean(details?.status);
     return `${head}${latest ? `\n${latest}` : ""}`;
   }
   return "";
@@ -568,7 +553,7 @@ class Transcript implements Component {
     if (!s) return "";
     const time = s.running && s.since ? `working ${formatDuration(now - s.since)}`
       : [s.since && s.finishedAt && s.finishedAt >= s.since && `last request ${formatDuration(s.finishedAt - s.since)}`,
-        s.enabled && s.finishedAt && `idle ${formatDuration(now - s.finishedAt)}`].filter(Boolean).join(" · ");
+        !s.archived && s.finishedAt && `idle ${formatDuration(now - s.finishedAt)}`].filter(Boolean).join(" · ");
     const cwd = s.cwd ? formatCwd(s.cwd) : "";
     return [s.model && `${s.model}${s.thinking ? ` ${s.thinking}` : ""}`, time, formatContext(s), formatCost(s.cost), cwd].filter(Boolean).join(" · ");
   }
@@ -600,13 +585,13 @@ export class WorkerView implements Component {
     const visible = lines.slice(Math.max(0, end - height), end);
     const status = this.transcript.status;
     const word = status ? statusWord(status) : "…";
-    const color = !status ? "muted" : !status.enabled ? "warning" : status.running ? "accent" : "muted";
+    const color = !status ? "muted" : status.archived ? "warning" : status.running ? "accent" : "muted";
     const connection = this.transcript.connection === "live" ? t.fg("success", "live") : this.transcript.connection === "stale" ? t.fg("warning", "stale · r to refresh") : t.fg("muted", "loading");
     const top = this.transcript.next ? t.fg("dim", " · older pages: o") : "";
     const header = `${t.fg("accent", t.bold(this.transcript.name))}${t.fg("dim", " · ")}${t.fg(color, word)}${t.fg("dim", " · ")}${connection}${top}`;
     const rule = t.fg("borderMuted", "─".repeat(Math.max(0, width)));
     const hints = [this.transcript.unseen && t.fg("accent", "↓ new activity · end"), this.transcript.note && t.fg("warning", this.transcript.note),
-      t.fg("dim", `esc back · f follow-up · s steer · x stop · ↑↓ pgup/pgdn scroll · o older · t thinking · ${keyText("app.tools.expand")} expand · r refresh`)].filter(Boolean).join(t.fg("dim", " · "));
+      t.fg("dim", `esc back · f follow-up · s steer · x abort · ↑↓ pgup/pgdn scroll · o older · t thinking · ${keyText("app.tools.expand")} expand · r refresh`)].filter(Boolean).join(t.fg("dim", " · "));
     const empty = this.transcript.entries.size ? [] : [t.fg("muted", this.transcript.note ? "" : "Loading transcript…")];
     const filled = [...Array(Math.max(0, height - visible.length - empty.length)).fill(""), ...empty, ...visible];
     const body = height ? filled.slice(-height) : [];
@@ -618,7 +603,7 @@ export class WorkerView implements Component {
     if (matchesKey(data, Key.escape) || data === "q") return this.done({ type: "back" });
     if (data === "f") return this.done({ type: "send", mode: "followUp" });
     if (data === "s") return this.done({ type: "send", mode: "steer" });
-    if (data === "x") return this.done({ type: "stop" });
+    if (data === "x") return this.done({ type: "abort" });
     if (data === "o") return void this.transcript.older();
     if (data === "r") { if (this.transcript.connection === "stale") this.transcript.attach(); return void this.transcript.refresh(); }
     if (data === "t" || this.transcript.toggle(data)) { if (data === "t") this.transcript.toggleThinking(); return; }
@@ -681,7 +666,7 @@ export class ChatView implements Component, Focusable {
     const footer = { render: (width: number) => {
       const s = this.transcript.status;
       const cwd = s?.cwd ? formatCwd(s.cwd) : "";
-      const time = s?.running ? `working${s.since ? ` ${formatDuration(Date.now() - s.since)}` : ""}` : s && !s.enabled ? "stopped" : "idle";
+      const time = s?.running ? `working${s.since ? ` ${formatDuration(Date.now() - s.since)}` : ""}` : s ? statusWord(s) : "idle";
       const suffix = `${branch() ? ` (${branch()})` : ""} • ${s?.name ?? name} · ${time}`;
       const location = truncateToWidth(cwd, Math.max(0, width - visibleWidth(suffix))) + suffix;
       const stats = formatUsage(s);

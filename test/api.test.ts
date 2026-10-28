@@ -127,21 +127,21 @@ test("human socket API: roster, nested agents, live watch, transcripts and all m
     await source.send(target, "Next request");
     await until(() => roster[0]?.running === true);
     assert.deepEqual((await source.stop(target)).aborted, [target]);
-    assert.equal((await source.list())[0]!.enabled, true);
-    // Archive stops the agent and its team and hides them from agents' lists; unarchive brings them back idle.
+    assert.equal((await source.list())[0]!.archived, undefined);
+    // Archive aborts the agent and its team and hides them from agents' lists; unarchive brings them back idle.
     const childId = roster[0]!.children[0]!.id;
     assert.deepEqual(((await source.archive(target)) as { archived: string[] }).archived.sort(), [target, childId].sort());
-    await until(() => roster[0]?.archived === true && roster[0]?.enabled === false && roster[0]?.children[0]?.archived === true);
+    await until(() => roster[0]?.archived === true && roster[0]?.children[0]?.archived === true);
     await assert.rejects(source.send(target, "while archived"), /archived; the human must unarchive/);
     await source.unarchive(target);
-    await until(() => !roster[0]?.archived && roster[0]?.enabled === true && !roster[0]?.children[0]?.archived);
+    await until(() => !roster[0]?.archived && !roster[0]?.children[0]?.archived);
     await client.call("register", { ...identity, name: "Pi main", cwd: directory, model });
     await client.call("publish", { ...identity, latest: "Published observation" });
     observe(client.stream("events", identity, life.signal, () => {}));
     assert.ok((await source.send(identity.sessionId, "Hello Pi")).delivery);
     assert.match(JSON.stringify(await source.page(identity.sessionId)), /Published observation/);
     assert.deepEqual(await client.call("page", { ...identity, target: identity.sessionId }), await source.page(identity.sessionId));
-    await assert.rejects(client.call("action", { ...identity, args: { action: "inspect", target: identity.sessionId, transcript: true } }), /External Pi sessions do not have hosted transcripts/);
+    assert.match(JSON.stringify(await client.call("action", { ...identity, args: { action: "inspect", target: identity.sessionId, transcript: true } })), /Published observation/);
     await assert.rejects(source.rename(identity.sessionId, "no"), /cannot be renamed/);
     for (const route of ["agents/watch", "watch"] as const) {
       let tick = false;
@@ -326,17 +326,17 @@ test("host reads prefix chunks to complete a turn spanning transcript pages", { 
     const agent = await source.newAgent({ name: "long", cwd: directory });
     await source.send(agent.id!, "Run a long request");
     await until(async () => JSON.stringify(await source.page(agent.id!)).includes("Complete request"));
-    const raw = await host.service.action(human, { action: "inspect", target: agent.id, transcript: true }, "") as any;
-    assert.equal(raw.entries.length, 40);
-    assert.equal(Object.hasOwn(raw, "prefix"), false);
-    assert.ok(raw.next);
-    const entries = [...raw.entries];
+    // Agents page the same chat items as the human views, in brief.
+    const brief = await host.service.action(human, { action: "inspect", target: agent.id, transcript: true }, "") as any;
+    assert.deepEqual(brief.items.map((item: any) => item.id), (await source.page(agent.id!)).items.map(item => item.id));
+    assert.ok(brief.next);
+    const conversation = (await host.service.harness.conversation(Number(agent.id) as any, BACKGROUND_CONTEXT))!;
+    const raw = await conversation.entries({ order: "descending" }, 40, undefined, BACKGROUND_CONTEXT);
+    const entries = [...raw.items];
     let cursor = raw.next;
     while (cursor) {
-      const older = await host.service.action(human, { action: "inspect", target: agent.id, transcript: true, cursor }, "") as any;
-      assert.equal(Object.hasOwn(older, "prefix"), false);
-      assert.ok(older.entries.every((entry: any) => !entries.some(previous => previous.id === entry.id)));
-      entries.push(...older.entries);
+      const older = await conversation.entries({ order: "descending" }, 40, cursor, BACKGROUND_CONTEXT);
+      entries.push(...older.items);
       cursor = older.next;
     }
     assert.ok(entries.length > 80);
@@ -352,7 +352,7 @@ test("host reads prefix chunks to complete a turn spanning transcript pages", { 
     assert.ok(terminal?.kind === "reply");
     assert.deepEqual(terminal.turn, expected.find(item => item.id === terminal.id && item.kind === "reply")?.kind === "reply"
       ? (expected.find(item => item.id === terminal.id) as any).turn : undefined);
-    assert.ok(items.every(item => raw.entries.some((entry: any) => String(entry.id) === item.id)));
+    assert.ok(items.every(item => raw.items.some((entry: any) => String(entry.id) === item.id)));
   } finally { await host.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -374,7 +374,7 @@ function pushSubscription(endpoint: string) {
 }
 
 test("finished ignores initial frames, children, external agents, unchanged idle and missing rows", () => {
-  const row = (id: string, running: boolean, hosted = true, children: AgentSummary[] = []): AgentSummary => ({ id, name: id, running, hosted, children, enabled: true });
+  const row = (id: string, running: boolean, hosted = true, children: AgentSummary[] = []): AgentSummary => ({ id, name: id, running, hosted, children });
   const before = [row("lead", true, true, [row("child", true)]), row("pi", true, false)];
   const after = [row("lead", false, true, [row("child", false)]), row("pi", false, false)];
   assert.deepEqual(finished(undefined, after), []);
