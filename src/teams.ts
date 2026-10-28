@@ -15,7 +15,7 @@ import { cacheMissText, piCacheMisses, piCacheWarming } from "./presentation.ts"
 import { CACHE_WARM_KIND, cacheWarming, type CacheWarmData } from "./warming.ts";
 import { agentNameError } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
-import { firstLine, formatTokens, liveStatus, textOf } from "./status.ts";
+import { clean, firstLine, formatTokens, liveStatus, textOf } from "./status.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { ActionSchema, TOOL_DESCRIPTION, TOOL_NAME, type Action, type Actor, type Delivery, type Mode } from "./protocol.ts";
 
@@ -649,6 +649,24 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       const outcome = settled.state.outcome;
       if (outcome.status !== "completed") return { taskId, outcome: "failed" as const, error: outcome.error?.message ?? outcome.status };
       return { taskId, outcome: outcome.result.entryId || outcome.result.submissionId ? "compacted" as const : "nothing" as const };
+    },
+    /**
+     * Pi's alt+up: take every queued steer and follow-up back out of the agent's inbox, oldest first, for the editor.
+     * A message the agent took in the meantime stays sent and is not returned.
+     */
+    async dequeue(target: string) {
+      const conversation = await conversationOf(resolveTarget(await read(), human, target));
+      const view = await conversation.viewState(context);
+      let items: any[];
+      try { items = ((view.value.docs["pi.inbox"] as { items?: any[] } | undefined)?.items ?? []).filter(item => item.mode !== "write"); }
+      finally { view.dispose(); }
+      const texts: string[] = [];
+      for (const item of items) {
+        if (await (await harness.submission(item.id, context))?.abort(context) !== "aborted") continue;
+        texts.push(clean(item.entry?.data?.message ?? textOf({ content: item.content })));
+      }
+      notify();
+      return { texts };
     },
     /** The human's messages to an agent, oldest first: what `/fork` offers, as Pi's user-message selector does. */
     async inputs(target: string) {

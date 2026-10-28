@@ -142,6 +142,7 @@ export class AgentsApp implements Component, Focusable {
       models: () => this.source.models(this.life.signal),
       setModel: (model, thinking) => this.source.setModel(agent.id, model.provider, model.modelId, thinking),
       tree: entryId => this.source.tree(agent.id, entryId),
+      dequeue: () => this.source.dequeue(agent.id),
       doubleEscapeAction: this.doubleEscapeAction,
       ...(this.stack.length === 1 ? {
         inputs: () => this.source.inputs(agent.id),

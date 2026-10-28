@@ -20,6 +20,5 @@ test("web markdown escapes HTML, drops unsafe URLs and images, and keeps HTTP li
     { type: "thinking", text: "one" }, { type: "thinking", text: "two" },
   ] }]);
   assert.match(thoughts, /data-rewind="2"/);
-  assert.match(thoughts, /data-thinking="2-0"/);
-  assert.match(thoughts, /data-thinking="2-1"/);
+  assert.match(thoughts, /<div class="thinking markdown"><p>one<\/p>\n<\/div><div class="thinking markdown"><p>two<\/p>/);
 });

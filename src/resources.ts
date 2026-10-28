@@ -2,7 +2,8 @@ import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { defineExtension, section } from "@earendil-works/pi-durable";
-import { CodingTools } from "@earendil-works/pi-durable/tools";
+import { createCodingTools } from "@earendil-works/pi-durable/tools";
+import { createNodePhotonImages } from "@earendil-works/pi-durable/images/node";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { DefaultResourceLoader, discoverAndLoadExtensions, formatSkillsForPrompt, ModelRuntime, SettingsManager, resolveModelScopeWithDiagnostics } from "@earendil-works/pi-coding-agent";
 import { Teams, type TeamsOptions } from "./teams.ts";
@@ -59,7 +60,8 @@ export async function productionOptions(): Promise<TeamsOptions> {
   });
   const { createRegistry } = await import("@earendil-works/pi-durable");
   const registry = createRegistry();
-  registry.install(CodingTools);
+  // Pi's images.autoResize (default on): read shrinks and converts images instead of refusing them.
+  registry.install(createCodingTools(settings.getImageAutoResize() ? { images: await createNodePhotonImages() } : {}));
   registry.install(coding);
   // Web tools are optional: a broken pi-web-access setup must not stop the host that runs every agent.
   const web = await openWebTools().catch(error => { console.error("Web tools disabled:", error); });

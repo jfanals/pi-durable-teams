@@ -124,11 +124,15 @@ small {
   font-size: 0.85rem;
   color: var(--muted);
   text-align: right;
-  overflow-wrap: anywhere;
   min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+/* The name keeps its width; a long status (a whole bash command) is cut to one line instead. */
 .row > strong {
-  min-width: 0;
+  flex-shrink: 0;
+  max-width: 70%;
   overflow-wrap: anywhere;
 }
 .list {
@@ -192,9 +196,6 @@ article {
   background: #273b59;
   border-radius: 14px 14px 2px 14px;
 }
-.thinking {
-  white-space: pre-wrap;
-}
 .input small {
   margin-bottom: 6px;
 }
@@ -242,9 +243,12 @@ summary {
   min-height: 44px;
   cursor: pointer;
 }
+/* Pi's thinking: shown inline, italic and muted. */
 .thinking {
-  padding: 0 12px 12px;
+  color: var(--muted);
+  font-style: italic;
   font-size: 0.9rem;
+  margin: 10px 0;
 }
 .tool {
   color: var(--muted);

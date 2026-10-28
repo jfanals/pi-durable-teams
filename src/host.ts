@@ -202,6 +202,11 @@ export async function startHost(directory: string, socket: string, options: Team
         if (typeof body.target !== "string" || typeof body.entryId !== "string" || !/^\d+$/.test(body.entryId)) throw new Error("Expected target and entryId");
         return reply(res, 200, await service.images(body.target, body.entryId));
       }
+      if (pathname === "/agents/dequeue") {
+        if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
+        if (typeof body.target !== "string" || !body.target) throw new Error("target is required");
+        return reply(res, 200, await service.dequeue(body.target));
+      }
       if (pathname === "/agents/inputs") {
         if (req.method !== "POST") return reply(res, 405, { error: "POST required" });
         if (typeof body.target !== "string" || !body.target) throw new Error("target is required");

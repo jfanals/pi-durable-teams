@@ -73,13 +73,10 @@ ${!item.report && item.from === "Human" ? `<button data-rewind="${escape(item.id
 ${item.images?.length ? `<span data-images="${escape(item.id)}">[image]</span>` : ""}
 </article>`;
       const parts = item.parts
-        .map((part, index) => {
+        .map((part) => {
           if (part.type === "text") return `<div class="markdown">${markdown(part.text)}</div>`;
           if (part.type === "thinking")
-            return `<details data-thinking="${escape(`${item.id}-${index}`)}">
-<summary>Thinking</summary>
-<div class="thinking">${escape(part.text)}</div>
-</details>`;
+            return `<div class="thinking markdown">${markdown(part.text)}</div>`;
           const result = results.get(part.id);
           const icon = result ? (result.ok ? "✓" : "✗") : "○";
           const error = result?.error ? `<br>${escape(result.error)}` : "";

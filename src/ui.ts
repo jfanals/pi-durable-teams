@@ -354,6 +354,8 @@ export type ChatActions = {
   inputs?(): Promise<{ id: string; text: string }[]>;
   fork?(before?: string, draft?: string): Promise<unknown>;
   tree?(entryId?: string): Promise<TreeResult>;
+  /** Pi's alt+up: queued messages taken back for editing. */
+  dequeue?(): Promise<{ texts: string[] }>;
   doubleEscapeAction?: "tree" | "fork" | "none";
 };
 
@@ -368,7 +370,8 @@ class Transcript implements Component {
   note?: string;
   offset = 0; // lines scrolled up from the bottom; 0 follows live activity
   unseen = false;
-  showThinking = false;
+  // Pi's hideThinkingBlock (default off): thinking text is shown; ctrl+t hides it.
+  showThinking = !SettingsManager.create(homedir(), agentDir).getHideThinkingBlock();
   expanded = false; // Pi's ctrl+o: full tool output
   queued: Queued[] = [];
   /** What the human just started and the host has not finished, shown at once like Pi's status spinner. */
@@ -376,7 +379,8 @@ class Transcript implements Component {
   /** Pi's pending-message lines above the editor: messages waiting for the agent's next boundary. */
   queuedLines(width: number) {
     if (!this.queued.length) return [];
-    return ["", ...this.queued.map(q => truncateToWidth(` ${this.theme.fg("dim", `${q.mode === "steer" ? "Steering" : "Follow-up"}: ${q.text}`)}`, width))];
+    return ["", ...this.queued.map(q => truncateToWidth(` ${this.theme.fg("dim", `${q.mode === "steer" ? "Steering" : "Follow-up"}: ${q.text}`)}`, width)),
+      truncateToWidth(` ${this.theme.fg("dim", `↳ ${keyText("app.message.dequeue")} to edit all queued messages`)}`, width)];
   }
   private cache?: { width: number; version: number; lines: string[] };
   version = 0;
@@ -815,6 +819,15 @@ export class ChatView implements Component, Focusable {
         }
         else this.lastEscapeTime = now;
       }
+      return;
+    }
+    // Pi's alt+up: queued messages leave the queue and join the draft; Enter sends them again, clearing drops them.
+    if (this.actions.dequeue && getKeybindings().matches(data, "app.message.dequeue")) {
+      this.run("Restoring queued messages…", this.actions.dequeue(), ({ texts }) => {
+        if (!texts.length) return "No queued messages to restore";
+        this.editor.setText([...texts, this.editor.getText()].filter(text => text.trim()).join("\n\n"));
+        return `Restored ${texts.length} queued message${texts.length > 1 ? "s" : ""} to editor`;
+      });
       return;
     }
     // Pi's follow-up key (option+enter on a Mac, or the user's own binding in Pi's keybindings.json).

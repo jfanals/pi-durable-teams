@@ -29,6 +29,8 @@ export interface HostSource {
   rename(target: string, name: string, options?: RequestOptions): Promise<MutationResult>;
   setModel(target: string, provider: string, modelId: string, thinking?: ModelThinkingLevel, options?: RequestOptions): Promise<MutationResult>;
   compact(target: string, instructions?: string): Promise<CompactResult>;
+  /** Pi's alt+up: queued messages taken back out of `target`'s inbox, oldest first. */
+  dequeue(target: string): Promise<{ texts: string[] }>;
   /** The human's messages to `target`, oldest first: what `/fork` offers. */
   inputs(target: string): Promise<{ id: string; text: string }[]>;
   /** A new top-level agent from `target`'s history: all of it, or what came before input `before`. */
@@ -63,6 +65,7 @@ export class SocketHostSource implements HostSource {
   rename(target: string, name: string, options?: RequestOptions) { return this.mutate("rename", { target, name }, options); }
   setModel(target: string, provider: string, modelId: string, thinking?: ModelThinkingLevel, options?: RequestOptions) { return this.mutate("model", { target, provider, modelId, thinking }, options); }
   compact(target: string, instructions?: string) { return this.client.call<CompactResult>("agents/compact", { target, instructions }); }
+  dequeue(target: string) { return this.client.call<{ texts: string[] }>("agents/dequeue", { target }); }
   inputs(target: string) { return this.client.call<{ id: string; text: string }[]>("agents/inputs", { target }); }
   tree(target: string, entryId?: string, options: RequestOptions = {}) { return this.client.call<TreeResult>("agents/tree", { target, entryId, requestId: options.requestId ?? randomUUID() }, options.signal); }
   fork(target: string, before?: string, options?: RequestOptions) { return this.mutate("fork", { target, before }, options); }
