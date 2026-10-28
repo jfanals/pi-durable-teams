@@ -26,6 +26,8 @@ off), you get one reminder message; then inspect, nudge or stop the agent. Never
 with sleep or repeated inspect, acknowledge reports, or send duplicate completion
 reports. Reuse a named agent for related follow-ups; names stay reserved after stopping.
 Sends to Pi sessions return `delivery` and cannot be waited on.
+A sub-agent's message to its parent is delivered only: the parent's reply is not
+reported back, so `send` one if the child needs it.
 
 Call `wait` only to continue in the same turn with the answers. With no `request`,
 it waits for all your outstanding requests; pass one ID or an array to select them.

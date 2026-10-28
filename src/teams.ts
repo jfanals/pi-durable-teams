@@ -35,7 +35,7 @@ export type Agent = {
 };
 type Registry = {
   agents: Record<string, Agent>;
-  requests: Record<string, { taskId?: TaskId; delivery?: string; workerId?: string; id?: string; stopped?: string[]; aborted?: string[]; paused?: boolean; model?: ModelRef; thinking?: WorkerModel["thinking"]; editorText?: string }>;
+  requests: Record<string, { taskId?: TaskId; delivery?: string; workerId?: string; id?: string; stopped?: string[]; aborted?: string[]; paused?: boolean; model?: ModelRef; thinking?: WorkerModel["thinking"]; editorText?: string; note?: boolean }>;
   reported: Record<string, boolean>;
   waiting?: Record<string, number>;
 };
@@ -77,7 +77,8 @@ const Anchor = defineTask<null, { phase: "done" }, null>({
   abort: (_task, runtime, ctx) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), ctx),
 });
 
-type ReporterInput = { from: Actor; recipient: string; message: string; mode: Mode; images?: { type: "image"; data: string; mimeType: string }[] };
+/** `note`: a child messaging its parent. Delivered only; the parent's reply is not reported back. */
+type ReporterInput = { from: Actor; recipient: string; message: string; mode: Mode; images?: { type: "image"; data: string; mimeType: string }[]; note?: boolean };
 type ReporterState = { phase: "deliver" } | { phase: "report"; text?: string; answer?: EntryId; claimed?: boolean };
 type ReporterResult = { answer?: EntryId; status: string; text?: string };
 type ReminderInput = { request: string; from: Actor; recipient: string; seconds: number };
@@ -263,7 +264,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     }, initial: () => ({ phase: "deliver" }),
     phases: {
       deliver: async (task, runtime, ctx) => {
-        const { recipient, from, message, mode, images } = task.input;
+        const { recipient, from, message, mode, images, note } = task.input;
         const state = await read();
         const current = state.agents[recipient];
         if (!current || !active(state, recipient) || !active(state, from.id)) {
@@ -271,7 +272,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
           return;
         }
         const submission = await post(recipient, { id: `teams-input:${task.id}`, from, text: message, mode, images });
-        if (!submission) {
+        if (!submission || note) {
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: { status: "delivered" } } }), ctx);
           return;
         }
@@ -450,7 +451,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     if (!requestId) throw new Error("A stable request ID is required");
     const requestKey = actor.id === human.id ? `human:${args.action}:${requestId}` : `${actor.id}:${requestId}`;
     const accepted = (result: NonNullable<Registry["requests"][string]>) => actor.id !== human.id && result.taskId !== undefined
-      ? { ...result, next: "end your turn (the report arrives automatically) or call wait" } : result;
+      ? { ...result, next: result.note ? "delivered to your parent; no report comes back" : "end your turn (the report arrives automatically) or call wait" } : result;
     if (state.requests[requestKey]) return accepted(state.requests[requestKey]);
     if (!active(state, actor.id)) throw new Error("Agent/team stopped or paused");
 
@@ -560,9 +561,11 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         await post(recipient.id, { id: requestKey, from: actor, text: args.message!, mode: args.mode ?? "followUp" }, false, tx);
         return doc.requests[requestKey] = { delivery: requestKey };
       }
-      const taskId = await tx.createTask(Reporter, { from: actor, recipient: recipient.id, message: args.message ?? "", images: args.images, mode: args.mode ?? "followUp" }, {
+      const note = doc.agents[actor.id]?.parent === recipient.id;
+      const taskId = await tx.createTask(Reporter, { from: actor, recipient: recipient.id, message: args.message ?? "", images: args.images, mode: args.mode ?? "followUp", ...(note ? { note } : {}) }, {
         ownership: { kind: "conversation" }, background: true,
       });
+      if (note) return doc.requests[requestKey] = { taskId, workerId: recipient.id, note };
       const seconds = actor.id === human.id ? 0 : args.timeoutSeconds ?? REMIND_SECONDS;
       if (seconds > 0) await tx.createTask(Reminder, { request: String(taskId), from: actor, recipient: recipient.id, seconds }, { ownership: { kind: "conversation" }, background: true });
       return doc.requests[requestKey] = { taskId, workerId: recipient.id };
