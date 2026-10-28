@@ -264,6 +264,10 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[D"); await wait("n new");
     const listRunning = await frame(); assert.ok(spinner(listRunning)); print?.("list running child", listRunning);
     await until(async () => spinner(await frame()) !== spinner(listRunning));
+    // A sub-agent opened from the dashboard goes back to its main agent, then to the dashboard.
+    await key("\x1b[B"); await key("\r"); await wait("reader ·");
+    await key("\x1b[D"); await wait("renamed ·");
+    await key("\x1b[D"); await wait("n new"); await key("\x1b[A");
     await key("\r"); await wait("reader");
     await source.stop(readerId); await wait("1 idle");
     await key("\x1b[B"); const panel = await wait("enter open"); print?.("sub-agent panel", panel);

@@ -118,6 +118,12 @@ async function open(id: string, push = true) {
   attachments = [];
   imageCache.clear();
   if (push) {
+    // A sub-agent opened from the list goes back to its main agent, not the list, as in the terminal.
+    const parent = stack.length ? undefined : agents.find((a) => a.children.some((c) => c.id === id));
+    if (parent) {
+      stack.push(parent.id);
+      history.pushState({ stack: [...stack], screen: "chat" }, "", `/#agent=${encodeURIComponent(parent.id)}`);
+    }
     stack.push(id);
     history.pushState({ stack: [...stack], screen: "chat" }, "", `/#agent=${encodeURIComponent(id)}`);
   }
