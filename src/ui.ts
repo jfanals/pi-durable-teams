@@ -19,7 +19,7 @@ import { clean, firstLine, textOf, liveStatus, formatUsage, statusWord, formatDu
 import type { TreeResult } from "./source.ts";
 import type { ChatItem, Queued } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ImageContent, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { nextModel, modelThinking, modelNotice, thinkingSelection } from "./model-selection.ts";
 import type { Action, Delivery, Mode } from "./protocol.ts";
 
@@ -196,6 +196,12 @@ class ClickToExpand implements Component {
   invalidate() { this.child.invalidate(); }
 }
 
+/** One Markdown excerpt rule for incoming, outgoing and tool prompts. */
+function excerpt(text: string, expanded: boolean, theme: Theme): Component {
+  const body = new Markdown(clean(text), 0, 0, getMarkdownTheme(), { color: text => theme.fg("customMessageText", text) });
+  return expanded ? body : new Clamp(body, COLLAPSED_LINES, hidden => theme.fg("dim", `… ${hidden} more lines · ${expandKey()} to expand`));
+}
+
 /** Incoming report/message card: sender first, bounded literal excerpt, full Markdown on expansion. */
 export function renderDelivery(message: { content: unknown; details?: unknown }, { expanded, outputPad }: { expanded: boolean; outputPad: number }, theme: Theme): Component {
   return new ClickToExpand(expanded, value => deliveryCard(message, value, outputPad, theme));
@@ -209,12 +215,8 @@ function deliveryCard(message: { content: unknown; details?: unknown }, expanded
   box.addChild(new Text(valid
     ? theme.fg("customMessageLabel", theme.bold(clean(d!.from.name))) + theme.fg("dim", ` · ${source}${d!.mode === "steer" ? " · steer" : ""}`)
     : theme.fg("customMessageLabel", theme.bold("Team message")), 0, 0));
-  const body = new Markdown(clean(valid ? d!.text : raw), 0, 0, getMarkdownTheme(), { color: text => theme.fg("customMessageText", text) });
-  if (!expanded) {
-    box.addChild(new Clamp(body, COLLAPSED_LINES, hidden => theme.fg("dim", `… ${hidden} more lines · click or ${expandKey()} to expand`)));
-    return box;
-  }
-  box.addChild(body);
+  box.addChild(excerpt(valid ? d!.text : raw, expanded, theme));
+  if (!expanded) return box;
   if (valid) box.addChild(new Text(theme.fg("dim", `\nfrom ${clean(d!.from.id)} · delivery ${clean(d!.id)}${d!.request ? ` · request ${clean(d!.request)}` : ""}`), 0, 0));
   return box;
 }
@@ -225,19 +227,20 @@ export function renderSent(data: { target: string; mode: Mode; text: string; req
 }
 function sentNote(data: { target: string; mode: Mode; text: string; request?: string } | undefined, expanded: boolean, theme: Theme) {
   const header = theme.fg("muted", `You → ${clean(data?.target)} · ${data?.mode === "steer" ? "steer" : "follow-up"} · accepted${data?.request ? ` · request ${data.request}` : ""}`);
-  const body = new Text(theme.fg("dim", clean(data?.text)), 2, 0);
   const box = new Box(1, 0); box.addChild(new Text(header, 0, 0));
-  box.addChild(expanded ? body : new Clamp(body, 2, hidden => theme.fg("dim", `  … ${hidden} more lines`)));
+  box.addChild(excerpt(data?.text ?? "", expanded, theme));
   return box;
 }
 
-export function renderTeamCall(args: Partial<Action>, theme: Theme) {
+export function renderTeamCall(args: Partial<Action> & { timeoutSeconds?: number }, theme: Theme, context: { expanded: boolean } = { expanded: false }) {
   const subject = args.action === "spawn" ? args.name : args.target ?? (args.action === "stop" && args.team ? "whole team" : "");
   let text = theme.fg("toolTitle", theme.bold("team ")) + theme.fg("accent", args.action ?? "") + (subject ? ` ${clean(subject)}` : "");
-  const extras = [args.mode === "steer" && "steer", args.scope === "mains" && "sessions", args.transcript && "transcript", args.request && `request ${args.request}`].filter(Boolean);
+  const extras = [args.timeoutSeconds !== undefined && `${args.action === "wait" ? "up to" : "remind"} ${formatDuration(args.timeoutSeconds * 1000)}`, args.mode === "steer" && "steer", args.scope === "mains" && "sessions", args.transcript && "transcript", args.request && `request ${args.request}`].filter(Boolean);
   if (extras.length) text += theme.fg("muted", ` · ${extras.join(" · ")}`);
-  if (args.message) text += `\n${theme.fg("muted", truncateToWidth(firstLine(args.message), 160))}`;
-  return new Text(text, 0, 0);
+  const box = new Box(0, 0);
+  box.addChild(new Text(text, 0, 0));
+  if (args.message) box.addChild(excerpt(args.message, context.expanded, theme));
+  return box;
 }
 
 /** One-line receipts; the raw JSON stays available on expansion. */
@@ -280,11 +283,11 @@ export function renderTeamResult(result: { content: any[]; details?: unknown }, 
   return new Text([theme.fg("success", head!), ...rest.map(line => theme.fg("muted", truncateToWidth(line, 200)))].join("\n"), 0, 0);
 }
 
-export type TranscriptOptions = { showThinking?: boolean; expanded?: boolean; tui?: TUI; cwd?: string };
+export type TranscriptOptions = { showThinking?: boolean; expanded?: boolean; tui?: TUI; cwd?: string; showImages?: boolean; images?: (entryId: string) => ImageContent[] | undefined };
 
 /** Worker transcript as terminal lines, oldest first, drawn like Pi's chat: inputs on Pi's message
  * backgrounds, tool calls by Pi's own tool component and renderers, replies plain. */
-export function renderTranscript(items: ChatItem[], worker: string, width: number, theme: Theme, { showThinking = false, expanded = false, tui, cwd = process.cwd() }: TranscriptOptions = {}): string[] {
+export function renderTranscript(items: ChatItem[], worker: string, width: number, theme: Theme, { showThinking = false, expanded = false, tui, cwd = process.cwd(), showImages = false, images }: TranscriptOptions = {}): string[] {
   const results = new Map(items.filter(item => item.kind === "result").map(item => [item.callId, item]));
   const md = getMarkdownTheme();
   const out: string[] = [];
@@ -314,11 +317,15 @@ export function renderTranscript(items: ChatItem[], worker: string, width: numbe
           const renderers = part.name === "team" ? { renderCall: renderTeamCall, renderResult: renderTeamResult } : builtInRenderers(part.name) ?? {};
           // A host older than tool args sends only the subject: the path, or the command for shells.
           const args = part.args ?? { [["bash", "powershell"].includes(part.name) ? "command" : "path"]: part.subject };
-          const tool = new ToolExecutionComponent(part.name, part.id, args, { showImages: false }, renderers as any, ui, cwd);
+          const tool = new ToolExecutionComponent(part.name, part.id, args, { showImages }, renderers as any, ui, cwd);
           tool.setExpanded(expanded);
           const result = results.get(part.id);
-          if (result) tool.updateResult({ content: result.content ?? (result.error ? [{ type: "text", text: result.error }] : []),
-            details: result.details, isError: !result.ok, ...(result.durationMs === undefined ? {} : { durationMs: result.durationMs }) });
+          if (result) {
+            const content = result.content ?? (result.error ? [{ type: "text", text: result.error }] : []);
+            const loaded = showImages && content.some(part => part.type === "image") ? images?.(result.id) : undefined;
+            tool.updateResult({ content: loaded ? [...content.filter(part => part.type !== "image"), ...loaded] : content,
+              details: result.details, isError: !result.ok, ...(result.durationMs === undefined ? {} : { durationMs: result.durationMs }) });
+          }
           out.push(...tool.render(width)); // starts with its own blank line
         }
       }
@@ -339,13 +346,14 @@ export function renderTranscript(items: ChatItem[], worker: string, width: numbe
 }
 
 export type WorkerSource = {
+  images(entryId: string): Promise<ImageContent[]>;
   page(cursor?: string): Promise<{ conversationId?: string; items: ChatItem[]; queued?: Queued[]; next?: string }>;
   status(): Promise<WorkerStatus>;
   watch(signal: AbortSignal, onFrame: () => void): Promise<void>;
 };
 
 export type ChatActions = {
-  send(text: string, mode: Mode, images?: import("@earendil-works/pi-ai").ImageContent[]): Promise<unknown>; stop(): Promise<unknown>; back(): void;
+  send(text: string, mode: Mode, images?: ImageContent[]): Promise<unknown>; stop(): Promise<unknown>; back(): void;
   /** `/compact [instructions]` in the editor. */
   models?(): Promise<ModelChoice[]>;
   setModel?(model: ModelChoice, thinking: ModelThinkingLevel): Promise<unknown>;
@@ -426,7 +434,7 @@ class Transcript implements Component {
           const [page, status] = await Promise.all([this.source.page(), this.source.status()]);
           if (this.life.signal.aborted) return;
           if (page.conversationId !== this.conversationId) {
-            this.entries.clear(); this.olderLoaded = false; this.next = undefined; this.offset = 0;
+            this.imageCache = new Map(); this.entries.clear(); this.olderLoaded = false; this.next = undefined; this.offset = 0;
             this.conversationId = page.conversationId;
           }
           for (const entry of page.items) this.entries.set(String(entry.id), entry);
@@ -472,9 +480,21 @@ class Transcript implements Component {
     if (keys.matches(data, "app.thinking.toggle")) { this.toggleThinking(); return true; }
     return false;
   }
+  private imageCache = new Map<string, ImageContent[] | undefined>();
+  private images = (entryId: string) => {
+    if (!this.imageCache.has(entryId)) {
+      this.imageCache.set(entryId, undefined);
+      const cache = this.imageCache;
+      void this.source.images(entryId).then(images => {
+        if (this.life.signal.aborted || cache !== this.imageCache) return;
+        cache.set(entryId, images); this.version++; this.changed();
+      }).catch(() => { /* Keep Pi's image fallback on failure. */ });
+    }
+    return this.imageCache.get(entryId);
+  };
   lines(width: number) {
     if (this.cache?.width !== width || this.cache.version !== this.version) {
-      this.cache = { width, version: this.version, lines: renderTranscript([...this.entries.values()], this.name, width, this.theme, { showThinking: this.showThinking, expanded: this.expanded, tui: this.tui, cwd: this.status?.cwd }) };
+      this.cache = { width, version: this.version, lines: renderTranscript([...this.entries.values()], this.name, width, this.theme, { showThinking: this.showThinking, expanded: this.expanded, tui: this.tui, cwd: this.status?.cwd, showImages: SettingsManager.create(this.status?.cwd ?? homedir(), agentDir).getShowImages(), images: this.images }) };
     }
     const lines = this.cache.lines;
     // Keep a scrolled-up view anchored when activity is appended; prepending older pages needs no shift.

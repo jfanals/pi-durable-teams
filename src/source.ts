@@ -3,7 +3,7 @@ import type { ChatItem, Queued } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import { randomUUID } from "node:crypto";
 import type { ModelRef } from "@earendil-works/pi-durable";
-import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
+import type { ImageContent, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { Client } from "./client.ts";
 import type { AgentSummary, Mode } from "./protocol.ts";
 import type { WorkerSource } from "./ui.ts";
@@ -11,10 +11,11 @@ import type { WorkerSource } from "./ui.ts";
 export type TreeNode = { entry: { type: "message"; id: string; parentId: string | null; timestamp: string; message: any }; children: TreeNode[] };
 export type TreeResult = { nodes: TreeNode[]; leafId: string | null; id?: string; editorText?: string };
 export type TranscriptPage = { conversationId?: string; items: ChatItem[]; queued?: Queued[]; next?: string };
-export type RequestOptions = { requestId?: string; signal?: AbortSignal; images?: import("@earendil-works/pi-ai").ImageContent[] };
+export type RequestOptions = { requestId?: string; signal?: AbortSignal; images?: ImageContent[] };
 export type CompactResult = { taskId: number; outcome: "compacted" | "nothing" | "running" | "failed"; error?: string };
 export type MutationResult = { id?: string; taskId?: number; workerId?: string; delivery?: string; aborted?: string[]; stopped?: string[]; model?: ModelRef; thinking?: ModelThinkingLevel };
 export interface HostSource {
+  images(target: string, entryId: string): Promise<ImageContent[]>;
   models(signal?: AbortSignal): Promise<ModelChoice[]>;
   defaults(signal?: AbortSignal): Promise<WorkerModel | null>;
   list(signal?: AbortSignal): Promise<AgentSummary[]>;
@@ -42,6 +43,7 @@ export interface HostSource {
 export class SocketHostSource implements HostSource {
   readonly client: Client;
   constructor(client = new Client()) { this.client = client; }
+  images(target: string, entryId: string) { return this.client.call<ImageContent[]>("agents/images", { target, entryId }); }
   models(signal?: AbortSignal) { return this.client.call<ModelChoice[]>("agents/models", {}, signal); }
   defaults(signal?: AbortSignal) { return this.client.call<WorkerModel | null>("agents/defaults", {}, signal); }
   list(signal?: AbortSignal) { return this.client.call<AgentSummary[]>("agents", {}, signal); }
@@ -74,6 +76,7 @@ export class SocketHostSource implements HostSource {
 /** Bind the shared chat inspector to one agent without database access. */
 export function workerSource(source: HostSource, target: string): WorkerSource {
   return {
+    images: entryId => source.images(target, entryId),
     page: cursor => source.page(target, cursor),
     status: async () => {
       const find = (rows: AgentSummary[]): AgentSummary | undefined => {

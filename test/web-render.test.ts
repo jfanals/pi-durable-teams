@@ -22,3 +22,31 @@ test("web markdown escapes HTML, drops unsafe URLs and images, and keeps HTTP li
   assert.match(thoughts, /data-rewind="2"/);
   assert.match(thoughts, /<div class="thinking markdown"><p>one<\/p>\n<\/div><div class="thinking markdown"><p>two<\/p>/);
 });
+
+
+test("generic tool cards preserve full args, results and lazy result images with safe stable identities", () => {
+  const prompt = "first line\nlast line <script>";
+  const html = transcript([
+    { id: "1", kind: "reply", parts: [
+      { type: "tool", id: "spawn", name: "team", subject: "spawn reader", args: { action: "spawn", message: prompt } },
+      { type: "tool", id: "shell", name: "bash", subject: "echo", args: { command: "echo one\necho two" } },
+      { type: "tool", id: "read", name: "read", subject: "image.png", args: { path: "image.png" } },
+    ] },
+    { id: "2", kind: "result", callId: "spawn", ok: true, content: [{ type: "text", text: "accepted <tag>" }] },
+    { id: "3", kind: "result", callId: "read", ok: false, error: "error <tag>", content: [
+      { type: "text", text: "image result" }, { type: "image", mimeType: "image/png" },
+    ] },
+    { id: "4", kind: "compaction", summary: "summary", tokensBefore: 100 },
+  ]);
+  assert.equal((html.match(/<details class="tool /g) ?? []).length, 3);
+  assert.match(html, /data-card="tool:spawn"/);
+  assert.match(html, /first line\nlast line &lt;script&gt;/);
+  assert.match(html, /<pre>echo one\necho two<\/pre>/);
+  assert.match(html, /&quot;path&quot;:&quot;image.png&quot;/);
+  assert.match(html, /accepted &lt;tag&gt;/);
+  assert.match(html, /image result/);
+  assert.match(html, /error &lt;tag&gt;/);
+  assert.match(html, /data-images="3"/);
+  assert.doesNotMatch(html, /data-images="read"|<script>|<tag>/);
+  assert.match(html, /data-card="compaction:4"/);
+});

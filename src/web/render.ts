@@ -60,7 +60,7 @@ export function transcript(items: ChatItem[]) {
     .map((item) => {
       if (item.kind === "result") return "";
       if (item.kind === "compaction")
-        return `<details class="compaction" data-compaction="${escape(item.id)}">
+        return `<details class="compaction" data-card="compaction:${escape(item.id)}">
 <summary>[compaction] ${item.tokensBefore ? `Compacted from ${item.tokensBefore.toLocaleString()} tokens` : "Context compacted"}</summary>
 <div class="markdown">${markdown(item.summary)}</div>
 </details>`;
@@ -79,9 +79,14 @@ ${item.images?.length ? `<span data-images="${escape(item.id)}">[image]</span>` 
             return `<div class="thinking markdown">${markdown(part.text)}</div>`;
           const result = results.get(part.id);
           const icon = result ? (result.ok ? "✓" : "✗") : "○";
-          const error = result?.error ? `<br>${escape(result.error)}` : "";
-          return `<div class="tool ${result?.ok === false ? "error" : ""}">${icon}
-<strong>${escape(part.name)}</strong> ${escape(part.subject)}${error}</div>`;
+          const args = part.args ?? {};
+          const prompt = args.message ?? args.command ?? JSON.stringify(args);
+          const output = result?.content?.flatMap(part => part.type === "text" ? [part.text] : []).join("\n") ?? "";
+          return `<details class="tool ${result?.ok === false ? "error" : ""}" data-card="tool:${escape(part.id)}">
+<summary>${icon} <strong>${escape(part.name)}</strong> ${escape(part.subject)}</summary>
+<div class="tool-body"><pre>${escape(prompt)}</pre>${output ? `<pre>${escape(output)}</pre>` : ""}
+${result?.error ? `<p class="error">${escape(result.error)}</p>` : ""}
+${result?.content?.some(part => part.type === "image") ? `<span data-images="${escape(result.id)}">[image]</span>` : ""}</div></details>`;
         })
         .join("");
       const turn = item.turn;
