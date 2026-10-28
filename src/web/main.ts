@@ -3,7 +3,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
 import { escape as e, info, footerInfo, transcript } from "./render.ts";
-import { formatCost, formatDuration, statusWord } from "../status.ts";
+import { formatCost, formatDuration, statusWord, teamGlance } from "../status.ts";
 import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
 import { agentNameError, suggestedAgentName } from "../agent-name.ts";
 import type { ChatItem } from "../chat.ts";
@@ -51,10 +51,23 @@ function base(content: string) {
   root.innerHTML = `<div id="connection" role="status" ${reconnecting.size ? "" : "hidden"}>
 Host disconnected — reconnecting…</div>${content}<div id="notice" role="status"></div><div id="error" role="alert"></div>`;
 }
+let expiry: ReturnType<typeof setTimeout> | undefined;
 function list() {
+  clearTimeout(expiry);
+  const now = Date.now();
   const scroll = document.querySelector(".list")?.scrollTop ?? 0;
   const focus = (document.activeElement as HTMLElement)?.dataset.open;
   screen = "list";
+  // Each agent's team at a glance, as in the terminal: running and recently finished sub-agents
+  // get a row; the rest fold into one summary line, listed when the agent is opened.
+  const expiries: number[] = [];
+  const team = (a: Agent): string => {
+    if (!a.children.length) return "";
+    const { shown, summary, expiresAt } = teamGlance(a.children, now);
+    if (expiresAt) expiries.push(expiresAt);
+    return shown.map((w) => row(a.children.find((c) => c.id === w.id)!, true)).join("")
+      + (summary ? `<div class="team-summary">${e(summary)}</div>` : "");
+  };
   const row = (a: Agent, child = false): string =>
     `<button class="agent ${child ? "child" : ""}" data-open="${e(a.id)}">
 <div class="row">
@@ -62,7 +75,7 @@ function list() {
 <span>${a.running ? '<i class="spinner"></i>' : ""}${e(statusWord(a))}</span>
 </div>
 <small data-time="${e(a.id)}">${e(info(a))}</small>
-</button>${a.children.map((c) => row(c, true)).join("")}`;
+</button>${child ? "" : team(a)}`;
   const running = agents.filter((a) => a.running).length;
   const totalCost = formatCost(all().reduce((n, a) => n + (a.cost ?? 0), 0)) || "$0.000";
   const subscription = all().some((a) => a.subscription) ? " (sub)" : "";
@@ -82,6 +95,7 @@ function list() {
     (el) => el.dataset.open === focus,
   );
   focused?.focus({ preventScroll: true });
+  if (expiries.length) expiry = setTimeout(() => { if (screen === "list") list(); }, Math.max(0, Math.min(...expiries) - now));
 }
 function status(clockOnly = false) {
   const a = current();

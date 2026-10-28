@@ -148,9 +148,20 @@ small {
   border-radius: 0;
   padding: 16px 10px;
 }
-.agent.child {
+.agent.child,
+.team-summary {
   padding-left: 32px;
   background: color-mix(in srgb, var(--panel) 50%, transparent);
+}
+.agent.child {
+  border-left: 2px solid var(--line);
+}
+.team-summary {
+  color: var(--muted);
+  font-size: 0.8rem;
+  padding: 8px 10px 8px 32px;
+  border-left: 2px solid var(--line);
+  border-bottom: 1px solid var(--line);
 }
 .agent small {
   margin-top: 6px;

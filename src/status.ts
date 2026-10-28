@@ -88,6 +88,24 @@ export const formatContext = (w: WorkerStatus) => w.context === undefined ? ""
   : w.contextWindow ? `${(100 * w.context / w.contextWindow).toFixed(1)}%/${formatTokens(w.contextWindow)}` : `${formatTokens(w.context)} ctx`;
 export const formatCost = (cost?: number) => cost ? `$${cost.toFixed(3)}` : "";
 
+/** Idle workers keep their own row this long after their last reply, then join the summary count. */
+export const RECENT_MS = 60_000;
+export const recent = (w: WorkerStatus, now: number) => w.enabled && !w.running && !!w.finishedAt && now - w.finishedAt < RECENT_MS;
+/**
+ * A team at a glance, the same in Pi's panel, the dashboard and the web list: running and
+ * recently finished workers get their own row (up to `limit`); the rest are counted, with the team's cost.
+ */
+export function teamGlance(workers: WorkerStatus[], now: number, limit = Infinity) {
+  const shown = [...workers.filter(w => w.running), ...workers.filter(w => recent(w, now))];
+  const idle = workers.filter(w => w.enabled && !w.running && !shown.includes(w)).length;
+  const stopped = workers.filter(w => !w.enabled).length;
+  const cost = formatCost(workers.reduce((sum, w) => sum + (w.cost ?? 0), 0));
+  const summary = [shown.length > limit && `+${shown.length - limit} more`, idle && `${idle} idle`, stopped && `${stopped} stopped`,
+    cost && `team ${cost}${workers.some(w => w.subscription) ? " (sub)" : ""}`].filter(Boolean).join(" · ");
+  const expires = shown.filter(w => !w.running).map(w => w.finishedAt! + RECENT_MS);
+  return { shown: shown.slice(0, limit), summary, ...(expires.length ? { expiresAt: Math.min(...expires) } : {}) };
+}
+
 
 export const textOf = (message: any): string => typeof message?.content === "string" ? message.content
   : (message?.content ?? []).flatMap((part: any) => part.type === "text" ? [part.text] : []).join("\n");

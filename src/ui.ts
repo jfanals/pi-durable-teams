@@ -15,7 +15,7 @@ import {
   Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth,
   type Component, type DefaultTextStyle, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import { clean, firstLine, textOf, liveStatus, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, type WorkerStatus } from "./status.ts";
+import { clean, firstLine, textOf, liveStatus, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, teamGlance, type WorkerStatus } from "./status.ts";
 import type { TreeResult } from "./source.ts";
 import type { ChatItem, Queued } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
@@ -37,16 +37,13 @@ const expandKey = () => { try { return keyText("app.tools.expand") || "ctrl+o"; 
 export const glyph = (w: WorkerStatus) => !w.enabled ? "■" : w.running ? "●" : "○";
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const VISIBLE_RUNNING = 5;
-/** Idle workers keep their row this long after their last reply, then join the summary count. */
-const RECENT_MS = 60_000;
-const recent = (w: WorkerStatus, now: number) => w.enabled && !w.running && !!w.finishedAt && now - w.finishedAt < RECENT_MS;
 const VISIBLE_FOCUSED = 8;
 
-export function statusRow(w: WorkerStatus, width: number, selected: boolean, now: number, theme: Theme, nameWidth: number, frame = 0, idleText?: string, modelMinWidth = 80) {
+export function statusRow(w: WorkerStatus, width: number, selected: boolean, now: number, theme: Theme, nameWidth: number, frame = 0, idleText?: string, modelMinWidth = 80, tree = "") {
   const t = theme;
   const mark = !w.enabled ? t.fg("muted", "■") : w.running ? t.fg("accent", SPINNER[frame % SPINNER.length]!) : t.fg("muted", "○");
   const name = truncateToWidth(clean(w.name), nameWidth, "…", true);
-  const left = `${selected ? t.fg("accent", "› ") : "  "}${mark} ${selected ? t.fg("accent", t.bold(name)) : w.running ? name : t.fg("muted", name)}  `;
+  const left = `${selected ? t.fg("accent", "› ") : "  "}${t.fg("dim", tree)}${mark} ${selected ? t.fg("accent", t.bold(name)) : w.running ? name : t.fg("muted", name)}  `;
   const time = w.running && w.since ? formatDuration(now - w.since)
     : !w.running && w.since && w.finishedAt && w.finishedAt >= w.since ? formatDuration(w.finishedAt - w.since) : "";
   // On narrow terminals the model drops first, then the cost, then the activity text.
@@ -93,8 +90,8 @@ export class TeamPanel implements Component, Focusable {
     // Animate only running workers; recent idle rows need just one expiry render.
     clearTimeout(this.expiry);
     const now = Date.now();
-    const expires = this.workers.filter(w => recent(w, now)).map(w => w.finishedAt! + RECENT_MS - now);
-    if (expires.length && !this.compact) this.expiry = setTimeout(() => this.setWorkers(this.workers), Math.min(...expires));
+    const { expiresAt } = teamGlance(this.workers, now);
+    if (expiresAt && !this.compact) this.expiry = setTimeout(() => this.setWorkers(this.workers), expiresAt - now);
     const running = this.workers.some(w => w.running);
     if (running && !this.ticker) this.ticker = setInterval(() => { this.frame++; this.tui.requestRender(); }, 100);
     if (!running && this.ticker) { clearInterval(this.ticker); this.ticker = undefined; }
@@ -126,22 +123,19 @@ export class TeamPanel implements Component, Focusable {
       push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · enter open · esc back`), width));
       return lines;
     }
-    const running = this.workers.filter(w => w.running);
-    const shown = this.compact ? running : [...running, ...this.workers.filter(w => recent(w, now))];
-    for (const w of this.compact ? shown : shown.slice(0, VISIBLE_RUNNING)) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
-    if (this.ticker && !shown.length) { clearInterval(this.ticker); this.ticker = undefined; } // last recent row expired
-    const idle = this.workers.filter(w => w.enabled && !w.running && !shown.includes(w)).length;
-    const stopped = this.workers.filter(w => !w.enabled).length;
-    // Every worker's cost, listed or not; "(sub)" as in Pi's footer when any of it is subscription-billed.
-    const total = formatCost(this.workers.reduce((sum, w) => sum + (w.cost ?? 0), 0));
     if (this.compact) {
+      const running = this.workers.filter(w => w.running);
+      for (const w of running) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
+      const idle = this.workers.filter(w => w.enabled && !w.running).length;
+      const stopped = this.workers.filter(w => !w.enabled).length;
+      const total = formatCost(this.workers.reduce((sum, w) => sum + (w.cost ?? 0), 0));
       push(truncateToWidth(t.fg("dim", `  ${idle} idle · ${stopped} stopped · team ${total || "$0.000"}${this.workers.some(w => w.subscription) ? " (sub)" : ""} · ↓ to select`), width));
       return lines;
     }
-    const summary = [shown.length > VISIBLE_RUNNING && `+${shown.length - VISIBLE_RUNNING} more`,
-      idle && `${idle} idle`, stopped && `${stopped} stopped`,
-      total && `team ${total}${this.workers.some(w => w.subscription) ? " (sub)" : ""}`].filter(Boolean).join(" · ");
-    push(truncateToWidth(t.fg("dim", `  ${shown.length || total ? "" : "team · "}${summary ? `${summary} · ` : ""}↓ to select`), width));
+    const { shown, summary } = teamGlance(this.workers, now, VISIBLE_RUNNING);
+    for (const w of shown) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
+    if (this.ticker && !shown.length) { clearInterval(this.ticker); this.ticker = undefined; } // last recent row expired
+    push(truncateToWidth(t.fg("dim", `  ${shown.length || summary.includes("team ") ? "" : "team · "}${summary ? `${summary} · ` : ""}↓ to select`), width));
     return lines;
   }
   handleInput(data: string) {

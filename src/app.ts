@@ -1,10 +1,10 @@
 import { piCompletionTool } from "./presentation.ts";
-import { formatCost } from "./status.ts";
+import { formatCost, teamGlance } from "./status.ts";
 import { execFile } from "node:child_process";
 import { DirPicker } from "./dir-picker.ts";
 import { agentNameError, suggestedAgentName } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
-import { Editor, Key, SelectList, isKeyRelease, matchesKey, truncateToWidth, type Component, type Focusable, type TuiAltScreen } from "@earendil-works/pi-tui";
+import { Editor, Key, SelectList, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TuiAltScreen } from "@earendil-works/pi-tui";
 import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { type WorkerModel } from "./config.ts";
 import type { AgentSummary } from "./protocol.ts";
@@ -44,6 +44,7 @@ export class AgentsApp implements Component, Focusable {
   private dirPicker?: DirPicker;
   private confirming?: { agent: AgentSummary; remove?: boolean };
   private ticker?: ReturnType<typeof setInterval>;
+  private expiry?: ReturnType<typeof setTimeout>;
   private frame = 0;
   private launchCwd: string;
   private exit: () => void;
@@ -84,11 +85,15 @@ export class AgentsApp implements Component, Focusable {
       try {
         await this.source.roster(this.life.signal, rows => {
           // Rows reorder by recency: keep the selection on the same agent.
-          const selectedId = this.rows()[this.selected]?.agent.id;
+          const selectedId = this.selectable()[this.selected]?.id;
           this.agents = rows;
           for (const { agent } of this.rows()) this.loadBranch(agent.cwd);
-          const index = this.rows().findIndex(row => row.agent.id === selectedId);
+          const index = this.selectable().findIndex(agent => agent.id === selectedId);
           if (index >= 0) this.selected = index;
+          // A recently finished sub-agent folds into its team's summary a minute after its reply.
+          clearTimeout(this.expiry);
+          const expiries = this.dashboard().flatMap(row => row.expiresAt ? [row.expiresAt] : []);
+          if (expiries.length) this.expiry = setTimeout(() => this.tui.requestRender(), Math.max(0, Math.min(...expiries) - Date.now()));
           this.view?.setChildren(this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent.children ?? []); this.note = ""; delay = 250;
           const running = this.rows().some(row => row.agent.running);
           if (running && !this.ticker) this.ticker = setInterval(() => { this.frame++; this.tui.requestRender(); }, 100);
@@ -124,6 +129,25 @@ export class AgentsApp implements Component, Focusable {
     };
     visit(this.agents, 0); return out;
   }
+  /**
+   * Dashboard rows: each top-level agent, then its team at a glance as in Pi's panel. Running and
+   * recently finished sub-agents get a row; the rest fold into one summary line, listed when the agent is opened.
+   */
+  private dashboard() {
+    const out: { agent?: AgentSummary; tree: string; summary?: string; expiresAt?: number }[] = [];
+    const now = Date.now();
+    for (const agent of this.agents) {
+      out.push({ agent, tree: "" });
+      if (!agent.children.length) continue;
+      const { shown, summary, expiresAt } = teamGlance(agent.children, now);
+      const children = shown.map(w => agent.children.find(child => child.id === w.id)!);
+      children.forEach((child, i) => out.push({ agent: child, tree: i === children.length - 1 && !summary ? "└─ " : "├─ " }));
+      if (summary) out.push({ tree: "└─ ", summary });
+      if (expiresAt) out[out.length - 1]!.expiresAt = expiresAt;
+    }
+    return out;
+  }
+  private selectable() { return this.dashboard().flatMap(row => row.agent ? [row.agent] : []); }
   private fail(error: unknown) { this.note = String(error); this.tui.requestRender(); }
   private open(agent: AgentSummary, push = true) {
     if (push) {
@@ -290,17 +314,19 @@ export class AgentsApp implements Component, Focusable {
     this.tui.requestRender();
   }
   private list(width: number): string[] {
-    const rows = this.rows(); this.selected = Math.max(0, Math.min(this.selected, rows.length - 1));
+    const rows = this.dashboard(); const selectable = rows.filter(row => row.agent);
+    this.selected = Math.max(0, Math.min(this.selected, selectable.length - 1));
     const height = this.tui.terminal.rows;
     const hints = width >= 75 ? ["↑↓ select · enter/→ open · n new · r rename · x disable · d remove · q quit"]
       : ["↑↓ select · enter/→ open · n new", "r rename · x disable · d remove · q quit"];
     const capacity = Math.max(1, height - 4 - hints.length);
-    const start = Math.max(0, this.selected - capacity + 1);
+    const at = rows.indexOf(selectable[this.selected]!);
+    const start = Math.max(0, at - capacity + 1);
     const lines = [this.theme.fg("accent", this.theme.bold("pi-agents")), ""];
-    const nameWidth = Math.min(24, Math.max(6, ...rows.map(({ agent, depth }) => 2 * depth + agent.name.length)));
-    for (const [index, { agent: a, depth }] of rows.slice(start, start + capacity).entries()) {
-      const display = { ...a, name: `${"  ".repeat(depth)}${a.name}` };
-      lines.push(statusRow(display, width, index + start === this.selected, Date.now(), this.theme, nameWidth, this.frame, undefined, 60));
+    const nameWidth = Math.min(24, Math.max(6, ...selectable.map(({ agent, tree }) => tree.length + agent!.name.length)));
+    for (const [index, { agent, tree, summary }] of rows.slice(start, start + capacity).entries()) {
+      lines.push(agent ? statusRow(agent, width, index + start === at, Date.now(), this.theme, nameWidth - visibleWidth(tree), this.frame, undefined, 60, tree)
+        : `  ${this.theme.fg("dim", `${tree}${summary}`)}`);
     }
     while (lines.length < height - 2 - hints.length) lines.push("");
     const all = this.rows();
@@ -341,15 +367,15 @@ export class AgentsApp implements Component, Focusable {
     else if (this.confirming) { const target = this.confirming; this.confirming = undefined; if (data === "y") void (target.remove ? this.source.remove(target.agent.id) : this.source.disable(target.agent.id)).catch(error => this.fail(error)); }
     else if (this.view) this.view.handleInput(data);
     else if (matchesKey(data, Key.up)) this.selected = Math.max(0, this.selected - 1);
-    else if (matchesKey(data, Key.down)) this.selected = Math.min(this.rows().length - 1, this.selected + 1);
-    else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) { const row = this.rows()[this.selected]; if (row) this.open(row.agent); }
+    else if (matchesKey(data, Key.down)) this.selected = Math.min(this.selectable().length - 1, this.selected + 1);
+    else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) { const agent = this.selectable()[this.selected]; if (agent) this.open(agent); }
     else if (data === "r") {
-      const agent = this.rows()[this.selected]?.agent;
+      const agent = this.selectable()[this.selected];
       if (agent) { this.renaming = { agent }; this.editor.setText(agent.name); }
     }
     else if (data === "q") { this.dispose(); this.tui.stop(); this.exit(); return; }
     else if (data === "x" || data === "d") {
-      const agent = this.rows()[this.selected]?.agent;
+      const agent = this.selectable()[this.selected];
       if (agent) this.confirming = { agent, remove: data === "d" };
     }
     else if (data === "n") {
@@ -362,5 +388,5 @@ export class AgentsApp implements Component, Focusable {
   invalidate() { this.view?.invalidate(); this.editor.invalidate(); }
   /** What copy-on-select puts on the clipboard: the markdown behind the selected text in the open chat. */
   copyText(selected: string) { return markdownForSelection(selected, this.view?.markdown() ?? []); }
-  dispose() { this.life.abort(); this.view?.dispose(); clearInterval(this.ticker); this.removeInput(); this.cmux?.dispose(); }
+  dispose() { this.life.abort(); this.view?.dispose(); clearInterval(this.ticker); clearTimeout(this.expiry); this.removeInput(); this.cmux?.dispose(); }
 }

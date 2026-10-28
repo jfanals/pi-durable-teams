@@ -240,7 +240,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await until(async () => (await alpha())!.children.length > 0);
     const identity = { sessionId: "external", secret: "s".repeat(36) };
     await source.client.call("register", { ...identity, name: "Pi main", cwd: directory, model: { provider: "faux", modelId: "faux-1" } });
-    const roster = await wait("  reader");
+    const roster = await wait("└─ ○ reader"); // a recently finished sub-agent keeps its own row, nested under its parent
     assert.doesNotMatch(roster, /Pi main|offline|\(Pi\)/);
     print?.("nested hosted agents", roster);
     await key("r"); await wait("Rename agent");
