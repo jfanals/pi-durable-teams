@@ -195,6 +195,14 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     }
     return { latest, since: user?.timestamp };
   }
+  async function inspectHosted(target: Agent) {
+    if (target.where.kind !== "hosted") throw new Error("Expected hosted agent");
+    const agent = await harness.snapshot(AgentDoc, target.where.conversationId, context);
+    const live = await harness.snapshot(LiveDoc, target.where.conversationId, context);
+    const { latest, since } = await latestMessages(target);
+    const info = agent?.model && options.modelInfo?.(agent.model);
+    return { ...actorOf(target), enabled: target.enabled, agent, contextWindow: info?.window, subscription: info?.subscription, live, usage: await totalUsage(target), latest, since };
+  }
   // UsageDoc starts empty on every fork. Sum each conversation once, including abandoned branches.
   async function totalUsage(agent: Agent) {
     const sum: UsageState = { models: Object.create(null), tools: Object.create(null) };
@@ -437,12 +445,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const page = await conversation.entries({ order: "descending" }, 40, args.cursor ? JSON.parse(args.cursor) : undefined, context);
         return { ...actorOf(target!), entries: page.items, next: page.next ? JSON.stringify(page.next) : undefined };
       }
-      const conversationId = target!.where.conversationId;
-      const agent = await harness.snapshot(AgentDoc, conversationId, context);
-      const live = await harness.snapshot(LiveDoc, conversationId, context);
-      const { latest, since } = await latestMessages(target!);
-      const info = agent?.model && options.modelInfo?.(agent.model);
-      return { ...actorOf(target!), enabled: target!.enabled, agent, contextWindow: info?.window, subscription: info?.subscription, live, usage: await totalUsage(target!), latest, since };
+      return inspectHosted(target!);
     }
     if (!requestId) throw new Error("A stable request ID is required");
     const requestKey = actor.id === human.id ? `human:${args.action}:${requestId}` : `${actor.id}:${requestId}`;
@@ -627,9 +630,67 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     await harness.commit(async tx => { (await tx.doc(Teams)).waiting = {}; }, context);
     for (const id of interruptedWaits) await restoreReport(id);
   }
+  // One roster for every reader (HTTP, streams and push). Commits only mark work here;
+  // Session reads run later, never inside the publication callback.
+  let rosterState: Registry | undefined;
+  let registryDirty = true;
+  const dirtyConversations = new Set<ConversationId>();
+  const statusRows = new Map<string, { key: string; row: AgentSummary }>();
+  let roster: AgentSummary[] = [];
+  let refreshing: Promise<AgentSummary[]> | undefined;
+  async function refreshRoster() {
+    while (registryDirty || dirtyConversations.size) {
+      const readRegistry = registryDirty;
+      registryDirty = false;
+      const conversations = new Set(dirtyConversations);
+      dirtyConversations.clear();
+      try {
+        if (readRegistry || !rosterState) rosterState = await read();
+        const state = rosterState;
+        const agents = Object.values(state.agents).filter(agent => !agent.removed && agent.where.kind === "hosted");
+        const present = new Set(agents.map(agent => agent.id));
+        for (const id of statusRows.keys()) if (!present.has(id)) statusRows.delete(id);
+        await Promise.all(agents.map(async agent => {
+          const key = JSON.stringify(agent);
+          const cached = statusRows.get(agent.id);
+          if (cached?.key === key && agent.where.kind === "hosted"
+            && ![agent.where.conversationId, ...(agent.branches ?? [])].some(id => conversations.has(id))) return;
+          const details = await inspectHosted(agent);
+          statusRows.set(agent.id, { key, row: { hosted: true, ...liveStatus(details), children: [] } });
+        }));
+        // Build new tree objects: push and stream consumers may still hold the previous roster.
+        const rows = agents.map(agent => ({ ...statusRows.get(agent.id)!.row, children: [] as AgentSummary[] }));
+        const now = Date.now();
+        const recency = (row: AgentSummary) => row.running ? now : Math.max(state.agents[row.id]!.activeAt ?? 0, row.since ?? 0, row.finishedAt ?? 0);
+        rows.sort((a, b) => recency(b) - recency(a));
+        const byId = new Map(rows.map(row => [row.id, row]));
+        for (const row of rows) { const parent = state.agents[row.id]!.parent; if (parent) byId.get(parent)?.children.push(row); }
+        roster = rows.filter(row => !state.agents[row.id]!.parent);
+      } catch (error) {
+        registryDirty = true;
+        for (const id of conversations) dirtyConversations.add(id);
+        throw error;
+      }
+    }
+    return roster;
+  }
+  function agents(): Promise<AgentSummary[]> {
+    return refreshing ??= refreshRoster().finally(() => { refreshing = undefined; });
+  }
   harness.resume();
   // Commit listeners must not re-enter Session APIs through subscribers.
-  const unsubscribeCommits = harness.subscribeCommits(publication => { warming?.onCommit(publication); queueMicrotask(notify); });
+  const unsubscribeCommits = harness.subscribeCommits(publication => {
+    warming?.onCommit(publication);
+    for (const change of publication.changes) {
+      if (change.type === "document") {
+        if (change.record.kind === "teams.registry") registryDirty = true;
+        if (change.conversationId !== undefined) dirtyConversations.add(change.conversationId);
+      } else if (change.type === "entry" || change.type === "submission" || change.type === "task") {
+        if (change.value.conversationId !== undefined) dirtyConversations.add(change.value.conversationId);
+      } else if (change.type === "conversation") dirtyConversations.add(change.value.id);
+    }
+    queueMicrotask(notify);
+  });
   return {
     harness, action,
     /** Human-only removal: retain conversations, but retire the registry subtree. */
@@ -842,21 +903,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       notify();
       return result;
     },
-    async agents(): Promise<AgentSummary[]> {
-      const state = await read();
-      const rows = await Promise.all(Object.values(state.agents).filter(agent => !agent.removed && agent.where.kind === "hosted").map(async agent => {
-        const base = { id: agent.id, name: agent.name, cwd: agent.cwd, enabled: agent.enabled, hosted: true };
-        const details = await action(human, { action: "inspect", target: agent.id }, "") as Parameters<typeof liveStatus>[0];
-        return { ...base, ...liveStatus(details), children: [] } as AgentSummary;
-      }));
-      // Most recent first, at every level: running agents, then the latest activity.
-      const now = Date.now();
-      const recency = (row: AgentSummary) => row.running ? now : Math.max(state.agents[row.id]!.activeAt ?? 0, row.since ?? 0, row.finishedAt ?? 0);
-      rows.sort((a, b) => recency(b) - recency(a));
-      const byId = new Map(rows.map(row => [row.id, row]));
-      for (const row of rows) { const parent = state.agents[row.id]!.parent; if (parent) byId.get(parent)?.children.push(row); }
-      return rows.filter(row => !state.agents[row.id]!.parent);
-    },
+    agents,
     async register(main: MainRegistration) {
       if (!/^[a-zA-Z0-9][\w-]{0,127}$/.test(main.sessionId) || /^\d+$/.test(main.sessionId) || ["constructor", "prototype", "__proto__", "human"].includes(main.sessionId) || !main.secret || main.secret.length < 32) throw new Error("Invalid main identity/secret");
       main.cwd = await realpath(main.cwd);

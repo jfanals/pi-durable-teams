@@ -8,7 +8,7 @@ import { Value } from "typebox/value";
 import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool, Harness, MemoryStorage, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
+import { AgentDoc, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool, Harness, MemoryStorage, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { human, openTeams, Teams, type TeamsService } from "../src/teams.ts";
 import { ActionSchema, type Actor } from "../src/protocol.ts";
@@ -402,5 +402,67 @@ test("inspection matches active view across paged tool tails, resets and compact
     await equivalent();
     assert.deepEqual((await service.page(human, id)).queued, []);
     assert.deepEqual(await service.dequeue(id), { texts: [] });
+  } finally { await service.close(); }
+});
+
+test("roster shares refresh work and invalidates only changed agents, branches and registry rows", async () => {
+  const storage = new MemoryStorage();
+  const scans: ConversationId[] = [];
+  const scan = storage.scanEntries.bind(storage);
+  storage.scanEntries = async (...args) => { if (args[0].conversationId !== undefined) scans.push(args[0].conversationId); return scan(...args); };
+  const service = await openTeams(storage, { models: fixture().models, agentModel: async () => model });
+  try {
+    const create = async (name: string) => (await service.action(human, { action: "newAgent", name, cwd: process.cwd() }, name) as { id: string }).id;
+    const a = await create("cached-a"), b = await create("cached-b");
+    const cid = Number(a) as ConversationId;
+    const first = await service.agents();
+    scans.length = 0;
+    const unchanged = await Promise.all(Array.from({ length: 8 }, () => service.agents()));
+    assert.ok(unchanged.every(rows => rows === first));
+    assert.deepEqual(scans, []);
+    await service.harness.commit(async tx => {
+      await tx.appendEntry(cid, { kind: "pi.user", model: [{ role: "user", content: "new", timestamp: 123 }] });
+      await tx.appendEntry(cid, { kind: "pi.assistant", model: [fauxAssistantMessage("new reply")] });
+    }, ctx);
+    const refreshed = await Promise.all(Array.from({ length: 8 }, () => service.agents()));
+    assert.ok(refreshed.every(rows => rows === refreshed[0]));
+    assert.deepEqual(scans, [cid]);
+    assert.equal(refreshed[0]!.find(row => row.id === a)!.since, 123);
+    assert.equal(first.find(row => row.id === a)!.since, undefined); // Earlier readers retain their frame.
+    scans.length = 0;
+    await service.action(human, { action: "rename", target: b, name: "renamed" }, "rename-cached");
+    assert.equal((await service.agents()).find(row => row.id === b)!.name, "renamed");
+    assert.deepEqual(scans, [Number(b)]);
+    let branch!: ConversationId;
+    await service.harness.commit(async tx => {
+      branch = (await tx.createConversation({ ownership: { kind: "ownerless" } })).id;
+      (await tx.doc(Teams)).agents[a]!.branches = [branch];
+    }, ctx);
+    await service.agents();
+    scans.length = 0;
+    await service.harness.commit(async tx => { await tx.appendEntry(branch, { kind: "test.branch-update" }); }, ctx);
+    await service.agents();
+    assert.deepEqual(scans, [cid]);
+    // A commit arriving during a shared refresh must not be lost when that refresh clears its work.
+    let release!: () => void;
+    let entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const reading = new Promise<void>(resolve => { entered = resolve; });
+    let hold = true;
+    const snapshot = service.harness.snapshot.bind(service.harness) as (...args: any[]) => Promise<any>;
+    service.harness.snapshot = (async (...args: any[]) => {
+      const value = await snapshot(...args);
+      if (hold && args[0] === AgentDoc && args[1] === cid) { hold = false; entered(); await gate; }
+      return value;
+    }) as typeof service.harness.snapshot;
+    await service.harness.commit(async tx => { await tx.appendEntry(cid, { kind: "pi.user", model: [{ role: "user", content: "before", timestamp: 200 }] }); }, ctx);
+    const pending = service.agents();
+    await reading;
+    try {
+      await service.harness.commit(async tx => { await tx.appendEntry(cid, { kind: "pi.user", model: [{ role: "user", content: "during", timestamp: 300 }] }); }, ctx);
+    } finally { release(); }
+    assert.equal((await pending).find(row => row.id === a)!.since, 300);
+    await service.remove(b, "remove-cached");
+    assert.deepEqual((await service.agents()).map(row => row.id), [a]);
   } finally { await service.close(); }
 });
