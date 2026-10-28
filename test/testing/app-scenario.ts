@@ -47,7 +47,10 @@ export async function appScenario(width: number, height: number, print?: (name: 
     assert.ok(list.indexOf("beta") < list.indexOf("alpha"), "most recent agent first");
     assert.match(list, /0 running · 2 idle · total \$/);
     assert.match(list, /r rename · a archive · q quit/);
+    // Pi's terminal title names the tab: the list, then the open agent.
+    assert.equal(terminal.title, `π - agents - ${basename(directory)}`);
     await key("\x1b[B"); await key("\r"); await wait(`alpha · ${alphaId}`); // alpha is second: beta is newer.
+    assert.equal(terminal.title, `π - alpha - ${basename(directory)}`);
     // Pi's slash list, Tab insertion, Escape dismissal, and cwd-relative @ paths.
     await key("/cl"); await wait("Clone this conversation");
     await key("\t"); assert.match(await frame(), /\/clone/);

@@ -1,6 +1,7 @@
 import { piCompletionTool } from "./presentation.ts";
 import { archiveView, formatCost, teamGlance } from "./status.ts";
 import { execFile } from "node:child_process";
+import { basename } from "node:path";
 import { DirPicker } from "./dir-picker.ts";
 import { agentNameError, suggestedAgentName } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
@@ -126,8 +127,13 @@ export class AgentsApp implements Component, Focusable {
       delay = Math.min(5000, delay * 2);
     }
   }
+  private title = "";
   private updateCmux() {
-    this.cmux?.update(this.agents, this.view ? this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent : undefined);
+    const open = this.view ? this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent : undefined;
+    this.cmux?.update(this.agents, open);
+    // Pi's terminal title, which cmux (and other terminals) show on the tab and workspace.
+    const title = open ? `π - ${open.name} - ${basename(open.cwd ?? this.launchCwd)}` : `π - agents - ${basename(this.launchCwd)}`;
+    if (title !== this.title) { this.title = title; this.tui.terminal.setTitle(title); }
   }
   private setScreen() {
     this.updateFocus(); this.updateCmux();

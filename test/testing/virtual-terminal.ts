@@ -97,7 +97,12 @@ export class VirtualTerminal implements Terminal {
 		this.xterm.write("\x1b[2J\x1b[H"); // Clear screen and move to home (1,1)
 	}
 
+	/** The last title set, as the terminal tab (cmux, Ghostty) would show it. */
+	get title(): string { return this._title; }
+	private _title = "";
+
 	setTitle(title: string): void {
+		this._title = title;
 		// OSC 0;title BEL - set terminal window title
 		this.xterm.write(`\x1b]0;${title}\x07`);
 	}
