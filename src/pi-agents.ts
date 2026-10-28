@@ -3,7 +3,7 @@ import { pair } from "./remote.ts";
 import { stateDir } from "./paths.ts";
 import { ProcessTerminal, TuiAltScreen, setKeybindings } from "@earendil-works/pi-tui";
 import { copyToClipboard, initTheme, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { piKeybindings, piPresentation, syncTerminalColors } from "./presentation.ts";
+import { piKeybindings, piPresentation, scrollToEndIndicator, syncTerminalColors } from "./presentation.ts";
 import { AgentsApp } from "./app.ts";
 import { SocketHostSource } from "./source.ts";
 
@@ -20,8 +20,9 @@ const { theme } = await piPresentation();
 setKeybindings(await piKeybindings());
 const source = new SocketHostSource();
 await source.client.ensureHost();
-// Pi's clipboard path, given the selection's markdown instead of the wrapped screen rows.
 const tui = new TuiAltScreen(new ProcessTerminal(), undefined, undefined, {
+  scrollToEndIndicator: await scrollToEndIndicator(theme),
+  // Pi's clipboard path, given the selection's markdown instead of the wrapped screen rows.
   copySelection: async text => {
     try { await copyToClipboard(app.copyText(text)); return true; } catch (error) { return error instanceof Error ? error.message : String(error); }
   },

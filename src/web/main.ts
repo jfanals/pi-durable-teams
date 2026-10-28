@@ -178,6 +178,8 @@ ${button("Model & thinking", "model", 'type="button"')}
     const view = document.querySelector("#messages")!;
     if (view.scrollHeight - view.scrollTop - view.clientHeight < 70)
       (document.querySelector("#new-messages") as HTMLElement).hidden = true;
+    // As in the terminal: nearing the top loads the previous page, so scrolling reaches the first message.
+    if (view.scrollTop < 300) void older().catch(fail);
   });
   status();
   await refresh();
@@ -219,6 +221,20 @@ function drawChat(older = false) {
   if (older) view.scrollTop = top + view.scrollHeight - height;
   else if (bottom) view.scrollTop = view.scrollHeight;
   else (document.querySelector("#new-messages") as HTMLElement).hidden = false;
+}
+let loadingOlder = false;
+async function older() {
+  if (!next || loadingOlder) return;
+  loadingOlder = true;
+  try {
+    const version = generation;
+    const page = await api<Page>("/page", { target: stack.at(-1), cursor: next });
+    if (version !== generation) return;
+    const merged = new Map([...page.items, ...items].map((item) => [item.id, item]));
+    items = [...merged.values()];
+    next = page.next;
+    drawChat(true);
+  } finally { loadingOlder = false; }
 }
 async function refresh() {
   if (refreshing) {
@@ -598,16 +614,9 @@ root.addEventListener("click", async (event) => {
       case "folder-go":
         await browse((document.querySelector("#folder") as HTMLInputElement).value);
         break;
-      case "older": {
-        const version = generation;
-        const page = await api<Page>("/page", { target: a?.id, cursor: next });
-        if (version !== generation) break;
-        const merged = new Map([...page.items, ...items].map((item) => [item.id, item]));
-        items = [...merged.values()];
-        next = page.next;
-        drawChat(true);
+      case "older":
+        await older();
         break;
-      }
       case "menu": {
         if (!a) break;
         const dialog = showDialog(

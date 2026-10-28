@@ -304,7 +304,7 @@ export class AgentsApp implements Component, Focusable {
       if (this.form !== form || form.folderRequest !== request) return;
       form.choices = choices;
       form.cwd = cwd;
-      if (!form.nameEdited) form.name = suggestedAgentName(form.cwd, this.agents.map(agent => agent.name));
+      if (!form.nameEdited) form.name = suggestedAgentName(form.cwd, this.allAgents.map(agent => agent.name));
       const available = (model: WorkerModel | null | undefined) => choices.some(choice => choice.provider === model?.provider && choice.modelId === model?.modelId);
       const model = available(form.model) ? form.model : defaults;
       form.model = available(model) ? model ?? undefined : undefined;
@@ -398,7 +398,7 @@ export class AgentsApp implements Component, Focusable {
     else if (data === "u" && this.showArchived) { const agent = this.selectable()[this.selected]; if (agent) void this.source.unarchive(agent.id).catch(error => this.fail(error)); }
     else if (data === "d" && this.showArchived) { const agent = this.selectable()[this.selected]; if (agent) this.confirming = agent; }
     else if (data === "n" && !this.showArchived) {
-      this.form = { step: 4, name: suggestedAgentName(this.launchCwd, this.agents.map(agent => agent.name)), cwd: this.launchCwd, choices: [] };
+      this.form = { step: 4, name: suggestedAgentName(this.launchCwd, this.allAgents.map(agent => agent.name)), cwd: this.launchCwd, choices: [] };
       this.note = ""; this.formStep(4); void this.loadReview(this.launchCwd);
     }
     this.setScreen();

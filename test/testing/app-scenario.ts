@@ -11,7 +11,7 @@ import { TuiAltScreen, visibleWidth, setKeybindings } from "@earendil-works/pi-t
 import { AgentsApp } from "../../src/app.ts";
 import { Client } from "../../src/client.ts";
 import { startHost } from "../../src/host.ts";
-import { piPresentation, piKeybindings } from "../../src/presentation.ts";
+import { piPresentation, piKeybindings, scrollToEndIndicator } from "../../src/presentation.ts";
 import { SocketHostSource } from "../../src/source.ts";
 import { VirtualTerminal } from "./virtual-terminal.ts";
 
@@ -30,9 +30,9 @@ export async function appScenario(width: number, height: number, print?: (name: 
   const models = createModels(); models.setProvider(fake.provider);
   const host = await startHost(directory, join(directory, "s"), { models, agentModel: async () => ({ provider: "faux", modelId: "faux-1" }) });
   const source = new SocketHostSource(new Client(join(directory, "s")));
-  const terminal = new VirtualTerminal(width, height); const tui = new TuiAltScreen(terminal);
   setKeybindings(await piKeybindings(directory));
   initTheme("dark", false); const { theme } = await piPresentation();
+  const terminal = new VirtualTerminal(width, height); const tui = new TuiAltScreen(terminal, undefined, undefined, { scrollToEndIndicator: await scrollToEndIndicator(theme) });
   let exited = false;
   const app = new AgentsApp(source, tui, theme, { cwd: directory, exit: () => { exited = true; } });
   async function frame() { await terminal.waitForRender(); const lines = await terminal.flushAndGetViewport(); for (const columns of [40, width]) assert.ok(app.render(columns).every(line => visibleWidth(line) <= columns)); return lines.join("\n"); }
@@ -129,9 +129,10 @@ export async function appScenario(width: number, height: number, print?: (name: 
     assert.doesNotMatch(await frame(), /Session Tree/);
     releaseSend(); source.send = send; source.stop = stop;
     await key("SCROLL"); await key("\r"); await wait("Transcript line 80");
-    const bottom = await frame();
+    const bottom = await frame(); assert.doesNotMatch(bottom, /Jump to latest message/);
     await key("\x1b[5~"); const scrolled = await frame(); assert.notEqual(scrolled, bottom);
-    await key("\x1b[6~"); assert.match(await frame(), /Transcript line 80/);
+    assert.match(scrolled, /↓ Jump to latest message/, "scrolled up, Pi's indicator offers the way back");
+    await key("\x1b[6~"); assert.match(await frame(), /Transcript line 80/); assert.doesNotMatch(await frame(), /Jump to latest message/);
     await key(`\x1b[<64;${Math.min(width - 2, 70)};5M`);
     assert.notEqual(await frame(), bottom);
     await key("\x1b[6~");
@@ -211,7 +212,11 @@ export async function appScenario(width: number, height: number, print?: (name: 
     assert.equal(quick.model, "faux-1"); assert.equal(quick.thinking, "medium");
     // Archive sets the agent aside; tab shows the archived view, where d deletes it (with y).
     await key("\x1b[D"); await wait("n new"); await source.archive(quick.id);
-    await wait("1 archived"); await key("\t"); const shelf = await wait("u unarchive"); print?.("archived view", shelf);
+    await wait("1 archived");
+    // An archived agent's name stays taken, so the suggestion skips it.
+    await key("n"); await wait("Review ·"); assert.ok((await frame()).includes(`Name: ${basename(directory)}-2`), "suggestion skips archived names");
+    await key("\x1b"); await wait("n new");
+    await key("\t"); const shelf = await wait("u unarchive"); print?.("archived view", shelf);
     assert.match(shelf, new RegExp(basename(directory))); assert.doesNotMatch(shelf, /beta/);
     await key("d"); await wait("can't be undone"); await key("y");
     await until(async () => (await source.list()).length === 3); await wait("a archive");

@@ -428,7 +428,8 @@ class Transcript implements Component {
         try {
           const [page, status] = await Promise.all([this.source.page(), this.source.status()]);
           if (this.life.signal.aborted) return;
-          if (page.conversationId !== this.conversationId) {
+          // A newest page that shares nothing with what is loaded left a gap: start over from it, as the web does.
+          if (page.conversationId !== this.conversationId || (this.entries.size && !page.items.some(entry => this.entries.has(String(entry.id))))) {
             this.imageCache = new Map(); this.entries.clear(); this.olderLoaded = false; this.next = undefined; this.offset = 0;
             this.conversationId = page.conversationId;
           }
@@ -456,14 +457,21 @@ class Transcript implements Component {
     this.loader.setMessage(this.pending ?? `Working · ${formatDuration(s!.since === undefined ? 0 : Date.now() - s!.since)} (esc to stop)`);
   }
   workingLine(width: number) { return this.loader?.render(width) ?? []; }
+  private loadingOlder = false;
+  /** Lines the last older page added above the top, for a scroll view to keep its place. */
+  grewAtTop = 0;
   async older() {
     if (!this.next) { this.note = "start of transcript"; this.changed(); return; }
+    if (this.loadingOlder) return;
+    this.loadingOlder = true;
+    const conversation = this.conversationId;
     try {
       const page = await this.source.page(this.next);
-      if (this.life.signal.aborted) return;
+      if (this.life.signal.aborted || conversation !== this.conversationId) return;
       for (const entry of page.items) this.entries.set(String(entry.id), entry);
       this.next = page.next; this.olderLoaded = true; this.prepended = true; this.version++;
     } catch (error) { this.note = String(error); }
+    finally { this.loadingOlder = false; }
     this.changed();
   }
   changed() { this.cache = undefined; this.tui.requestRender(); }
@@ -497,6 +505,7 @@ class Transcript implements Component {
       this.offset += lines.length - this.lastLength.length;
       if (lines.length > this.lastLength.length) this.unseen = true;
     }
+    if (this.prepended && this.lastLength?.width === width) this.grewAtTop += lines.length - this.lastLength.length;
     this.prepended = false; this.lastLength = { width, length: lines.length };
     // A new agent's conversation has only setup entries: say what to do instead of a blank screen.
     if (!lines.length && this.connection !== "loading" && !this.note) return [this.theme.fg("muted", "No messages yet · type a task and press enter · ← back")];
@@ -580,6 +589,19 @@ export class WorkerView implements Component {
   dispose() { this.transcript.dispose(); }
 }
 
+/** Pi's transcript ScrollView, plus paging: reaching the top loads the previous page, and the lines it
+ * adds above keep the visible ones in place, so scrolling continues back to the first message. */
+class HistoryScroll extends ScrollView {
+  private transcript: Transcript;
+  constructor(transcript: Transcript) { super(transcript, { follow: "end", primary: true }); this.transcript = transcript; }
+  override updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void) {
+    super.updateLayout(contentHeight, viewportHeight, requestRender);
+    const added = this.transcript.grewAtTop; this.transcript.grewAtTop = 0;
+    if (added > 0 && !this.isFollowingEnd) this.scrollTo(this.scrollTop + added);
+    if (this.scrollTop === 0 && this.transcript.next && this.transcript.connection !== "loading") void this.transcript.older();
+  }
+}
+
 /** Standalone chat shell. The alternate-screen TUI owns layout and scrolling. */
 export class ChatView implements Component, Focusable {
   get focused() { return this.editor.focused; }
@@ -607,7 +629,7 @@ export class ChatView implements Component, Focusable {
       this.panel!.focused = component === this.panel;
       this.editor.focused = component !== this.panel;
     } });
-    const scroll = new ScrollView(this.transcript, { follow: "end", primary: true });
+    const scroll = new HistoryScroll(this.transcript);
     const footer = { render: (width: number) => {
       const s = this.transcript.status;
       const cwd = s?.cwd ? formatCwd(s.cwd) : "";

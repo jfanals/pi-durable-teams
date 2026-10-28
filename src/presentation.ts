@@ -5,6 +5,15 @@ import type { TUI } from "@earendil-works/pi-tui";
 const piModule = (path: string) => new URL(path, import.meta.resolve("@earendil-works/pi-coding-agent")).href;
 const themeModule = piModule("./modes/interactive/theme/theme.js");
 
+/** Pi's fullscreen label over the transcript's last row while it is scrolled up from the latest activity. */
+export async function scrollToEndIndicator(theme: Theme) {
+  const { keyText } = await import("@earendil-works/pi-coding-agent");
+  return () => {
+    const shortcut = keyText("tui.altScreen.bottom");
+    return theme.bg("selectedBg", theme.fg("text", ` ↓ Jump to latest message${shortcut ? ` · ${shortcut}` : ""} `));
+  };
+}
+
 /** moduleUrl is overridable so the Pi-upgrade failure message can be tested. */
 export async function piPresentation(moduleUrl = themeModule): Promise<{ theme: Theme }> {
   try {

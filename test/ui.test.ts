@@ -260,3 +260,47 @@ test("copying a terminal selection copies the markdown behind it, not the wrappe
   // No single message holds it (a tool box, or across messages): the screen text as selected.
   assert.equal(copy("╭─ bash ─╮\n│ ls -la │"), "╭─ bash ─╮\n│ ls -la │");
 });
+
+test("chat scrolls back page by page to the first message, keeping the view in place", async () => {
+  const { TuiAltScreen, setKeybindings } = await import("@earendil-works/pi-tui");
+  const { VirtualTerminal } = await import("./testing/virtual-terminal.ts");
+  const { piKeybindings } = await import("../src/presentation.ts");
+  const { ChatView } = await import("../src/ui.ts");
+  setKeybindings(await piKeybindings());
+  const all: ChatItem[] = Array.from({ length: 120 }, (_, i) => ({ id: String(i + 1), kind: "input", from: "human", text: `Message ${i + 1}`, at: 0 }));
+  const cursors: string[] = [];
+  // Newest 40 first, like the host; the cursor is the oldest id already loaded.
+  const page = async (cursor?: string) => {
+    if (cursor) cursors.push(cursor);
+    const end = cursor ? Number(cursor) - 1 : all.length;
+    const start = Math.max(0, end - 40);
+    return { conversationId: "c", items: all.slice(start, end), ...(start ? { next: String(start + 1) } : {}) };
+  };
+  const terminal = new VirtualTerminal(60, 20); const tui = new TuiAltScreen(terminal);
+  const life = new AbortController(); cleanup(() => life.abort());
+  const view = new ChatView(tui, theme, "reader", {
+    images: async () => [], page, status: async () => ({ id: "1", name: "reader", enabled: true }),
+    watch: signal => new Promise(resolve => signal.addEventListener("abort", () => resolve())),
+  }, life.signal, { send: async () => undefined, stop: async () => undefined, back() {} });
+  tui.setLayoutRoot(view.layout); tui.setFocus(view); tui.start();
+  const screen = async () => { await terminal.waitForRender(); return (await terminal.flushAndGetViewport()).join("\n"); };
+  const until = async (ok: (text: string) => boolean) => {
+    for (let i = 0; i < 200; i++) { const text = await screen(); if (ok(text)) return text; await new Promise(r => setTimeout(r, 10)); }
+    assert.fail(`Timed out:\n${await screen()}`);
+  };
+  const toTop = async (pages: number) => {
+    terminal.sendInput("\x1b[1;5H"); // ctrl+home: Pi's scroll to top
+    await until(() => cursors.length === pages);
+    await new Promise(r => setTimeout(r, 30));
+    return screen();
+  };
+  try {
+    await until(text => text.includes("Message 120"));
+    // Reaching the top loads the page before; the lines that were at the top stay on screen.
+    const first = await toTop(1); assert.match(first, /Message 81\b/); assert.doesNotMatch(first, /Message 60\b/);
+    const second = await toTop(2); assert.match(second, /Message 41\b/); assert.doesNotMatch(second, /Message 20\b/);
+    terminal.sendInput("\x1b[1;5H");
+    await until(text => /Message 1\b/.test(text));
+    assert.deepEqual(cursors, ["81", "41"], "one page per arrival at the top, none past the first message");
+  } finally { tui.stop(); life.abort(); }
+});
