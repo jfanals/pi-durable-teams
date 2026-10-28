@@ -2,6 +2,7 @@ import { piCompletionTool } from "./presentation.ts";
 import { promptAutocomplete } from "./autocomplete.ts";
 import { normalizeImages } from "./images.ts";
 import { openPush, watchPush } from "./push.ts";
+import { keepAwake } from "./awake.ts";
 import { readConfig } from "./config.ts";
 import { remoteToken, remoteAllowed, tokenMatches, tokenCache } from "./remote.ts";
 import { shellFile, shellCsp, shellPath } from "./web-shell.ts";
@@ -350,6 +351,7 @@ export async function startHost(directory: string, socket: string, options: Team
       pushWatch = watchPush(push, service);
       cleanups.add(pushWatch.close);
     } catch (error) { console.error("Web Push disabled:", error); }
+    if (process.platform === "darwin") cleanups.add(keepAwake(service).close);
     if (remoteServer) {
       // A corrupt stored token disables remote requests, not the trusted socket.
       await remoteToken(directory).catch(() => {});
