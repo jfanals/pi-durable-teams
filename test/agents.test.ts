@@ -359,3 +359,48 @@ test("team wait joins two answers in one agent run, suppresses reports, times ou
     assert.ok(!reminders.some(({ record }) => (record.input as any).from.id === human.id), "the human gets no reminders");
   } finally { release(); await service.close(); }
 });
+
+test("inspection matches active view across paged tool tails, resets and compaction heads", async () => {
+  const service = await openTeams(new MemoryStorage(), { models: fixture().models, agentModel: async () => model });
+  try {
+    const { id } = await service.action(human, { action: "newAgent", name: "status", cwd: process.cwd() }, "status") as { id: string };
+    const cid = Number(id) as ConversationId;
+    const conversation = (await service.harness.conversation(cid, ctx))!;
+    const equivalent = async () => {
+      const view = await conversation.viewState(ctx);
+      try {
+        const messages = view.value.entries.flatMap(entry => entry.model ?? []);
+        const inspected = await service.action(human, { action: "inspect", target: id }, "") as any;
+        assert.deepEqual(inspected.latest, messages.findLast(m => m.role === "assistant"));
+        assert.equal(inspected.since, (messages.findLast(m => m.role === "user") as { timestamp?: number } | undefined)?.timestamp);
+        assert.deepEqual(inspected.agent, view.value.docs["pi.agent"]);
+        assert.deepEqual(inspected.live, view.value.docs["pi.live"]);
+      } finally { view.dispose(); }
+    };
+    await equivalent(); // Empty conversation.
+    await service.harness.commit(async tx => {
+      await tx.appendEntry(cid, { kind: "pi.user", model: [{ role: "user", content: "old", timestamp: 1 }] });
+      await tx.appendEntry(cid, { kind: "pi.assistant", model: [fauxAssistantMessage("old answer")] });
+      for (let i = 0; i < 95; i++) await tx.appendEntry(cid, { kind: "pi.tool-result", data: { text: "tool tail" } });
+    }, ctx);
+    await equivalent();
+    await service.harness.commit(async tx => { await tx.appendEntry(cid, { kind: "pi.reset", head: "self" }); }, ctx);
+    await equivalent(); // No pre-reset assistant or user leaks through.
+    await service.harness.commit(async tx => {
+      await tx.appendEntry(cid, { kind: "pi.reset", head: "self", model: [{ role: "user", content: "handoff", timestamp: 2 }] });
+    }, ctx);
+    await equivalent();
+    await service.harness.commit(async tx => {
+      const kept = await tx.appendEntry(cid, { kind: "pi.user", model: [{ role: "user", content: "retained", timestamp: 3 }] });
+      await tx.appendEntry(cid, { kind: "pi.assistant", model: [fauxAssistantMessage("retained answer")] });
+      await tx.appendEntry(cid, { kind: "pi.compaction", head: kept.id, model: [{ role: "user", content: "summary", timestamp: 4 }] });
+    }, ctx);
+    await equivalent(); // Retained user follows the summary in active-view order, despite its older ID.
+    await service.harness.commit(async tx => {
+      await tx.appendEntry(cid, { kind: "pi.compaction", head: "self", model: [{ role: "user", content: "only summary", timestamp: 5 }] });
+    }, ctx);
+    await equivalent();
+    assert.deepEqual((await service.page(human, id)).queued, []);
+    assert.deepEqual(await service.dequeue(id), { texts: [] });
+  } finally { await service.close(); }
+});

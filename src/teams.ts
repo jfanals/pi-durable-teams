@@ -168,6 +168,33 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     } while (cursor);
     return entries;
   }
+  async function latestMessages(agent: Agent) {
+    const conversation = await conversationOf(agent);
+    const id = (agent.where as { conversationId: ConversationId }).conversationId;
+    // Upstream selectActive puts the newest marker FIRST, then non-marker entries from head.head.
+    // A compaction can retain entries before its marker; its summary is only a fallback user message.
+    const head = await storage.findLatestHeadMarker(id, undefined, context);
+    let latest: AssistantMessage | undefined;
+    let user: { timestamp?: number } | undefined;
+    let cursor: Cursor | undefined;
+    do {
+      const page = await conversation.entries({ order: "descending", ...(head ? { minEntryId: head.head } : {}) }, 40, cursor, context);
+      for (const entry of page.items) {
+        if (entry.head !== undefined) continue;
+        for (const message of [...(entry.model ?? [])].reverse()) {
+          if (!latest && message.role === "assistant") latest = message;
+          if (!user && message.role === "user") user = message;
+        }
+        if (latest && user) break;
+      }
+      cursor = page.next;
+    } while (cursor && !(latest && user));
+    for (const message of [...(head?.model ?? [])].reverse()) {
+      if (!latest && message.role === "assistant") latest = message;
+      if (!user && message.role === "user") user = message;
+    }
+    return { latest, since: user?.timestamp };
+  }
   // UsageDoc starts empty on every fork. Sum each conversation once, including abandoned branches.
   async function totalUsage(agent: Agent) {
     const sum: UsageState = { models: Object.create(null), tools: Object.create(null) };
@@ -410,17 +437,12 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const page = await conversation.entries({ order: "descending" }, 40, args.cursor ? JSON.parse(args.cursor) : undefined, context);
         return { ...actorOf(target!), entries: page.items, next: page.next ? JSON.stringify(page.next) : undefined };
       }
-      const v = await conversation.viewState(context);
-      try {
-        const messages = v.value.entries.flatMap(entry => entry.model ?? []);
-        const latest = messages.findLast(m => m.role === "assistant");
-        // When the newest input arrived: the start of the current (or last) request, for elapsed time.
-        const since = (messages.findLast(m => m.role === "user") as { timestamp?: number } | undefined)?.timestamp;
-        // pi.agent holds the worker's configured model, thinking level and cwd.
-        const agent = v.value.docs["pi.agent"] as { model?: ModelRef } | undefined;
-        const info = agent?.model && options.modelInfo?.(agent.model);
-        return { ...actorOf(target!), enabled: target!.enabled, agent, contextWindow: info?.window, subscription: info?.subscription, live: v.value.docs["pi.live"], usage: await totalUsage(target!), latest, since };
-      } finally { v.dispose(); }
+      const conversationId = target!.where.conversationId;
+      const agent = await harness.snapshot(AgentDoc, conversationId, context);
+      const live = await harness.snapshot(LiveDoc, conversationId, context);
+      const { latest, since } = await latestMessages(target!);
+      const info = agent?.model && options.modelInfo?.(agent.model);
+      return { ...actorOf(target!), enabled: target!.enabled, agent, contextWindow: info?.window, subscription: info?.subscription, live, usage: await totalUsage(target!), latest, since };
     }
     if (!requestId) throw new Error("A stable request ID is required");
     const requestKey = actor.id === human.id ? `human:${args.action}:${requestId}` : `${actor.id}:${requestId}`;
@@ -659,12 +681,8 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       }
       const items = chatItems([...page.items], prefix);
       if (options.showCacheMissNotices?.()) await addCacheMisses(items, [...prefix, ...page.items]);
-      const view = await conversation.viewState(context);
-      let queued: Queued[];
-      try {
-        const inbox = (view.value.docs["pi.inbox"] as { items?: any[] } | undefined)?.items ?? [];
-        queued = inbox.filter(item => item.mode !== "write").map(item => ({ mode: item.mode, text: firstLine(item.entry?.data?.message ?? textOf({ content: item.content })) + (Array.isArray(item.content) && item.content.some((p: any) => p.type === "image") ? " [image]" : "") }));
-      } finally { view.dispose(); }
+      const inbox = (await harness.snapshot(InboxDoc, destination.where.conversationId, context))?.items ?? [];
+      const queued: Queued[] = inbox.filter(item => item.mode !== "write").map(item => ({ mode: item.mode, text: firstLine((item.entry?.data as { message?: string } | undefined)?.message ?? textOf({ content: item.content })) + (Array.isArray(item.content) && item.content.some((p: any) => p.type === "image") ? " [image]" : "") }));
       return { conversationId: String(destination.where.conversationId), items, queued, next: page.next ? JSON.stringify(page.next) : undefined };
     },
     /**
@@ -686,15 +704,13 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
      * A message the agent took in the meantime stays sent and is not returned.
      */
     async dequeue(target: string) {
-      const conversation = await conversationOf(resolveTarget(await read(), human, target));
-      const view = await conversation.viewState(context);
-      let items: any[];
-      try { items = ((view.value.docs["pi.inbox"] as { items?: any[] } | undefined)?.items ?? []).filter(item => item.mode !== "write"); }
-      finally { view.dispose(); }
+      const agent = resolveTarget(await read(), human, target);
+      if (agent.where.kind !== "hosted") throw new Error("This agent is an external Pi session, not a hosted conversation");
+      const items = ((await harness.snapshot(InboxDoc, agent.where.conversationId, context))?.items ?? []).filter(item => item.mode !== "write");
       const texts: string[] = [];
       for (const item of items) {
         if (await (await harness.submission(item.id, context))?.abort(context) !== "aborted") continue;
-        texts.push(clean(item.entry?.data?.message ?? textOf({ content: item.content })));
+        texts.push(clean((item.entry?.data as { message?: string } | undefined)?.message ?? textOf({ content: item.content })));
       }
       notify();
       return { texts };
