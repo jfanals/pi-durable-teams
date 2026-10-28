@@ -1,6 +1,6 @@
 ---
 name: durable-teams
-description: Delegate to durable sub-agents, coordinate with peers, inspect transcripts and reports, or stop delegated work. Use for parallel work and agent communication. Replaces Fleet, pi-spawn, SwarmForge and session-control.
+description: Delegate to durable sub-agents, coordinate with peers, inspect transcripts and reports, or stop delegated work. Use for parallel work and agent communication.
 ---
 
 # Durable agents
@@ -19,17 +19,21 @@ team({ action: "inspect", target: "reader", transcript: true }) // pass next as 
 team({ action: "inspect", request: "<taskId returned by spawn/send>" })
 ```
 
-Spawn/send returns acceptance, not completion; sends to Pi sessions return `delivery` and cannot be waited on. Answers arrive automatically as
-attributed reports, even after a host restart. Do other work or end the turn;
-never poll with sleep or repeated inspect, acknowledge reports, or send duplicate completion reports. Reuse a
-named agent for related follow-ups. Names remain reserved after stopping.
+Spawn/send returns acceptance and a request ID, not the answer. The answer arrives
+by itself as an attributed report, even after a host restart, so do other work or
+end the turn. If no report arrives within `timeoutSeconds` (default 1800; 0 turns it
+off), you get one reminder message; then inspect, nudge or stop the agent. Never poll
+with sleep or repeated inspect, acknowledge reports, or send duplicate completion
+reports. Reuse a named agent for related follow-ups; names stay reserved after stopping.
+Sends to Pi sessions return `delivery` and cannot be waited on.
 
-To continue in the same turn only after answers, call `wait`. With no `request`,
+Call `wait` only to continue in the same turn with the answers. With no `request`,
 it waits for all your outstanding requests; pass one ID or an array to select them.
 It returns `answers` (the same settled result as request inspection) and `pending`
-IDs on timeout. Default: 600 seconds; maximum: 1800. Esc cancels only the wait,
-not the delegated work. Waited answers do not also trigger automatic reports;
-a report already posted before waiting can rarely be duplicated.
+IDs. It ends early on timeout (default 600 s, maximum 1800) or when a steering
+message arrives (`steered`); read the message, then wait again if still needed.
+Esc cancels only the wait, not the delegated work. Waited answers do not also
+arrive as reports.
 
 ```ts
 const first = team({ action: "send", target: "reader", message: "Find the callback entry points." })

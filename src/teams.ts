@@ -15,7 +15,7 @@ import { cacheMissText, piCacheMisses, piCacheWarming } from "./presentation.ts"
 import { CACHE_WARM_KIND, cacheWarming, type CacheWarmData } from "./warming.ts";
 import { agentNameError } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
-import { clean, firstLine, formatTokens, liveStatus, textOf } from "./status.ts";
+import { clean, firstLine, formatDuration, formatTokens, liveStatus, textOf } from "./status.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { ActionSchema, TOOL_DESCRIPTION, TOOL_NAME, type Action, type Actor, type Delivery, type Mode } from "./protocol.ts";
 
@@ -80,6 +80,9 @@ const Anchor = defineTask<null, { phase: "done" }, null>({
 type ReporterInput = { from: Actor; recipient: string; message: string; mode: Mode; images?: { type: "image"; data: string; mimeType: string }[] };
 type ReporterState = { phase: "deliver" } | { phase: "report"; text?: string; answer?: EntryId; claimed?: boolean };
 type ReporterResult = { answer?: EntryId; status: string; text?: string };
+type ReminderInput = { request: string; from: Actor; recipient: string; seconds: number };
+/** Default reminder for spawn/send: a parent hears about a request with no report after this long. */
+const REMIND_SECONDS = 1800;
 
 export type TeamsOptions = Omit<HarnessOptions, "registry"> & {
   registry?: ReturnType<typeof createRegistry>;
@@ -283,6 +286,25 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     abort: (_task, runtime, ctx) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), ctx),
   });
 
+  // One message to the requester if a request still has no report after its timeout; a report first makes it a no-op.
+  const Reminder = defineTask<ReminderInput, { phase: "sleep" } | { phase: "remind" }, null>({
+    name: "teams.reminder", version: 1, initial: () => ({ phase: "sleep" }),
+    phases: {
+      sleep: (task, runtime, ctx) => runtime.sleepUntil(runtime.now() + task.input.seconds * 1000, { phase: "remind" }, ctx),
+      remind: async (task, runtime, ctx) => {
+        const { request, from, recipient, seconds } = task.input;
+        const [reporter, state] = [await harness.getTask(Number(request) as TaskId, context), await read()];
+        const worker = state.agents[recipient];
+        if (reporter && reporter.state.status !== "terminal" && worker) {
+          await post(from.id, { id: `teams-remind:${request}`, from: actorOf(worker), mode: "followUp", request,
+            text: `Reminder: no report for request ${request} after ${formatDuration(seconds * 1000)}. Inspect it, send a nudge, or stop the agent; the report still arrives on its own.` });
+        }
+        await runtime.commit(terminal, ctx);
+      },
+    },
+    abort: (_task, runtime, ctx) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), ctx),
+  });
+
   async function inspectRequest(actor: Actor, request: string, ownOnly = false) {
     const task = await harness.getTask(Number(request) as TaskId, context);
     if (!task || task.kind !== "teams.reporter" || ((task.input as ReporterInput).from.id !== actor.id && (ownOnly || actor.id !== human.id))) throw new Error("Unknown request for this agent");
@@ -328,10 +350,16 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       const completed = new Set<string>();
       let timer: ReturnType<typeof setTimeout> | undefined;
       let abort!: () => void;
+      let steered = false;
+      // A steer (from the human or another agent) ends the wait, so it is read now rather than after the wait.
+      const inbox = own?.where.kind === "hosted" ? await harness.watchDoc(InboxDoc, own.where.conversationId, context) : undefined;
       const interrupted = new Promise<void>((resolve, reject) => {
         timer = setTimeout(resolve, seconds * 1000);
         abort = () => reject(signal!.reason);
         signal?.addEventListener("abort", abort, { once: true });
+        const check = (value: { items?: { mode: string }[] } | null) => { if (value?.items?.some(item => item.mode === "steer")) { steered = true; resolve(); } };
+        check(inbox?.value ?? null);
+        inbox?.start(async value => check(value));
       });
       try {
         signal?.throwIfAborted();
@@ -342,9 +370,10 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const results = await Promise.all(selected.map(id => inspectRequest(actor, id, true)));
         const answers = results.filter(result => result.state.status === "terminal");
         for (const answer of answers) completed.add(String(answer.request));
-        return { answers, pending: selected.filter(id => !completed.has(id)) };
+        const pending = selected.filter(id => !completed.has(id));
+        return { answers, pending, ...(steered && pending.length ? { steered: "A steering message arrived; it follows this result. Wait again later if still needed." } : {}) };
       } finally {
-        clearTimeout(timer); signal?.removeEventListener("abort", abort);
+        clearTimeout(timer); signal?.removeEventListener("abort", abort); void inbox?.stop();
         await harness.commit(async tx => {
           const doc = await tx.doc(Teams);
           for (const id of selected) {
@@ -509,6 +538,8 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       const taskId = await tx.createTask(Reporter, { from: actor, recipient: recipient.id, message: args.message ?? "", images: args.images, mode: args.mode ?? "followUp" }, {
         ownership: { kind: "conversation" }, background: true,
       });
+      const seconds = actor.id === human.id ? 0 : args.timeoutSeconds ?? REMIND_SECONDS;
+      if (seconds > 0) await tx.createTask(Reminder, { request: String(taskId), from: actor, recipient: recipient.id, seconds }, { ownership: { kind: "conversation" }, background: true });
       return doc.requests[requestKey] = { taskId, workerId: recipient.id };
     }, context);
     notify();
@@ -516,7 +547,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   }
 
   registry.install(defineExtension({
-    name: "durable-teams", tasks: [Anchor, Reporter],
+    name: "durable-teams", tasks: [Anchor, Reporter, Reminder],
     tools: [defineTool({
       name: TOOL_NAME, description: TOOL_DESCRIPTION, parameters: ActionSchema, replay: "unsafe",
       execute: async (args, api, ctx) => {

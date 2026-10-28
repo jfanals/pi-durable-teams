@@ -340,5 +340,22 @@ test("team wait joins two answers in one agent run, suppresses reports, times ou
     unblock(); service.harness.waitForTask = originalWait;
     assert.ok(JSON.stringify(await page(service, leader.id)).includes(`"request":"${raced.taskId}"`));
     await reservation(String(raced.taskId), 0);
+
+    // A steer to a busy waiting agent ends its wait at once; spawn/send arm a reminder for the requester.
+    gate = new Promise<void>(resolve => { release = resolve; });
+    started = new Promise<void>(resolve => { entered = resolve; });
+    const steered = await service.action(hostedSender, { action: "send", target: a, message: "HOLD" }, "steer-wait") as any;
+    await started;
+    started = new Promise<void>(resolve => { entered = resolve; });
+    await service.action(human, { action: "send", target: leader.id, message: "HOLD" }, "busy-leader");
+    await started;
+    const steerWait = service.action(hostedSender, { action: "wait", request: String(steered.taskId) }, "") as Promise<any>;
+    await reservation(String(steered.taskId), 1);
+    await service.action(human, { action: "send", target: leader.id, message: "look now", mode: "steer" }, "steer-now");
+    const interrupted = await steerWait;
+    assert.deepEqual(interrupted.pending, [String(steered.taskId)]); assert.match(interrupted.steered, /steering message arrived/);
+    const reminders = (await service.harness.inspect(ctx)).tasks.filter(({ record }) => record.kind === "teams.reminder");
+    assert.ok(reminders.some(({ record }) => (record.input as any).request === String(steered.taskId) && (record.input as any).seconds === 1800));
+    assert.ok(!reminders.some(({ record }) => (record.input as any).from.id === human.id), "the human gets no reminders");
   } finally { release(); await service.close(); }
 });

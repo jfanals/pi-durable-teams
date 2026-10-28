@@ -45,7 +45,7 @@ export async function productionOptions(): Promise<TeamsOptions> {
   }
   const coding = defineExtension({
     name: "teams-coding", sections: [
-      section("preamble", () => "You are a coding agent. Complete the assigned task, verify your work, and end with a concise factual report. Tools execute with the user's permissions, not in a sandbox. Do not commit, push, deploy, or perform destructive operations without explicit authorization. Do not use legacy Fleet, pi-spawn, SwarmForge, or session-control. Use team for communication. Reports are returned automatically; do not send duplicate completion reports or acknowledgements."),
+      section("preamble", () => "You are a coding agent. Complete the assigned task, verify your work, and end with a concise factual report. Tools execute with the user's permissions, not in a sandbox. Do not commit, push, deploy, or perform destructive operations without explicit authorization."),
       section("identity", async (input, ctx) => {
         const doc = await input.read.snapshot(Teams, ctx);
         const agent = Object.values(doc?.agents ?? {}).find(agent => agent.where.kind === "hosted" && agent.where.conversationId === input.conversationId);

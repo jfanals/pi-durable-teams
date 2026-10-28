@@ -10,7 +10,7 @@ export const ActionSchema = Type.Object({
   scope: Type.Optional(Type.Union([Type.Literal("team"), Type.Literal("mains")])),
   cwd: Type.Optional(Type.String()),
   request: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())], { description: "Own request task ID(s) returned by spawn/send" })),
-  timeoutSeconds: Type.Optional(Type.Number({ minimum: 0, maximum: 1800, default: 600 })),
+  timeoutSeconds: Type.Optional(Type.Number({ minimum: 0, maximum: 86400, description: "wait: longest wait (default 600, max 1800). spawn/send: remind you if no report by then (default 1800, 0 = never)" })),
   transcript: Type.Optional(Type.Boolean({ description: "Inspect a page of the agent's complete persisted transcript" })),
   cursor: Type.Optional(Type.String({ description: "Opaque next cursor from a transcript page" })),
   team: Type.Optional(Type.Boolean({ description: "Stop the whole team (Pi session only)" })),
