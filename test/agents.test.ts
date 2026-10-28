@@ -466,3 +466,29 @@ test("roster shares refresh work and invalidates only changed agents, branches a
     assert.deepEqual((await service.agents()).map(row => row.id), [a]);
   } finally { await service.close(); }
 });
+
+test("a message sent during a manual /compact waits for the summary, shows as queued, then runs after it", { timeout: 10000 }, async () => {
+  let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+  let summarizing!: () => void; const started = new Promise<void>(resolve => { summarizing = resolve; });
+  const fake = fauxProvider({ models: [{ id: "faux-1" }] }); const models = createModels(); models.setProvider(fake.provider);
+  fake.setResponses(Array.from({ length: 20 }, () => async (request: any) => {
+    if (JSON.stringify(request.systemPrompt ?? request.messages[0]).includes("context summarization assistant")) { summarizing(); await gate; return fauxAssistantMessage("SUMMARY"); }
+    return fauxAssistantMessage("Answer " + "x ".repeat(400));
+  }));
+  const service = await openTeams(new MemoryStorage(), { models, agentModel: async () => model, settings: { compaction: { keepRecentTokens: 50 } } });
+  try {
+    const { id } = await service.action(human, { action: "newAgent", name: "compacting", cwd: tmpdir() }, "create") as { id: string };
+    for (const n of [1, 2, 3]) await settle(service, await service.action(human, { action: "send", target: id, message: `Turn ${n}` }, `turn-${n}`));
+    const compaction = service.compact(id);
+    await started;
+    const sent = await service.action(human, { action: "send", target: id, message: "After compaction" }, "after");
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.deepEqual((await service.page(human, id)).queued, [{ mode: "followUp", text: "After compaction" }], "held back and shown as queued");
+    assert.equal((await service.agents()).find(row => row.id === id)!.running, false, "no run started during the compaction");
+    release();
+    assert.equal((await compaction).outcome, "compacted");
+    await settle(service, sent);
+    const kinds = (await service.page(human, id)).items.map(item => item.kind === "compaction" ? "compaction" : item.kind === "input" ? item.text : undefined).filter(Boolean);
+    assert.ok(kinds.indexOf("compaction") >= 0 && kinds.indexOf("compaction") < kinds.findIndex(k => String(k).includes("After compaction")), JSON.stringify(kinds));
+  } finally { release(); await service.close(); }
+});

@@ -271,6 +271,12 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: { status: "stopped" } } }), ctx);
           return;
         }
+        // As in Pi, input sent during a manual /compact waits for it, so the agent reads it after the summary.
+        // Background compactions are designed not to hold input back.
+        if (current.where.kind === "hosted") {
+          const live = await harness.snapshot(LiveDoc, current.where.conversationId, ctx);
+          for (const { taskId } of (live?.compactions ?? []).filter(c => c.reason === "manual")) await harness.waitForTask(taskId, ctx);
+        }
         const submission = await post(recipient, { id: `teams-input:${task.id}`, from, text: message, mode, images });
         if (!submission || note) {
           await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: { status: "delivered" } } }), ctx);
@@ -341,6 +347,21 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     abort: (_task, runtime, ctx) => runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), ctx),
   });
 
+  /** Messages a manual compaction is holding back (see the Reporter's deliver phase), oldest first. */
+  async function heldByCompaction(agent: Agent): Promise<Queued[]> {
+    if (agent.where.kind !== "hosted") return [];
+    const live = await harness.snapshot(LiveDoc, agent.where.conversationId, context);
+    if (!live?.compactions?.some(c => c.reason === "manual")) return [];
+    const tasks = (await harness.inspect(context)).tasks.flatMap(({ record: task }) => task.kind === "teams.reporter" && task.state.status !== "terminal"
+      && (task.input as ReporterInput).recipient === agent.id && (task.state as { checkpoint?: ReporterState }).checkpoint?.phase === "deliver" ? [task] : []);
+    const held: Queued[] = [];
+    for (const task of tasks.sort((a, b) => Number(a.id) - Number(b.id))) {
+      if (await storage.submissionByRequest?.(agent.where.conversationId, `teams-input:${task.id}`, context)) continue;
+      const input = task.input as ReporterInput;
+      held.push({ mode: input.mode, text: firstLine(input.message) + (input.images?.length ? " [image]" : "") });
+    }
+    return held;
+  }
   async function inspectRequest(actor: Actor, request: string, ownOnly = false) {
     const task = await harness.getTask(Number(request) as TaskId, context);
     if (!task || task.kind !== "teams.reporter" || ((task.input as ReporterInput).from.id !== actor.id && (ownOnly || actor.id !== human.id))) throw new Error("Unknown request for this agent");
@@ -746,7 +767,8 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       const items = chatItems([...page.items], prefix);
       if (options.showCacheMissNotices?.()) await addCacheMisses(items, [...prefix, ...page.items]);
       const inbox = (await harness.snapshot(InboxDoc, destination.where.conversationId, context))?.items ?? [];
-      const queued: Queued[] = inbox.filter(item => item.mode !== "write").map(item => ({ mode: item.mode, text: firstLine((item.entry?.data as { message?: string } | undefined)?.message ?? textOf({ content: item.content })) + (Array.isArray(item.content) && item.content.some((p: any) => p.type === "image") ? " [image]" : "") }));
+      const held = await heldByCompaction(destination);
+      const queued: Queued[] = [...held, ...inbox.filter(item => item.mode !== "write").map(item => ({ mode: item.mode, text: firstLine((item.entry?.data as { message?: string } | undefined)?.message ?? textOf({ content: item.content })) + (Array.isArray(item.content) && item.content.some((p: any) => p.type === "image") ? " [image]" : "") }))];
       return { conversationId: String(destination.where.conversationId), items, queued, next: page.next ? JSON.stringify(page.next) : undefined };
     },
     /**
