@@ -71,7 +71,7 @@ export class TeamPanel implements Component, Focusable {
   focused = false;
   private workers: WorkerStatus[] = [];
   private asks: Ask[] = [];
-  private onAnswer?: (ask: Ask) => void;
+  private asksOf?: { list(): Ask[]; answer(ask: Ask): void };
   private selected = 0;
   private frame = 0;
   private ticker?: ReturnType<typeof setInterval>;
@@ -80,13 +80,12 @@ export class TeamPanel implements Component, Focusable {
   private focus: (component: Component) => void;
   private compact: boolean;
   private tui: TUI; private theme: Theme; private onOpen: (worker: WorkerStatus) => void;
-  constructor(tui: TUI, theme: Theme, onOpen: (worker: WorkerStatus) => void, options: { compact?: boolean; focus?: (component: Component) => void } = {}) { this.tui = tui; this.theme = theme; this.onOpen = onOpen; this.compact = options.compact ?? false; this.focus = options.focus ?? (component => tui.setFocus(component)); }
+  constructor(tui: TUI, theme: Theme, onOpen: (worker: WorkerStatus) => void, options: { compact?: boolean; focus?: (component: Component) => void; asks?: { list(): Ask[]; answer(ask: Ask): void } } = {}) { this.tui = tui; this.theme = theme; this.onOpen = onOpen; this.compact = options.compact ?? false; this.focus = options.focus ?? (component => tui.setFocus(component)); this.asksOf = options.asks; }
 
   get hasWorkers() { return this.workers.length > 0; }
   get hasRows() { return this.workers.length + this.asks.length > 0; }
-  /** Open asks, shown above the team; Enter on one calls `onAnswer` after returning to the prompt. */
-  setAsks(asks: Ask[], onAnswer: (ask: Ask) => void) {
-    this.onAnswer = onAnswer;
+  /** Open asks, shown above the team; read from `options.asks` on each render. */
+  private setAsks(asks: Ask[]) {
     if (JSON.stringify(asks) === JSON.stringify(this.asks)) return;
     const keep = this.selected < this.asks.length ? undefined : this.workers[this.selected - this.asks.length]?.id;
     this.asks = asks;
@@ -123,6 +122,7 @@ export class TeamPanel implements Component, Focusable {
     const t = this.theme;
     const now = Date.now();
     const nameWidth = Math.min(16, Math.max(6, ...this.workers.map(w => visibleWidth(clean(w.name)))));
+    if (this.asksOf) this.setAsks(this.asksOf.list());
     this.rows = [];
     if (!this.hasRows) return [];
     const lines: string[] = [];
@@ -171,7 +171,7 @@ export class TeamPanel implements Component, Focusable {
     return { handled: true };
   }
   /** Back to the prompt, then let the chat add the ask's "Re:" line and show where it was asked. */
-  private answer(ask: Ask) { this.leave(); this.onAnswer?.(ask); }
+  private answer(ask: Ask) { this.leave(); this.asksOf?.answer(ask); }
   invalidate() {}
   dispose() { if (this.ticker) clearInterval(this.ticker); this.ticker = undefined; }
 }
@@ -709,7 +709,7 @@ export class ChatView implements Component, Focusable {
     if (children) this.panel = new TeamPanel(tui, theme, children.open, { compact: true, focus: component => {
       this.panel!.focused = component === this.panel;
       this.editor.focused = component !== this.panel;
-    } });
+    }, asks: { list: () => this.transcript.status?.asks ?? [], answer: ask => void this.answer(ask) } });
     const scroll = new HistoryScroll(this.transcript);
     const footer = { render: (width: number) => {
       const s = this.transcript.status;
@@ -917,10 +917,7 @@ export class ChatView implements Component, Focusable {
     } catch (error) { this.transcript.note = `Failed to paste from clipboard: ${error}`; }
     this.transcript.changed();
   }
-  render(width: number) {
-    this.panel?.setAsks(this.transcript.status?.asks ?? [], ask => void this.answer(ask));
-    return this.layout.render(width);
-  }
+  render(width: number) { return this.layout.render(width); }
   handleInput(data: string) {
     if (this.editingExternally) return;
     if (this.picker) { this.picker.input(data); this.transcript.changed(); return; }

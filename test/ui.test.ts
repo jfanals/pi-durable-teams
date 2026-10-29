@@ -1,4 +1,4 @@
-import { chatItems, type ChatItem, type TranscriptEntry } from "../src/chat.ts";
+import { chatItems, type Ask, type ChatItem, type TranscriptEntry } from "../src/chat.ts";
 import { transcript } from "../src/web/render.ts";
 import { markdownForSelection } from "../src/copy.ts";
 import { liveStatus, type WorkerStatus } from "../src/status.ts";
@@ -77,7 +77,8 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   // Team panel: running workers one per line with activity, time, context and cost; others only counted, with the team's cost.
   const focus: unknown[] = []; const opened: WorkerStatus[] = [];
   const panelTui = { setFocus: (c: unknown) => focus.push(c), requestRender() {} } as unknown as TUI;
-  const panel = new TeamPanel(panelTui, theme, w => opened.push(w));
+  const answered: string[] = []; let asks: Ask[] = [];
+  const panel = new TeamPanel(panelTui, theme, w => opened.push(w), { asks: { list: () => asks, answer: ask => answered.push(ask.title) } });
   assert.deepEqual(panel.render(80), []);
   const now = Date.now();
   const reviewer = liveStatus({ id: "1", name: "reviewer", live: { run: {}, tools: [{ callId: "c1", name: "read", status: "running" }] },
@@ -112,8 +113,7 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   panel.handleInput("x"); assert.equal(focus.at(-1), "typed x"); // typing goes back to the prompt
   panel.focused = false;
   // Waiting on you: ask titles above the team; Down selects one and shows its full text; Enter returns to the prompt and answers it.
-  const answered: string[] = [];
-  panel.setAsks([{ title: "Pick a name", text: "Option one or option two? I recommend one because it is shorter and reads better in the list.", entry: "9" }], ask => answered.push(ask.title));
+  asks = [{ title: "Pick a name", text: "Option one or option two? I recommend one because it is shorter and reads better in the list.", entry: "9" }];
   const glance = plain(panel.render(40));
   assert.match(glance[0]!, /^ +Pick a name$/); assert.doesNotMatch(glance.join("\n"), /Option one/);
   panel.enter(editor); panel.focused = true;
@@ -124,7 +124,7 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   panel.handleInput("\x1b[A"); panel.handleInput("\r");
   assert.deepEqual(answered, ["Pick a name"]); assert.equal(focus.at(-1), editor);
   panel.focused = false;
-  panel.setWorkers([]); panel.setAsks([], () => {}); panel.dispose();
+  panel.setWorkers([]); asks = []; panel.dispose();
 
   // Real Durable transcript: input attribution, paired tool call/error, assistant Markdown, no system noise.
   const fake = fauxProvider(); const models = createModels(); models.setProvider(fake.provider);
