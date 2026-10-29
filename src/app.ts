@@ -5,7 +5,7 @@ import { basename } from "node:path";
 import { DirPicker } from "./dir-picker.ts";
 import { agentNameError, suggestedAgentName } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
-import { Editor, HStack, Key, SelectList, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TuiAltScreen } from "@earendil-works/pi-tui";
+import { Editor, HStack, Key, SelectList, isKeyRelease, matchesKey, truncateToWidth, visibleWidth, type Component, type Focusable, type TuiAltScreen, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { type WorkerModel } from "./config.ts";
 import type { AgentSummary } from "./protocol.ts";
@@ -53,6 +53,8 @@ export class AgentsApp implements Component, Focusable {
   }
   private renaming?: { agent: AgentSummary; error?: string };
   private selected = 0; private view?: ChatView;
+  /** The agent drawn on each row of the dashboard list, for clicks. */
+  private listRows: (AgentSummary | undefined)[] = [];
   /** Unsent prompts by agent, so opening another agent and coming back keeps what was typed. */
   private drafts = new Map<string, string>(); private viewAgent?: string;
   private closeView() {
@@ -139,7 +141,15 @@ export class AgentsApp implements Component, Focusable {
   }
   private setScreen() {
     this.updateFocus(); this.updateCmux();
-    const list = { render: (width: number) => this.list(width), invalidate() {} };
+    const list = { render: (width: number) => this.list(width), invalidate() {},
+      // A click opens the agent under it, as on the rails.
+      handleMouse: (event: TuiMouseEvent) => {
+        if (event.type !== "click" || event.button !== "left") return undefined;
+        const agent = this.listRows[event.y];
+        if (!agent) return undefined;
+        this.selected = Math.max(0, this.selectable().indexOf(agent)); this.open(agent);
+        return { handled: true };
+      } };
     const root = this.form || this.confirming || this.renaming ? this : this.panes ?? list;
     this.tui.setLayoutRoot(root);
   }
@@ -410,6 +420,7 @@ export class AgentsApp implements Component, Focusable {
     let start = 0;
     while (start < at && blocks.slice(start, at + 1).flat().length > capacity) start++;
     const body = blocks.slice(start).flat().slice(0, capacity);
+    this.listRows = [undefined, undefined, ...rows.slice(start).flatMap((row, i) => blocks[start + i]!.map(() => row.agent))].slice(0, 2 + body.length);
     const lines = [t.fg("dim", ` ${this.showArchived ? "archived agents" : "agents"}`), "", ...body];
     while (lines.length < height - 2 - hints.length) lines.push("");
     const all = this.rows();

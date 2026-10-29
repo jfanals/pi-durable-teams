@@ -358,3 +358,82 @@ test("chat scrolls back page by page to the first message, keeping the view in p
     assert.deepEqual(cursors, ["81", "41"], "one page per arrival at the top, none past the first message");
   } finally { tui.stop(); life.abort(); }
 });
+
+test("mouse: a selection in the prompt stays in the prompt and copies its text; a click toggles one tool block", async () => {
+  const { TuiAltScreen, HStack, setKeybindings } = await import("@earendil-works/pi-tui");
+  const { VirtualTerminal } = await import("./testing/virtual-terminal.ts");
+  const { piKeybindings } = await import("../src/presentation.ts");
+  const { ChatView } = await import("../src/ui.ts");
+  setKeybindings(await piKeybindings());
+  const items: ChatItem[] = [
+    { id: "1", kind: "reply", parts: [{ type: "tool", id: "c1", name: "bash", subject: "seq a", args: { command: "seq a" } }, { type: "tool", id: "c2", name: "bash", subject: "seq b", args: { command: "seq b" } }] },
+    ...["c1", "c2"].map((callId, i) => ({ id: String(2 + i), kind: "result" as const, callId, ok: true, content: [{ type: "text" as const, text: Array.from({ length: 30 }, (_, n) => `${callId} line ${n + 1}`).join("\n") }] })),
+  ];
+  const copied: string[] = [];
+  const terminal = new VirtualTerminal(70, 60);
+  const tui = new TuiAltScreen(terminal, undefined, undefined, { copySelection: async text => { copied.push(view.copyText(text)); return true; } });
+  const life = new AbortController(); cleanup(() => life.abort());
+  const view: InstanceType<typeof ChatView> & { copyText?: any } = new ChatView(tui, theme, "reader", {
+    images: async () => [], page: async () => ({ conversationId: "c", items }), status: async () => ({ id: "1", name: "reader", enabled: true }),
+    watch: signal => new Promise(resolve => signal.addEventListener("abort", () => resolve())),
+  }, life.signal, { send: async () => undefined, stop: async () => undefined, back() {} });
+  const { markdownForSelection } = await import("../src/copy.ts");
+  view.copyText = (text: string) => markdownForSelection(text, view.markdown());
+  const rail = { render: () => Array.from({ length: 60 }, () => "RAIL rail"), invalidate() {} };
+  tui.setLayoutRoot(new HStack([{ component: rail, basis: 10, grow: 0, shrink: 0 }, { component: view.layout, basis: 0, grow: 1 }], { gap: 1 }));
+  tui.setFocus(view); tui.start();
+  const screen = async () => { await terminal.waitForRender(); return terminal.flushAndGetViewport(); };
+  const until = async (ok: (lines: string[]) => boolean) => {
+    for (let i = 0; i < 200; i++) { const lines = await screen(); if (ok(lines)) return lines; await new Promise(r => setTimeout(r, 10)); }
+    assert.fail(`Timed out:\n${(await screen()).join("\n")}`);
+  };
+  const mouse = (code: number, x: number, y: number, release = false) => terminal.sendInput(`\x1b[<${code};${x + 1};${y + 1}${release ? "m" : "M"}`);
+  try {
+    view.setDraft("first line of the prompt\nsecond line");
+    const shown = await until(lines => lines.some(line => line.includes("second line")) && lines.some(line => line.includes("c2 line 30")));
+    const count = (lines: string[], text: string) => lines.filter(line => line.includes(text)).length;
+    const collapsed = count(shown, "c1 line");
+    // A click on the first tool block expands it alone; a second click folds it again.
+    const c1 = shown.findIndex(line => line.includes("c1 line 30"));
+    mouse(0, 20, c1); mouse(0, 20, c1, true);
+    const open = await until(lines => count(lines, "c1 line") > collapsed);
+    assert.equal(count(open, "c1 line"), 30); assert.equal(count(open, "c2 line"), collapsed, "the other block stays folded");
+    const again = open.findIndex(line => line.includes("c1 line 30"));
+    mouse(0, 20, again); mouse(0, 20, again, true);
+    await until(lines => count(lines, "c1 line") === collapsed);
+    // Dragging from the prompt's first line to below it selects the prompt's lines only, and copies its text.
+    const lines = await screen();
+    const first = lines.findIndex(line => line.includes("first line of the prompt"));
+    mouse(0, lines[first]!.indexOf("first"), first); mouse(32, 5, first + 1); mouse(32, 60, first + 2); mouse(0, 60, first + 2, true);
+    await until(() => copied.length > 0);
+    assert.equal(copied[0], "first line of the prompt\nsecond line");
+  } finally { tui.stop(); life.abort(); }
+});
+
+test("dashboard: a click on an agent's card opens it, on the full-page list too", async () => {
+  const { TuiAltScreen, setKeybindings } = await import("@earendil-works/pi-tui");
+  const { VirtualTerminal } = await import("./testing/virtual-terminal.ts");
+  const { piKeybindings } = await import("../src/presentation.ts");
+  const { AgentsApp } = await import("../src/app.ts");
+  setKeybindings(await piKeybindings());
+  const agents = [{ id: "1", name: "alpha", hosted: true, children: [] }, { id: "2", name: "beta", hosted: true, children: [] }] as any[];
+  const opened: string[] = [];
+  const source = new Proxy({
+    roster: (signal: AbortSignal, receive: (rows: any[]) => void) => { receive(agents); return new Promise<void>(resolve => signal.addEventListener("abort", () => resolve())); },
+    page: async (target: string) => { opened.push(target); return { conversationId: target, items: [] }; },
+    status: async (target: string) => agents.find(agent => agent.id === target),
+    watch: (_: string, signal: AbortSignal) => new Promise<void>(resolve => signal.addEventListener("abort", () => resolve())),
+  } as any, { get: (target, key) => target[key] ?? (async () => []) });
+  const terminal = new VirtualTerminal(60, 20); const tui = new TuiAltScreen(terminal);
+  const app = new AgentsApp(source, tui, theme, { cwd: process.cwd() });
+  tui.addChild(app); tui.setFocus(app); tui.start();
+  const screen = async () => { await terminal.waitForRender(); return terminal.flushAndGetViewport(); };
+  try {
+    let lines: string[] = [];
+    for (let i = 0; i < 200 && !(lines = await screen()).some(line => line.includes("beta")); i++) await new Promise(r => setTimeout(r, 10));
+    const row = lines.findIndex(line => line.includes("beta"));
+    terminal.sendInput(`\x1b[<0;5;${row + 1}M`); terminal.sendInput(`\x1b[<0;5;${row + 1}m`);
+    for (let i = 0; i < 200 && !opened.includes("2"); i++) await new Promise(r => setTimeout(r, 10));
+    assert.ok(opened.includes("2") && !opened.includes("1"), `opened ${opened}`);
+  } finally { app.dispose(); tui.stop(); }
+});

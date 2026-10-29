@@ -434,15 +434,26 @@ export function renderTeamResult(result: { content: any[]; details?: unknown }, 
   return new Text([theme.fg("success", head!), ...rest.map(line => theme.fg("muted", truncateToWidth(line, 200)))].join("\n"), 0, 0);
 }
 
-export type TranscriptOptions = { showThinking?: boolean; expanded?: boolean; tui?: TUI; cwd?: string; showImages?: boolean; images?: (entryId: string) => ImageContent[] | undefined };
+export type TranscriptOptions = { showThinking?: boolean; expanded?: boolean; tui?: TUI; cwd?: string; showImages?: boolean; images?: (entryId: string) => ImageContent[] | undefined;
+  /** Blocks a click toggled, as Pi's tool, thinking and compaction blocks expand on their own; ctrl+o clears them. */
+  toggled?: ReadonlySet<string>;
+  /** Filled with the lines of each block a click can toggle. */
+  blocks?: { key: string; start: number; end: number }[] };
 
 /** Worker transcript as terminal lines, oldest first, drawn like Pi's chat: inputs on Pi's message
  * backgrounds, tool calls by Pi's own tool component and renderers, replies plain. */
-export function renderTranscript(items: ChatItem[], worker: string, width: number, theme: Theme, { showThinking = false, expanded = false, tui, cwd = process.cwd(), showImages = false, images }: TranscriptOptions = {}): string[] {
+export function renderTranscript(items: ChatItem[], worker: string, width: number, theme: Theme, { showThinking = false, expanded = false, tui, cwd = process.cwd(), showImages = false, images, toggled, blocks }: TranscriptOptions = {}): string[] {
   const results = new Map(items.filter(item => item.kind === "result").map(item => [item.callId, item]));
   const md = getMarkdownTheme();
   const out: string[] = [];
   const block = (lines: string[]) => { if (lines.length) out.push("", ...lines); };
+  const flip = (key: string, value: boolean) => toggled?.has(key) ? !value : value;
+  /** A block a click toggles: `lines` pushed as `block` would, its rows recorded under `key`. */
+  const clickable = (key: string, lines: string[], gap = true) => {
+    if (!lines.length) return;
+    if (gap) out.push("");
+    blocks?.push({ key, start: out.length, end: out.length + lines.length }); out.push(...lines);
+  };
   const card = (bg: ThemeBg, ...children: Component[]) => {
     const box = new Box(1, 1, text => theme.bg(bg, text));
     for (const child of children) box.addChild(child);
@@ -461,7 +472,8 @@ export function renderTranscript(items: ChatItem[], worker: string, width: numbe
       for (const part of item.parts) {
         if (part.type === "text") { if (part.text.trim()) block(markdown(part.text).render(width)); }
         else if (part.type === "thinking") {
-          if (part.text.trim()) block((showThinking ? markdown(part.text, { color: t => theme.fg("thinkingText", t), italic: true })
+          const key = `${item.id}:${item.parts.indexOf(part)}`;
+          if (part.text.trim()) clickable(key, (flip(key, showThinking) ? markdown(part.text, { color: t => theme.fg("thinkingText", t), italic: true })
             : new Text(theme.italic(theme.fg("thinkingText", `Thinking · ${part.text.split("\n").length} lines`)), 1, 0)).render(width));
         } else {
           // Pi's own tool component. An empty definition gives unknown tools Pi's bounded generic preview.
@@ -469,7 +481,7 @@ export function renderTranscript(items: ChatItem[], worker: string, width: numbe
           // A host older than tool args sends only the subject: the path, or the command for shells.
           const args = part.args ?? { [["bash", "powershell"].includes(part.name) ? "command" : "path"]: part.subject };
           const tool = new ToolExecutionComponent(part.name, part.id, args, { showImages }, renderers as any, ui, cwd);
-          tool.setExpanded(expanded);
+          tool.setExpanded(flip(part.id, expanded));
           const result = results.get(part.id);
           if (result) {
             const content = result.content ?? (result.error ? [{ type: "text", text: result.error }] : []);
@@ -477,7 +489,8 @@ export function renderTranscript(items: ChatItem[], worker: string, width: numbe
             tool.updateResult({ content: loaded ? [...content.filter(part => part.type !== "image"), ...loaded] : content,
               details: result.details, isError: !result.ok, ...(result.durationMs === undefined ? {} : { durationMs: result.durationMs }) });
           }
-          out.push(...tool.render(width)); // starts with its own blank line
+          // Starts with its own blank line. As in Pi, only a finished call expands.
+          if (result) clickable(part.id, tool.render(width), false); else out.push(...tool.render(width));
         }
       }
       if (item.error) block(new Text(theme.fg("error", item.error), 1, 0).render(width));
@@ -490,8 +503,8 @@ export function renderTranscript(items: ChatItem[], worker: string, width: numbe
     else if (item.kind === "compaction") {
       // Pi's compaction message: collapsed to its token count, the summary on ctrl+o.
       const message = new CompactionSummaryMessageComponent({ summary: clean(item.summary), tokensBefore: item.tokensBefore ?? 0 } as any, md);
-      message.setExpanded(expanded);
-      block(message.render(width));
+      message.setExpanded(flip(item.id, expanded));
+      clickable(item.id, message.render(width));
     }
   }
   return out[0] === "" ? out.slice(1) : out;
@@ -533,6 +546,9 @@ class Transcript implements Component {
   // Pi's hideThinkingBlock (default off): thinking text is shown; ctrl+t hides it.
   showThinking = !SettingsManager.create(homedir(), agentDir).getHideThinkingBlock();
   expanded = false; // Pi's ctrl+o: full tool output
+  /** Blocks clicked open or closed against `expanded`/`showThinking`, and where the last render drew them. */
+  private toggled = new Set<string>();
+  private blocks: { key: string; start: number; end: number }[] = [];
   queued: Queued[] = [];
   /** What the human just started and the host has not finished, shown at once like Pi's status spinner. */
   pending?: string;
@@ -632,11 +648,11 @@ class Transcript implements Component {
     this.changed();
   }
   changed() { this.cache = undefined; this.tui.requestRender(); }
-  toggleThinking() { this.showThinking = !this.showThinking; this.version++; this.changed(); }
+  toggleThinking() { this.showThinking = !this.showThinking; this.toggled.clear(); this.version++; this.changed(); }
   /** Pi's keys: ctrl+o expands tool output, ctrl+t shows thinking. */
   toggle(data: string) {
     const keys = getKeybindings();
-    if (keys.matches(data, "app.tools.expand")) { this.expanded = !this.expanded; this.version++; this.changed(); return true; }
+    if (keys.matches(data, "app.tools.expand")) { this.expanded = !this.expanded; this.toggled.clear(); this.version++; this.changed(); return true; }
     if (keys.matches(data, "app.thinking.toggle")) { this.toggleThinking(); return true; }
     return false;
   }
@@ -652,12 +668,13 @@ class Transcript implements Component {
     }
     return this.imageCache.get(entryId);
   };
-  private render_(entries: ChatItem[], width: number) {
-    return renderTranscript(entries, this.name, width, this.theme, { showThinking: this.showThinking, expanded: this.expanded, tui: this.tui, cwd: this.status?.cwd, showImages: SettingsManager.create(this.status?.cwd ?? homedir(), agentDir).getShowImages(), images: this.images });
+  private render_(entries: ChatItem[], width: number, blocks?: { key: string; start: number; end: number }[]) {
+    return renderTranscript(entries, this.name, width, this.theme, { showThinking: this.showThinking, expanded: this.expanded, tui: this.tui, cwd: this.status?.cwd, showImages: SettingsManager.create(this.status?.cwd ?? homedir(), agentDir).getShowImages(), images: this.images, toggled: this.toggled, blocks });
   }
   lines(width: number) {
     if (this.cache?.width !== width || this.cache.version !== this.version) {
-      this.cache = { width, version: this.version, lines: this.render_([...this.entries.values()], width) };
+      this.blocks = [];
+      this.cache = { width, version: this.version, lines: this.render_([...this.entries.values()], width, this.blocks) };
     }
     const lines = this.cache.lines;
     // Keep a scrolled-up view anchored when activity is appended; prepending older pages needs no shift.
@@ -700,6 +717,15 @@ class Transcript implements Component {
     return lines.length - 1;
   }
   render(width: number) { return this.lines(width); }
+  /** A click on a tool, thinking or compaction block expands or collapses that block alone, as in Pi. */
+  handleMouse(event: TuiMouseEvent) {
+    if (event.type !== "click" || event.button !== "left") return undefined;
+    const block = this.blocks.find(block => event.y >= block.start && event.y < block.end);
+    if (!block) return undefined;
+    if (!this.toggled.delete(block.key)) this.toggled.add(block.key);
+    this.version++; this.changed();
+    return { handled: true };
+  }
   invalidate() { this.cache = undefined; }
   dispose() {
     this.loader?.stop(); this.loader = undefined;
@@ -831,7 +857,8 @@ export class ChatView implements Component, Focusable {
     }, invalidate() {} };
     const working = { render: (width: number) => [...this.transcript.queuedLines(width), ...this.transcript.workingLine(width), ...(this.modelNote ? [truncateToWidth(theme.fg("muted", this.modelNote), width)] : [])], invalidate() {} };
     // Pi's selectors take the editor's place while open.
-    const input = { render: (width: number) => (this.picker?.component ?? this.editor).render(width), invalidate: () => this.editor.invalidate() };
+    // In its own (never scrolling) view, so a mouse selection that starts in the prompt stays in its lines, not the rails beside it.
+    const input = new ScrollView({ render: (width: number) => (this.picker?.component ?? this.editor).render(width), invalidate: () => this.editor.invalidate() });
     this.scroll = scroll;
     this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, working, input, ...(this.panel ? [this.panel] : []), footer]);
   }
@@ -857,8 +884,8 @@ export class ChatView implements Component, Focusable {
   draft() { return this.editor.getText(); }
   /** The markdown of every loaded message and answer, oldest first: what a terminal selection is copied from. */
   markdown() {
-    return [...this.transcript.entries.values()].flatMap(item => item.kind === "input" ? [item.text]
-      : item.kind === "reply" ? item.parts.flatMap(part => part.type === "tool" ? [] : [part.text]) : []);
+    return [...[...this.transcript.entries.values()].flatMap(item => item.kind === "input" ? [item.text]
+      : item.kind === "reply" ? item.parts.flatMap(part => part.type === "tool" ? [] : [part.text]) : []), this.editor.getText()];
   }
   /** Run a host request behind Pi's status spinner, then show its outcome as the footer note. */
   private run<T>(label: string, request: Promise<T>, done: (value: T) => string | undefined) {
