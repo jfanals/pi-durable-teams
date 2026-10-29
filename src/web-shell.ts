@@ -20,7 +20,7 @@ const files = new Map<string, URL>([
     "icons/icon-512.png",
     "icons/badge-96.png",
   ].map((name) => [`/web/${name}`, new URL(`./web/${name}`, import.meta.url)] as [string, URL]),
-  ...["status.ts", "agent-name.ts", "model-selection.ts"].map(
+  ...["status.ts", "chat.ts", "agent-name.ts", "model-selection.ts"].map(
     (name) => [`/${name}`, new URL(`./${name}`, import.meta.url)] as [string, URL],
   ),
   ["/web/marked.js", new URL(import.meta.resolve("marked"))],
