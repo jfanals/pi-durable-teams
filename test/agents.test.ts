@@ -342,13 +342,13 @@ test("roster shares refresh work and invalidates only changed agents, branches a
     }, ctx);
     const refreshed = await Promise.all(Array.from({ length: 8 }, () => service.agents()));
     assert.ok(refreshed.every(rows => rows === refreshed[0]));
-    assert.deepEqual(scans, [cid]);
+    assert.deepEqual(scans, [cid, cid], "status, then waiting-on-you asks from the new entries only");
     assert.equal(refreshed[0]!.find(row => row.id === a)!.since, 123);
     assert.equal(first.find(row => row.id === a)!.since, undefined); // Earlier readers retain their frame.
     scans.length = 0;
     await service.action(human, { action: "rename", target: b, name: "renamed" }, "rename-cached");
     assert.equal((await service.agents()).find(row => row.id === b)!.name, "renamed");
-    assert.deepEqual(scans, [Number(b)]);
+    assert.deepEqual(scans, [Number(b), Number(b)]);
     let branch!: ConversationId;
     await service.harness.commit(async tx => {
       branch = (await tx.createConversation({ ownership: { kind: "ownerless" } })).id;
@@ -449,4 +449,24 @@ test("registry v2 migrates to v3: stopped hosted agents become archived; enabled
       [["lead", false, false, false], ["done", true, false, false]]);
     assert.deepEqual(doc.requests.r, { stopped: ["done"] }, "stored request results are replayed as they were");
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+test("waiting on you: replies open and close asks by title; the roster carries the open ones, read incrementally", async () => {
+  const service = await openTeams(new MemoryStorage(), { models: fixture().models, agentModel: async () => model });
+  try {
+    const { id } = await service.action(human, { action: "newAgent", name: "asks", cwd: process.cwd() }, "asks") as { id: string };
+    const cid = Number(id) as ConversationId;
+    const reply = (text: string) => service.harness.commit(async tx => { await tx.appendEntry(cid, { kind: "pi.assistant", model: [fauxAssistantMessage(text)] }); }, ctx);
+    const asks = async () => ((await service.agents()).find(agent => agent.id === id)!.asks ?? []).map(ask => [ask.title, ask.text]);
+    assert.deepEqual(await asks(), []);
+    await reply("Status table.\n\n- [ ] **Webhook URLs**: (a) source (b) secrets. I recommend (b).\n- [ ] **Secret writes**: separate command?\n- [ ] not an ask");
+    assert.deepEqual(await asks(), [["Webhook URLs", "(a) source (b) secrets. I recommend (b)."], ["Secret writes", "separate command?"]]);
+    const entry = (await service.agents()).find(agent => agent.id === id)!.asks![0]!.entry;
+    assert.match(JSON.stringify((await page(service, id) as any).items.find((item: any) => item.id === entry)), /Webhook URLs/, "an ask points at the reply that asked it");
+    // Closing matches the title case-insensitively; a partial answer closes and reopens a narrower ask.
+    await reply("- [x] **webhook urls**: (b).\n- [ ] **Webhook URLs: Zapier**: keep target URLs?");
+    assert.deepEqual((await asks()).map(([title]) => title), ["Secret writes", "Webhook URLs: Zapier"]);
+    await reply("* [X] **Secret writes**\n* [x] **Webhook URLs: Zapier**: yes");
+    assert.deepEqual(await asks(), []);
+  } finally { await service.close(); }
 });

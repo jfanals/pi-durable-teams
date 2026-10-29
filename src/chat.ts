@@ -10,6 +10,23 @@ export type ChatItem =
   | { id: string; kind: "notice"; text: string; warning?: boolean }
   /** The summary that replaced the history before it, as Pi's compaction message shows it. */
   | { id: string; kind: "compaction"; summary: string; tokensBefore?: number };
+/** A decision the agent is waiting on from the human: a `- [ ] **Title**: question` line in a reply, until `- [x] **Title**`. */
+export type Ask = { title: string; text: string; entry: string; at?: number };
+const ASK = /^\s*[-*] \[([ xX])\] \*\*(.+?)\*\*:?[ \t]*(.*)$/gm;
+/** `asks` after `items`' replies open and close theirs, by title (case-insensitive), oldest first. */
+export function foldAsks(asks: readonly Ask[], items: readonly ChatItem[]): Ask[] {
+  const open = new Map(asks.map(ask => [ask.title.toLowerCase(), ask]));
+  for (const item of items) if (item.kind === "reply") for (const part of item.parts) if (part.type === "text") {
+    for (const [, mark, title, text] of part.text.matchAll(ASK)) {
+      const key = title!.trim().toLowerCase();
+      open.delete(key);
+      if (mark === " ") open.set(key, { title: title!.trim(), text: text!.trim().slice(0, 300), entry: item.id, ...(item.at ? { at: item.at } : {}) });
+    }
+  }
+  return [...open.values()];
+}
+/** The editor line that answers an ask; the agent reads it as the subject of what follows. */
+export const askReply = (ask: Pick<Ask, "title">) => `Re: ${ask.title} — `;
 /** Messages waiting for the agent's next boundary, oldest first, as Pi shows them above its editor. */
 export type Queued = { mode: "steer" | "followUp"; text: string };
 /** Committed entries only. Prefix entries complete the oldest request without appearing in the returned page. */

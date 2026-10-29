@@ -1,3 +1,4 @@
+import type { Ask } from "./chat.ts";
 export type WorkerStatus = {
   id: string; name: string; running?: boolean;
   /** Set aside by the human: out of the default views until unarchived. */
@@ -14,6 +15,8 @@ export type WorkerStatus = {
   cacheHit?: number;
   /** Prompt size of the latest reply and the model's window; working directory. */
   context?: number; contextWindow?: number; cwd?: string;
+  /** Top-level agents: decisions waiting on the human, oldest first (see chat.ts foldAsks). */
+  asks?: Ask[];
 };
 
 /** Strip terminal escape sequences and unsafe controls, preserving text layout. */

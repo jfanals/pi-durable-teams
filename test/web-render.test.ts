@@ -70,4 +70,12 @@ test("pane rails fold other teams, expose the open team and highlight the path s
   assert.match(path, /data-depth="1"/);
   assert.match(path, /id="title">busy/);
   assert.doesNotMatch(path + rails.dashboard + rails.main, /<tag>/);
+  // Waiting on you: an amber count before the name; each ask jumps to its reply and carries its "Re:" line.
+  const { asksBar } = await import("../src/web/render.ts");
+  const asking = { ...agent("lead"), asks: [{ title: "URLs <b>", text: "(a) or (b)?", entry: "42", at: Date.now() - 7_200_000 }] };
+  assert.match(paneRails([asking], ["lead"]).dashboard, /class="ask-count"[^>]*>1<\/span> lead/);
+  assert.match(panePath([asking], ["lead"]), /id="title"><span class="ask-count"/);
+  assert.match(asksBar(asking), /data-ask="42" data-reply="Re: URLs &lt;b&gt; — "[^>]*>URLs &lt;b&gt;: \(a\) or \(b\)\? <small>2h ago<\/small>/);
+  assert.match(transcript([{ id: "42", kind: "reply", parts: [{ type: "text", text: "- [ ] **URLs**: ?" }] }]), /data-entry="42"/);
+  assert.equal(asksBar(agent("quiet")), "");
 });

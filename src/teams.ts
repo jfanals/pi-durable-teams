@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { WorkerModel } from "./config.ts";
-import { chatItems, type ChatItem, type Queued } from "./chat.ts";
+import { chatItems, foldAsks, type Ask, type ChatItem, type Queued } from "./chat.ts";
 import { cacheMissText, piCacheMisses, piCacheWarming } from "./presentation.ts";
 import { CACHE_WARM_KIND, cacheWarming, type CacheWarmData } from "./warming.ts";
 import { NEW, agentNameError, suggestedAgentName, uniqueAgentName } from "./agent-name.ts";
@@ -669,6 +669,23 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   const statusRows = new Map<string, { key: string; row: AgentSummary }>();
   let roster: AgentSummary[] = [];
   let refreshing: Promise<AgentSummary[]> | undefined;
+  // Asks are folded from replies once: each refresh reads only entries after the last one seen.
+  const askScans = new Map<string, { conversationId: ConversationId; after: number; asks: Ask[] }>();
+  async function asksOf(agent: Agent, changed: Set<ConversationId>) {
+    const conversationId = (agent.where as { conversationId: ConversationId }).conversationId;
+    let scan = askScans.get(agent.id);
+    if (scan?.conversationId === conversationId && !changed.has(conversationId)) return scan.asks;
+    if (scan?.conversationId !== conversationId) scan = { conversationId, after: 0, asks: [] };
+    const conversation = await conversationOf(agent);
+    let cursor: Cursor | undefined;
+    do {
+      const page = await conversation.entries({ order: "ascending", minEntryId: (scan.after + 1) as EntryId }, 200, cursor, context);
+      if (page.items.length) scan = { conversationId, after: Math.max(scan.after, ...page.items.map(entry => Number(entry.id))), asks: foldAsks(scan.asks, chatItems([...page.items])) };
+      cursor = page.next;
+    } while (cursor);
+    askScans.set(agent.id, scan);
+    return scan.asks;
+  }
   async function refreshRoster() {
     while (registryDirty || dirtyConversations.size) {
       const readRegistry = registryDirty;
@@ -680,14 +697,15 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const state = rosterState;
         const agents = Object.values(state.agents).filter(agent => !agent.removed && agent.where.kind === "hosted");
         const present = new Set(agents.map(agent => agent.id));
-        for (const id of statusRows.keys()) if (!present.has(id)) statusRows.delete(id);
+        for (const id of statusRows.keys()) if (!present.has(id)) { statusRows.delete(id); askScans.delete(id); }
         await Promise.all(agents.map(async agent => {
           const key = JSON.stringify(agent);
           const cached = statusRows.get(agent.id);
           if (cached?.key === key && agent.where.kind === "hosted"
             && ![agent.where.conversationId, ...(agent.branches ?? [])].some(id => conversations.has(id))) return;
           const details = await inspectHosted(agent);
-          statusRows.set(agent.id, { key, row: { hosted: true, ...liveStatus(details), children: [] } });
+          const asks = agent.parent || agent.archived ? [] : await asksOf(agent, conversations);
+          statusRows.set(agent.id, { key, row: { hosted: true, ...liveStatus(details), ...(asks.length ? { asks } : {}), children: [] } });
         }));
         // Build new tree objects: push and stream consumers may still hold the previous roster.
         const rows = agents.map(agent => ({ ...statusRows.get(agent.id)!.row, children: [] as AgentSummary[] }));

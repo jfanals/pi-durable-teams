@@ -2,7 +2,7 @@ import { attachAutocomplete } from "./autocomplete.ts";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
-import { escape as e, info, footerInfo, transcript, paneRails, panePath } from "./render.ts";
+import { escape as e, askCount, asksBar, info, footerInfo, transcript, paneRails, panePath } from "./render.ts";
 import { archiveView, formatCost, formatDuration, statusWord, teamGlance } from "../status.ts";
 import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
 import { NEW, agentNameError, suggestedAgentName } from "../agent-name.ts";
@@ -70,7 +70,7 @@ function list() {
   const row = (a: Agent, child = false): string =>
     `<button class="agent ${child ? "child" : ""}" data-open="${e(a.id)}">
 <div class="row">
-<strong>${e(a.name)}</strong>
+<strong>${askCount(a)}${e(a.name)}</strong>
 <span>${a.running ? '<i class="spinner"></i>' : ""}${e(statusWord(a))}</span>
 </div>
 <small data-time="${e(a.id)}">${e(info(a))}</small>
@@ -109,6 +109,7 @@ function status(clockOnly = false) {
     document.querySelector(".rail.main")!.innerHTML = rails.main;
     document.querySelector("#status")!.textContent = statusWord(a);
     document.querySelector("#info")!.textContent = footerInfo(a);
+    document.querySelector("#asks")!.innerHTML = asksBar(a);
   }
   document.querySelector("#working")!.textContent = pending || (a.running
     ? `${a.activity ?? "working"} · ${a.since ? formatDuration(Date.now() - a.since) : ""}`
@@ -153,6 +154,7 @@ async function open(id: string, push = true) {
 </div>
 <footer class="composer-footer">
 <button id="new-messages" hidden data-action="bottom">New messages ↓</button>
+<div id="asks" class="asks"></div>
 <div id="queued" class="queued"></div>
 <div id="working" role="status">
 </div>
@@ -236,6 +238,18 @@ async function older() {
     next = page.next;
     drawChat(true);
   } finally { loadingOlder = false; }
+}
+/** An ask: show the reply it was asked in (loading older pages if needed) and add its "Re:" line to the draft. */
+async function answer(entry: string, reply: string) {
+  const input = document.querySelector<HTMLTextAreaElement>("#message")!;
+  if (!input.value.includes(reply)) input.value = input.value.trimEnd() + (input.value.trim() ? "\n" : "") + reply;
+  input.focus(); input.setSelectionRange(input.value.length, input.value.length);
+  const version = generation;
+  while (!items.some(item => item.id === entry) && next && version === generation) await older();
+  const article = document.querySelector<HTMLElement>(`[data-entry="${CSS.escape(entry)}"]`);
+  if (!article) return;
+  article.scrollIntoView({ block: "center", behavior: "smooth" });
+  article.classList.remove("flash"); void article.offsetWidth; article.classList.add("flash");
 }
 async function refresh() {
   if (refreshing) {
@@ -579,6 +593,7 @@ root.addEventListener("click", async (event) => {
   try {
     if (el.dataset.depth !== undefined) { event.preventDefault(); collapseTo(Number(el.dataset.depth)); return; }
     if (el.dataset.rewind) { await rewind(el.dataset.rewind); return; }
+    if (el.dataset.ask) { await answer(el.dataset.ask, el.dataset.reply!); return; }
     if (el.dataset.open) {
       if (el.closest(".rail")) openFromRail(el.dataset.open);
       else await open(el.dataset.open);

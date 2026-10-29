@@ -9,7 +9,7 @@ import {
   formatDuration,
   formatTokens,
 } from "../status.ts";
-import type { ChatItem } from "../chat.ts";
+import { askReply, type ChatItem } from "../chat.ts";
 import type { Agent } from "./api.ts";
 import { marked } from "marked";
 export const escape = (text: unknown): string =>
@@ -39,6 +39,11 @@ marked.use({
 });
 export const markdown = (text: string, breaks = false): string =>
   marked.parse(text, { async: false, breaks });
+/** Decisions waiting on the human: an amber count before the agent's name. */
+export const askCount = (a: Agent) => a.asks?.length ? `<span class="ask-count" title="${a.asks.length} waiting on you">${a.asks.length}</span> ` : "";
+/** The open agent's asks above the composer: each jumps to where it was asked and adds its reply line. */
+export const asksBar = (a?: Agent) => (a?.asks ?? []).map(ask =>
+  `<button type="button" class="ask" data-ask="${escape(ask.entry)}" data-reply="${escape(askReply(ask))}" title="${escape(ask.text)}">${escape(ask.title)}${ask.text ? `: ${escape(ask.text)}` : ""}${ask.at ? ` <small>${escape(formatAgo(Date.now() - ask.at))}</small>` : ""}</button>`).join("");
 export const info = (a: Agent) =>
   [
     a.model,
@@ -103,7 +108,7 @@ ${result?.content?.some(part => part.type === "image") ? `<span data-images="${e
             .join(" · ")
         : "";
       const error = item.error ? `<p class="error">${escape(item.error)}</p>` : "";
-      return `<article class="reply"><button data-rewind="${escape(item.id)}">Rewind here</button>${parts}${error}
+      return `<article class="reply" data-entry="${escape(item.id)}"><button data-rewind="${escape(item.id)}">Rewind here</button>${parts}${error}
 ${turn ? `<small class="stamp">${stamp}</small>` : ""}</article>`;
     })
     .join("");
@@ -113,7 +118,7 @@ ${turn ? `<small class="stamp">${stamp}</small>` : ""}</article>`;
 export function paneRails(agents: Agent[], stack: string[]) {
   const main = agents.find(a => a.id === stack[0]);
   const row = (a: Agent, child = false) => `<button tabindex="-1" class="rail-row ${child ? "child" : ""} ${stack.includes(a.id) ? "open" : ""}" data-open="${escape(a.id)}" title="${escape(a.name)} · ${escape(statusWord(a))}" ${stack.includes(a.id) ? 'aria-current="true"' : ""}>
-<span aria-hidden="true">${a.running ? "◌" : "○"}</span><span>${escape(a.name)}</span></button>`;
+<span aria-hidden="true">${a.running ? "◌" : "○"}</span><span>${askCount(a)}${escape(a.name)}</span></button>`;
   const dashboard = archiveView(agents, false).agents.map(a => {
     const glance = teamGlance(a.children);
     const children = a.id === main?.id ? a.children : glance.shown as Agent[];
@@ -127,5 +132,5 @@ export function panePath(agents: Agent[], stack: string[]) {
   const all = agents.flatMap(a => [a, ...a.children]);
   return `<span class="ancestor dashboard"><a href="/" data-depth="0">Pi Agents</a><span aria-hidden="true"> › </span></span>`
     + stack.slice(0, -1).map((id, i) => `<span class="ancestor main"><a href="/#agent=${encodeURIComponent(id)}" data-depth="${i + 1}">${escape(all.find(a => a.id === id)?.name ?? id)}</a><span aria-hidden="true"> › </span></span>`).join("")
-    + `<span id="title">${escape(all.find(a => a.id === stack.at(-1))?.name ?? "Agent")}</span>`;
+    + `<span id="title">${(a => a ? askCount(a) + escape(a.name) : "Agent")(all.find(a => a.id === stack.at(-1)))}</span>`;
 }

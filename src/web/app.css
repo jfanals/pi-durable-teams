@@ -6,6 +6,7 @@
   --muted: #acb4c9;
   --line: #343c50;
   --accent: #a8c6ff;
+  --ask: #ffd28a;
   font:
     16px/1.5 system-ui,
     sans-serif;
@@ -469,3 +470,12 @@ a:focus-visible {
 }
 @keyframes pane-forward { from { transform: translateX(20%); opacity: .4; } }
 @keyframes pane-backward { from { transform: translateX(-20%); opacity: .4; } }
+
+/* Waiting on you: amber counts before names, the open agent's asks above the composer. */
+.ask-count { color: var(--ask); font-weight: 600; }
+.asks { display: flex; flex-direction: column; gap: 2px; }
+.asks .ask { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 4px; padding: 2px 4px; color: var(--ask); font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.asks .ask:hover { background: color-mix(in srgb, var(--ask) 12%, transparent); }
+.asks .ask small { display: inline; color: var(--muted); }
+article.flash { animation: ask-flash 1.6s; }
+@keyframes ask-flash { 0%, 40% { background: color-mix(in srgb, var(--ask) 22%, transparent); } }

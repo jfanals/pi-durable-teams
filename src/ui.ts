@@ -18,7 +18,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { clean, firstLine, textOf, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, teamGlance, type WorkerStatus } from "./status.ts";
 import type { TreeResult } from "./source.ts";
-import type { ChatItem, Queued } from "./chat.ts";
+import { askReply, type ChatItem, type Queued } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import type { ImageContent, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { nextModel, modelThinking, modelNotice, thinkingSelection } from "./model-selection.ts";
@@ -36,6 +36,8 @@ const expandKey = () => { try { return keyText("app.tools.expand") || "ctrl+o"; 
 
 
 export const glyph = (w: WorkerStatus) => w.running ? "●" : "○";
+/** Decisions waiting on the human: an amber count before the agent's name ("" when none). */
+export const askCount = (w: WorkerStatus | undefined, theme: Theme) => w?.asks?.length ? `${theme.fg("warning", String(w.asks.length))} ` : "";
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const VISIBLE_RUNNING = 5;
 const VISIBLE_FOCUSED = 8;
@@ -44,7 +46,7 @@ export function statusRow(w: WorkerStatus, width: number, selected: boolean, now
   const t = theme;
   const mark = w.running ? t.fg("accent", SPINNER[frame % SPINNER.length]!) : t.fg("muted", "○");
   const name = truncateToWidth(clean(w.name), nameWidth, "…", true);
-  const left = `${selected ? t.fg("accent", "› ") : "  "}${t.fg("dim", tree)}${mark} ${selected ? t.fg("accent", t.bold(name)) : w.running ? name : t.fg("muted", name)}  `;
+  const left = `${selected ? t.fg("accent", "› ") : "  "}${t.fg("dim", tree)}${mark} ${askCount(w, t)}${selected ? t.fg("accent", t.bold(name)) : w.running ? name : t.fg("muted", name)}  `;
   const time = w.running && w.since ? formatDuration(now - w.since)
     : !w.running && w.since && w.finishedAt && w.finishedAt >= w.since ? formatDuration(w.finishedAt - w.since) : "";
   // On narrow terminals the model drops first, then the cost, then the activity text.
@@ -179,7 +181,7 @@ export class Rail implements Component {
       if (!worker) { push(t.fg("dim", `${tree}${text ?? ""}`)); continue; }
       const mark = worker.running ? t.fg("accent", SPINNER[this.frame() % SPINNER.length]!) : t.fg("muted", "○");
       const name = clean(worker.name);
-      push(`${t.fg("dim", tree)}${mark} ${open ? t.fg("accent", t.bold(name)) : worker.running ? name : t.fg("muted", name)}`, worker);
+      push(`${t.fg("dim", tree)}${mark} ${askCount(worker, t)}${open ? t.fg("accent", t.bold(name)) : worker.running ? name : t.fg("muted", name)}`, worker);
     }
     while (out.length < this.tui.terminal.rows) push("");
     return out;
@@ -559,6 +561,14 @@ class Transcript implements Component {
     return [s.model && `${s.model}${s.thinking ? ` ${s.thinking}` : ""}`, time, formatContext(s), formatCost(s.cost), cwd].filter(Boolean).join(" · ");
   }
 
+  /** The first line of `entry` in the last rendered lines, loading older pages until it is there. */
+  async lineOf(entry: string) {
+    const width = this.lastLength?.width ?? this.tui.terminal.columns;
+    while (!this.entries.has(entry) && this.next && !this.life.signal.aborted) await this.older();
+    if (!this.entries.has(entry)) return undefined;
+    const before = [...this.entries.values()].filter(item => Number(item.id) < Number(entry));
+    return renderTranscript(before, this.name, width, this.theme, { showThinking: this.showThinking, expanded: this.expanded, tui: this.tui, cwd: this.status?.cwd }).length + (before.length ? 1 : 0);
+  }
   render(width: number) { return this.lines(width); }
   invalidate() { this.cache = undefined; }
   dispose() {
@@ -651,6 +661,8 @@ export class ChatView implements Component, Focusable {
   private tui: TUI;
   private lastEscapeTime = 0;
   private inFlight = 0;
+  private scroll: HistoryScroll;
+  private askIndex = 0;
   readonly layout: VStack;
   constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }, branch: () => string = () => "", path: () => string = () => "") {
     this.actions = actions;
@@ -668,7 +680,7 @@ export class ChatView implements Component, Focusable {
       const s = this.transcript.status;
       const cwd = s?.cwd ? formatCwd(s.cwd) : "";
       const time = s?.running ? `working${s.since ? ` ${formatDuration(Date.now() - s.since)}` : ""}` : s ? statusWord(s) : "idle";
-      const suffix = `${branch() ? ` (${branch()})` : ""} • ${s?.name ?? name} · ${time}`;
+      const suffix = `${branch() ? ` (${branch()})` : ""} • ${s?.asks?.length ? `${s.asks.length} waiting on you · ` : ""}${s?.name ?? name} · ${time}`;
       const location = truncateToWidth(cwd, Math.max(0, width - visibleWidth(suffix))) + suffix;
       const stats = formatUsage(s);
       const model = s?.modelId ?? s?.model;
@@ -680,10 +692,23 @@ export class ChatView implements Component, Focusable {
       const hints = `${path() || s?.name || name} · ${s?.id ?? "…"} · ← back · esc stop · ${keyText("app.message.followUp")} follow-up · ${keyText("app.tools.expand")} ${this.transcript.expanded ? "collapse" : "expand"} · ${keyText("app.thinking.toggle")} thinking`;
       return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
     }, invalidate() {} };
+    // Waiting on you: the agent's open asks, one amber line each, just above the editor.
+    const asks = { render: (width: number) => (this.transcript.status?.asks ?? []).map((ask, i) => truncateToWidth(` ${theme.fg("warning", `${ask.title}${ask.text ? `: ${ask.text}` : ""}`)}${ask.at ? theme.fg("dim", ` · ${formatAgo(Date.now() - ask.at)}`) : ""}${i ? "" : theme.fg("dim", " · alt+q answer")}`, width)), invalidate() {} };
     const working = { render: (width: number) => [...this.transcript.queuedLines(width), ...this.transcript.workingLine(width), ...(this.modelNote ? [truncateToWidth(theme.fg("muted", this.modelNote), width)] : [])], invalidate() {} };
     // Pi's selectors take the editor's place while open.
     const input = { render: (width: number) => (this.picker?.component ?? this.editor).render(width), invalidate: () => this.editor.invalidate() };
-    this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, working, input, ...(this.panel ? [this.panel] : []), footer]);
+    this.scroll = scroll;
+    this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, asks, working, input, ...(this.panel ? [this.panel] : []), footer]);
+  }
+  /** alt+q: the next open ask. Scrolls to where it was asked and adds its "Re:" line to the end of the draft. */
+  private async answerNext() {
+    const asks = this.transcript.status?.asks ?? [];
+    if (!asks.length) { this.transcript.note = "Nothing is waiting on you"; this.transcript.changed(); return; }
+    const ask = asks[this.askIndex++ % asks.length]!;
+    const text = this.editor.getText(); const reply = askReply(ask);
+    if (!text.includes(reply)) this.editor.setText(text.trimEnd() + (text.trim() ? "\n" : "") + reply);
+    const line = await this.transcript.lineOf(ask.entry);
+    if (line !== undefined && !this.disposed) { this.scroll.scrollTo(line); this.tui.requestRender(); }
   }
   /** Text for the editor, as Pi restores a forked message. */
   setDraft(text: string) { this.editor.setText(text); }
@@ -902,6 +927,7 @@ export class ChatView implements Component, Focusable {
       });
       return;
     }
+    if (matchesKey(data, Key.alt("q"))) { void this.answerNext(); return; }
     // Pi's follow-up key (option+enter on a Mac, or the user's own binding in Pi's keybindings.json).
     if (getKeybindings().matches(data, "app.message.followUp")) return this.submit(this.editor.getExpandedText(), "followUp");
     if (this.transcript.toggle(data)) return;
