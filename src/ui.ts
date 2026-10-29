@@ -68,7 +68,7 @@ export function statusRow(w: WorkerStatus, width: number, selected: boolean, now
  * Up past the first row, Esc, or typing returns to the prompt.
  */
 /** The open agent's asks for the panel: the list, the draft that may already answer some, and where Enter sends them. */
-export type PanelAsks = { list(): Ask[]; draft(): string; answer(ask: Ask): void; prompt: Component };
+export type PanelAsks = { list(): Ask[]; draft(): string; cursorLine(): number; answer(ask: Ask): void; prompt: Component };
 export class TeamPanel implements Component, Focusable {
   focused = false;
   private workers: WorkerStatus[] = [];
@@ -113,6 +113,12 @@ export class TeamPanel implements Component, Focusable {
   }
   /** Asks whose "Re:" line is already in the draft: still open until the agent closes them, shown dimmed. */
   private drafted(ask: Ask) { return (this.asksOf?.draft() ?? "").toLowerCase().includes(askReply(ask).trimEnd().toLowerCase()); }
+  /** The ask being answered: the nearest "Re:" line at or above the prompt's cursor names it. */
+  private editing() {
+    const lines = (this.asksOf?.draft() ?? "").split("\n").slice(0, this.asksOf!.cursorLine() + 1).reverse();
+    const line = lines.find(line => /^re: /i.test(line))?.toLowerCase();
+    return line === undefined ? undefined : this.asks.find(ask => line.startsWith(askReply(ask).trimEnd().toLowerCase()));
+  }
   /** Focus the panel: on `target`'s worker, else on the first ask not yet in the draft. */
   enter(editor: Component, target?: string) {
     const worker = this.workers.findIndex(w => w.id === target);
@@ -161,8 +167,15 @@ export class TeamPanel implements Component, Focusable {
       push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · ${asked ? "enter answer" : "enter/→ open"} · esc back`), width));
       return lines;
     }
-    for (const ask of this.asks.slice(0, VISIBLE_ASKS)) push(askLine(ask, false), ask);
-    if (this.asks.length > VISIBLE_ASKS) push(truncateToWidth(t.fg("dim", `  +${this.asks.length - VISIBLE_ASKS} more · ↓`), width), "more");
+    // Collapsed: the first titles, plus the ask being answered in the prompt, shown in full.
+    const editing = this.asksOf && this.editing();
+    const glance = this.asks.slice(0, VISIBLE_ASKS);
+    if (editing && !glance.includes(editing)) glance.push(editing);
+    for (const ask of glance) {
+      push(askLine(ask, false), ask);
+      if (ask === editing && ask.text) for (const line of wrapTextWithAnsi(ask.text, Math.max(10, width - 4))) push(`    ${line}`, ask);
+    }
+    if (this.asks.length > glance.length) push(truncateToWidth(t.fg("dim", `  +${this.asks.length - glance.length} more · ↓`), width), "more");
     if (!this.workers.length) { push(truncateToWidth(t.fg("dim", "  ↓ to select"), width)); return lines; }
     const { shown, summary } = teamGlance(this.workers, this.compact ? Infinity : VISIBLE_RUNNING);
     for (const w of shown) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
@@ -728,7 +741,7 @@ export class ChatView implements Component, Focusable {
     if (children) this.panel = new TeamPanel(tui, theme, children.open, { compact: true, focus: component => {
       this.panel!.focused = component === this.panel;
       this.editor.focused = component !== this.panel;
-    }, asks: { list: () => this.transcript.status?.asks ?? [], draft: () => this.editor.getText(), answer: ask => void this.answer(ask), prompt: this.editor } });
+    }, asks: { list: () => this.transcript.status?.asks ?? [], draft: () => this.editor.getText(), cursorLine: () => this.editor.getCursor().line, answer: ask => void this.answer(ask), prompt: this.editor } });
     const scroll = new HistoryScroll(this.transcript);
     const footer = { render: (width: number) => {
       const s = this.transcript.status;

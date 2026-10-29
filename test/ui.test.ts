@@ -77,9 +77,9 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   // Team panel: running workers one per line with activity, time, context and cost; others only counted, with the team's cost.
   const focus: unknown[] = []; const opened: WorkerStatus[] = [];
   const panelTui = { setFocus: (c: unknown) => focus.push(c), requestRender() {} } as unknown as TUI;
-  const answered: string[] = []; let asks: Ask[] = []; let draft = "";
+  const answered: string[] = []; let asks: Ask[] = []; let draft = ""; let cursor = 0;
   const prompt = { render: () => [], invalidate() {} };
-  const panel = new TeamPanel(panelTui, theme, w => opened.push(w), { asks: { list: () => asks, draft: () => draft, answer: ask => answered.push(ask.title), prompt } });
+  const panel = new TeamPanel(panelTui, theme, w => opened.push(w), { asks: { list: () => asks, draft: () => draft, cursorLine: () => cursor, answer: ask => answered.push(ask.title), prompt } });
   assert.deepEqual(panel.render(80), []);
   const now = Date.now();
   const reviewer = liveStatus({ id: "1", name: "reviewer", live: { run: {}, tools: [{ callId: "c1", name: "read", status: "running" }] },
@@ -128,9 +128,16 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   // Many asks: five titles then "+N more"; ones already answered in the draft are dimmed, and Down starts on the first left.
   asks = Array.from({ length: 9 }, (_, i) => ({ title: `Ask ${i + 1}`, text: `Question ${i + 1}`, entry: String(10 + i) }));
   draft = "Re: Ask 1 — yes\nRe: ask 2 — no\n";
-  const many = plain(panel.render(80));
-  assert.match(many[0]!, /Ask 1 · in draft/); assert.match(many[1]!, /Ask 2 · in draft/); assert.doesNotMatch(many[2]!, /in draft/);
-  assert.match(many[5]!, /\+4 more/);
+  const many = plain(panel.render(80)); const row = (title: string) => many.find(line => line.trim().startsWith(`${title} `) || line.trim() === title)!;
+  assert.match(row("Ask 1"), /in draft/); assert.match(row("Ask 2"), /in draft/); assert.doesNotMatch(row("Ask 3"), /in draft/);
+  assert.ok(!many.some(line => /Ask 6/.test(line))); assert.ok(many.some(line => /\+4 more/.test(line)));
+  // The ask being answered (the Re: line at or above the cursor) shows its question in full, even beyond the first five.
+  assert.ok(many.some(line => /Question 1/.test(line))); // cursor on line 0: answering Ask 1
+  draft = "Re: Ask 1 — yes\nRe: Ask 8 — maybe\nbecause"; cursor = 2;
+  const answering = plain(panel.render(80));
+  assert.ok(answering.some(line => /Ask 8 · in draft/.test(line)) && answering.some(line => /Question 8/.test(line)));
+  assert.ok(!answering.some(line => /Question 1/.test(line))); assert.match(answering.join("\n"), /\+3 more/);
+  draft = "Re: Ask 1 — yes\nRe: ask 2 — no\n"; cursor = 2;
   panel.enter(editor); panel.focused = true;
   assert.match(plain(panel.render(80)).find(line => line.includes("›"))!, /› Ask 3/);
   for (let i = 0; i < 6; i++) panel.handleInput("\x1b[B"); // every ask is reachable, the list scrolls
