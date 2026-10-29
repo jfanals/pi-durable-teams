@@ -693,14 +693,14 @@ export class ChatView implements Component, Focusable {
       return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
     }, invalidate() {} };
     // Waiting on you: the agent's open asks, one amber line each, just above the editor.
-    const asks = { render: (width: number) => (this.transcript.status?.asks ?? []).map((ask, i) => truncateToWidth(` ${theme.fg("warning", `${ask.title}${ask.text ? `: ${ask.text}` : ""}`)}${ask.at ? theme.fg("dim", ` · ${formatAgo(Date.now() - ask.at)}`) : ""}${i ? "" : theme.fg("dim", " · alt+q answer")}`, width)), invalidate() {} };
+    const asks = { render: (width: number) => (this.transcript.status?.asks ?? []).map((ask, i) => truncateToWidth(` ${theme.fg("warning", `${ask.title}${ask.text ? `: ${ask.text}` : ""}`)}${ask.at ? theme.fg("dim", ` · ${formatAgo(Date.now() - ask.at)}`) : ""}${i ? "" : theme.fg("dim", " · ctrl+q answer")}`, width)), invalidate() {} };
     const working = { render: (width: number) => [...this.transcript.queuedLines(width), ...this.transcript.workingLine(width), ...(this.modelNote ? [truncateToWidth(theme.fg("muted", this.modelNote), width)] : [])], invalidate() {} };
     // Pi's selectors take the editor's place while open.
     const input = { render: (width: number) => (this.picker?.component ?? this.editor).render(width), invalidate: () => this.editor.invalidate() };
     this.scroll = scroll;
     this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, asks, working, input, ...(this.panel ? [this.panel] : []), footer]);
   }
-  /** alt+q: the next open ask. Scrolls to where it was asked and adds its "Re:" line to the end of the draft. */
+  /** ctrl+q: the next open ask. Scrolls to where it was asked and adds its "Re:" line to the end of the draft. */
   private async answerNext() {
     const asks = this.transcript.status?.asks ?? [];
     if (!asks.length) { this.transcript.note = "Nothing is waiting on you"; this.transcript.changed(); return; }
@@ -927,8 +927,7 @@ export class ChatView implements Component, Focusable {
       });
       return;
     }
-    // alt+q; "œ" is what macOS Option+q types when the terminal doesn't send Option as Alt.
-    if (matchesKey(data, Key.alt("q")) || data === "œ") { void this.answerNext(); return; }
+    if (matchesKey(data, Key.ctrl("q"))) { void this.answerNext(); return; }
     // Pi's follow-up key (option+enter on a Mac, or the user's own binding in Pi's keybindings.json).
     if (getKeybindings().matches(data, "app.message.followUp")) return this.submit(this.editor.getExpandedText(), "followUp");
     if (this.transcript.toggle(data)) return;
