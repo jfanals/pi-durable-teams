@@ -93,6 +93,9 @@ workers run; it is hidden when none are.
 
 Agents can send/inspect their parent, children and siblings. Top-level hosted agents
 and Pi sessions can spawn and control their own children; sub-agents cannot spawn.
+They can also `launch` a new top-level hosted agent with a first message: it gets the
+top-level `agentModel`, is nobody's child (the launcher cannot abort or archive it) and
+reports its first answer to the launcher.
 No agent can address another top-level agent's children. The human can reach every
 agent. Default `list` shows your parent, children and teammates, excluding other
 top-level agents. Use `scope: "mains"` to discover reachable top-level peers.
@@ -131,7 +134,7 @@ workers keep their model unless the human changes it through the service's
 `action(human, { action: "model", target, model: { provider, modelId }, thinking? }, requestId)`.
 Like Pi's interactive `/model`, this uses `configure()` directly: the next model
 request uses the new choice, including a continuation after tools in an active run.
-Model selection and top-level creation are not exposed to agent tools.
+Model selection is not exposed to agent tools.
 Agents are running, idle or archived. `abort` cancels current work and the agent stays
 usable; only the human archives agents.
 

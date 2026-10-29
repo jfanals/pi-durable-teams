@@ -193,7 +193,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
       const current = active;
       if (!current || current.sessionId !== ctx.sessionManager.getSessionId()) throw new Error("Team session not initialized");
       current.ctx = ctx;
-      if (args.action === "spawn") args = { ...args, cwd: await realpath(resolve(ctx.cwd, args.cwd ?? ctx.cwd)) };
+      if (args.action === "spawn" || args.action === "launch") args = { ...args, cwd: await realpath(resolve(ctx.cwd, args.cwd ?? ctx.cwd)) };
       await current.client.ensureHost(signal);
       await register(current); // model/name changes apply to newly spawned workers
       if (active !== current) throw new Error("Originating session changed");

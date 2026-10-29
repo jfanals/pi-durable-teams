@@ -329,7 +329,7 @@ function sentNote(data: { target: string; mode: Mode; text: string; request?: st
 }
 
 export function renderTeamCall(args: Partial<Action> & { timeoutSeconds?: number }, theme: Theme, context: { expanded: boolean } = { expanded: false }) {
-  const subject = args.action === "spawn" ? args.name : args.target ?? "";
+  const subject = args.action === "spawn" || args.action === "launch" ? args.name : args.target ?? "";
   let text = theme.fg("toolTitle", theme.bold("team ")) + theme.fg("accent", args.action ?? "") + (subject ? ` ${clean(subject)}` : "");
   const extras = [args.timeoutSeconds !== undefined && `remind ${formatDuration(args.timeoutSeconds * 1000)}`, args.mode === "steer" && "steer", args.scope === "mains" && "sessions", args.transcript && "transcript", args.request && `request ${args.request}`].filter(Boolean);
   if (extras.length) text += theme.fg("muted", ` · ${extras.join(" · ")}`);
@@ -347,7 +347,7 @@ export function teamResultSummary(args: Partial<Action>, details: any): string {
       : [`${indent}${clean(a.name)} · ${clean(a.status)}`, ...lines(a.children ?? [], `${indent}  `), ...(a.summary ? [`${indent}  ${clean(a.summary)}`] : [])]);
     return lines(details, "").join("\n") || "no agents";
   }
-  if (args.action === "spawn" || args.action === "send") {
+  if (args.action === "spawn" || args.action === "launch" || args.action === "send") {
     if (details?.taskId !== undefined) return `accepted · request ${details.taskId} · report arrives automatically`;
     if (details?.delivery) return "accepted · queued for that session";
     return "accepted";

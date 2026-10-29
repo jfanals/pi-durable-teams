@@ -115,10 +115,22 @@ test("hosted agents delegate, exchange reports, obey tree reach and persist acro
     assert.equal((await roster(service)).length, 4);
     assert.match(JSON.stringify(await page(service, reader.id)), /Human follow-up/);
     await settle(service, await service.action(a, { action: "send", target: reader.id, message: "After restart" }, "restart"));
+    // A top-level agent launches a peer: top-level, the default agentModel, first message from A, no reminder by default.
+    await assert.rejects(service.action(reader, { action: "launch", name: "fresh", message: "no" }, "x"), /top-level agents can launch/);
+    const launched = await service.action(a, { action: "launch", name: "fresh", cwd: directory, message: "Start over" }, "launch") as any;
+    await settle(service, launched);
+    const fresh = (await service.harness.snapshot(Teams, ctx))!.agents[launched.workerId]!;
+    assert.equal(fresh.parent, undefined);
+    assert.ok((await roster(service, a, "mains")).some(agent => agent.id === fresh.id));
+    assert.match(JSON.stringify(await page(service, fresh.id)), /Start over/);
+    assert.match((await service.harness.snapshot(AgentDoc, Number(fresh.id) as ConversationId, ctx))!.instructions!, /^You are agent fresh\./);
+    assert.equal((await service.action(human, { action: "inspect", target: fresh.id }, "") as any).thinking, "medium");
+    await assert.rejects(service.action(a, { action: "abort", target: fresh.id }, "abort-launched"), /accessible/);
     await service.archive(a.id, "archive-parent");
     const archived = (await service.harness.snapshot(Teams, ctx))!;
     for (const id of [a.id, reader.id, childB.workerId]) assert.equal(archived.agents[id]!.archived, true);
     assert.equal(archived.agents[b.id]!.archived, undefined);
+    assert.equal(archived.agents[fresh.id]!.archived, undefined);
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });
 

@@ -44,6 +44,18 @@ Pi sessions by ID. Hosted names resolve children first, then parent, then siblin
 ambiguous matches return IDs to use. `target: "main"` means your parent, or yourself at the top level.
 Only top-level agents can spawn sub-agents; there is no deeper nesting.
 
+Top-level agents can also launch a new top-level agent (a peer, not a child), when the
+user asks for a fresh main agent:
+
+```ts
+team({ action: "launch", name: "quiz-review-2", cwd: "/path/to/repo", message: "<first prompt>" })
+```
+
+It uses the top-level `agentModel`, appears in `list scope: "mains"` and the human's
+panel, and spawns its own sub-agents. Your abort or archive never reaches it. Its first
+answer is reported back to you; no reminder unless you set `timeoutSeconds`. `cwd`
+defaults to yours; names must be unique among top-level agents.
+
 Parents can cancel their own children's current work:
 
 ```ts
@@ -63,7 +75,7 @@ the parent's model/thinking. Usual configuration: names containing `review`
 spawn model or rename a task to bypass an unavailable model. Tell the user instead.
 The human edits defaults (including hosted top-level `agentModel`) with `/team models`;
 never edit the host's config yourself. Only the human can change an existing
-agent's model or create a top-level agent; neither is an agent-tool action. Model
+agent's model or choose a model when creating an agent. Model
 changes take effect at the next model request, as with Pi's `/model`.
 
 Agents load their cwd's project instructions and skills at creation. A cwd is not
