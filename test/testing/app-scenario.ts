@@ -287,7 +287,11 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[B"); const panel = await wait("enter/→ open"); print?.("sub-agent panel", panel);
     await key("\x1b[A"); assert.doesNotMatch(await frame(), /enter\/→ open/);
     await key("\x1b[B"); await key("\x1b"); assert.doesNotMatch(await frame(), /enter\/→ open/);
-    await key("\x1b[B"); await key("draft"); assert.match(await frame(), /draft/); await key("\x15");
+    await key("\x1b[B"); await key("draft"); assert.match(await frame(), /draft/);
+    // Mid-line on the last line, Down first goes to the end of the line, as in Pi; the next Down leaves the prompt.
+    await key("\x1b[D"); await key("\x1b[D"); await key("\x1b[B"); assert.doesNotMatch(await frame(), /enter\/→ open/);
+    await key("!"); assert.match(await frame(), /draft!/);
+    await key("\x1b[D"); await key("\x1b[B"); await key("\x1b[B"); await wait("enter/→ open"); await key("\x1b"); await key("\x15");
     await key("\x1b[B"); await key("\x1b[C"); const childChat = await wait("reader ·"); // → opens the selected sub-agent, like Enter
     assert.doesNotMatch(childChat, /↓ to select|team \$/); print?.("sub-agent chat", childChat);
     // Rails: the dashboard from 80 columns, the main agent above a sub-agent from 140; otherwise the footer path names them.

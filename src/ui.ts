@@ -977,10 +977,15 @@ export class ChatView implements Component, Focusable {
     this.transcript.changed();
   }
   render(width: number) { return this.layout.render(width); }
-  /** Down leaves the prompt from its last line, unless Pi's prompt history is being browsed (Down steps forward there). */
+  /**
+   * Down leaves the prompt only from the very end of the text. Elsewhere Pi's editor moves the cursor: down a
+   * (wrapped) line, or on the last line to its end, so a second Down leaves. Not while Pi's prompt history is
+   * being browsed (Down steps forward there).
+   */
   private atPromptEnd() {
     if ((this.editor as unknown as { historyIndex: number }).historyIndex > -1) return false;
-    return this.editor.getCursor().line >= this.editor.getLines().length - 1;
+    const { line, col } = this.editor.getCursor(); const lines = this.editor.getLines();
+    return line >= lines.length - 1 && col >= (lines.at(-1) ?? "").length;
   }
   handleInput(data: string) {
     if (this.editingExternally) return;
