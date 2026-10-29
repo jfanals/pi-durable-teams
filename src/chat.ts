@@ -13,10 +13,12 @@ export type ChatItem =
 /** A decision the agent is waiting on from the human: a `- [ ] **Title**: question` line in a reply, until `- [x] **Title**`. */
 export type Ask = { title: string; text: string; entry: string; at?: number };
 const ASK = /^\s*[-*] \[([ xX])\] \*\*(.+?)\*\*:?[ \t]*(.*)$/gm;
-/** `asks` after `items`' replies open and close theirs, by title (case-insensitive), oldest first. */
+/** `asks` after `items`' replies open and close theirs, by title (case-insensitive), oldest first.
+ * A message's `Re: Title — ` line (see askReply) closes that ask too: the human has answered it. */
 export function foldAsks(asks: readonly Ask[], items: readonly ChatItem[]): Ask[] {
   const open = new Map(asks.map(ask => [ask.title.toLowerCase(), ask]));
-  for (const item of items) if (item.kind === "reply") for (const part of item.parts) if (part.type === "text") {
+  for (const item of items) if (item.kind === "input" && item.from === "Human") for (const ask of answered([...open.values()], item.text)) open.delete(ask.title.toLowerCase());
+  else if (item.kind === "reply") for (const part of item.parts) if (part.type === "text") {
     for (const [, mark, title, text] of part.text.matchAll(ASK)) {
       const key = title!.trim().toLowerCase();
       open.delete(key);
@@ -27,6 +29,11 @@ export function foldAsks(asks: readonly Ask[], items: readonly ChatItem[]): Ask[
 }
 /** The editor line that answers an ask; the agent reads it as the subject of what follows. */
 export const askReply = (ask: Pick<Ask, "title">) => `Re: ${ask.title} — `;
+/** The asks a message answers: those named by one of its lines starting with their `Re:` line. */
+export const answered = (asks: readonly Ask[], text: string) => {
+  const lines = text.toLowerCase().split("\n").map(line => line.trim());
+  return asks.filter(ask => lines.some(line => line.startsWith(askReply(ask).trimEnd().toLowerCase())));
+};
 /** Messages waiting for the agent's next boundary, oldest first, as Pi shows them above its editor. */
 export type Queued = { mode: "steer" | "followUp"; text: string };
 /** Committed entries only. Prefix entries complete the oldest request without appearing in the returned page. */

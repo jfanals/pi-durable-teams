@@ -8,7 +8,7 @@ import { Value } from "typebox/value";
 import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { AgentDoc, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool, Harness, MemoryStorage, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
+import { AgentDoc, InboxDoc, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool, Harness, MemoryStorage, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { human, openTeams, Teams, type TeamsService } from "../src/teams.ts";
 import { textOf } from "../src/status.ts";
@@ -468,5 +468,17 @@ test("waiting on you: replies open and close asks by title; the roster carries t
     assert.deepEqual((await asks()).map(([title]) => title), ["Secret writes", "Webhook URLs: Zapier"]);
     await reply("* [X] **Secret writes**\n* [x] **Webhook URLs: Zapier**: yes");
     assert.deepEqual(await asks(), []);
+    // The human's "Re: Title — " line closes an ask at once: while the message waits in the inbox, then once placed.
+    // Another agent's message does not; the agent can still ask again under the same title.
+    await reply("- [ ] **Name**: a or b?\n- [ ] **Colour**: red?\n- [ ] **Size**: big?");
+    const message = (from: Actor, text: string) => ({ kind: "teams.message", data: { from, message: text } });
+    const peer: Actor = { id: "peer", teamId: "peer", role: "main", name: "peer" };
+    await service.harness.commit(async tx => { await tx.appendEntry(cid, { ...message(peer, "Re: Size — big"), model: [{ role: "user", content: "x", timestamp: 0 }] }); }, ctx);
+    await service.harness.commit(async tx => { (await tx.doc(InboxDoc, cid)).items.push({ id: "q1" as any, mode: "followUp", content: "Re: Name — a", entry: message(human, "thanks\nRe: name — a\nmore") as any }); }, ctx);
+    assert.deepEqual((await asks()).map(([title]) => title), ["Colour", "Size"]);
+    await service.harness.commit(async tx => { (await tx.doc(InboxDoc, cid)).items.splice(0); await tx.appendEntry(cid, { ...message(human, "Re: Name — a\nRe: Colour — red"), model: [{ role: "user", content: "x", timestamp: 0 }] }); }, ctx);
+    assert.deepEqual((await asks()).map(([title]) => title), ["Size"]);
+    await reply("- [ ] **Name**: a, but which a?");
+    assert.deepEqual((await asks()).map(([title]) => title), ["Size", "Name"]);
   } finally { await service.close(); }
 });

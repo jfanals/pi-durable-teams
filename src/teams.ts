@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { WorkerModel } from "./config.ts";
-import { chatItems, foldAsks, type Ask, type ChatItem, type Queued } from "./chat.ts";
+import { answered, chatItems, foldAsks, type Ask, type ChatItem, type Queued } from "./chat.ts";
 import { cacheMissText, piCacheMisses, piCacheWarming } from "./presentation.ts";
 import { CACHE_WARM_KIND, cacheWarming, type CacheWarmData } from "./warming.ts";
 import { NEW, agentNameError, suggestedAgentName, uniqueAgentName } from "./agent-name.ts";
@@ -674,17 +674,24 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   async function asksOf(agent: Agent, changed: Set<ConversationId>) {
     const conversationId = (agent.where as { conversationId: ConversationId }).conversationId;
     let scan = askScans.get(agent.id);
-    if (scan?.conversationId === conversationId && !changed.has(conversationId)) return scan.asks;
-    if (scan?.conversationId !== conversationId) scan = { conversationId, after: 0, asks: [] };
-    const conversation = await conversationOf(agent);
-    let cursor: Cursor | undefined;
-    do {
-      const page = await conversation.entries({ order: "ascending", minEntryId: (scan.after + 1) as EntryId }, 200, cursor, context);
-      if (page.items.length) scan = { conversationId, after: Math.max(scan.after, ...page.items.map(entry => Number(entry.id))), asks: foldAsks(scan.asks, chatItems([...page.items])) };
-      cursor = page.next;
-    } while (cursor);
-    askScans.set(agent.id, scan);
-    return scan.asks;
+    if (scan?.conversationId !== conversationId || changed.has(conversationId)) {
+      if (scan?.conversationId !== conversationId) scan = { conversationId, after: 0, asks: [] };
+      const conversation = await conversationOf(agent);
+      let cursor: Cursor | undefined;
+      do {
+        const page = await conversation.entries({ order: "ascending", minEntryId: (scan.after + 1) as EntryId }, 200, cursor, context);
+        if (page.items.length) scan = { conversationId, after: Math.max(scan.after, ...page.items.map(entry => Number(entry.id))), asks: foldAsks(scan.asks, chatItems([...page.items])) };
+        cursor = page.next;
+      } while (cursor);
+      askScans.set(agent.id, scan);
+    }
+    if (!scan.asks.length) return scan.asks;
+    // A message from the human still in the inbox answers its asks at once, before the agent reads it.
+    const inbox = (await harness.snapshot(InboxDoc, conversationId, context))?.items ?? [];
+    const waiting = inbox.flatMap(item => item.mode !== "write" && (item.entry?.data as { from?: Actor } | undefined)?.from?.id === human.id
+      ? [String((item.entry?.data as { message?: string }).message ?? textOf({ content: item.content }))] : []);
+    const closed = new Set(answered(scan.asks, waiting.join("\n")));
+    return scan.asks.filter(ask => !closed.has(ask));
   }
   async function refreshRoster() {
     while (registryDirty || dirtyConversations.size) {
