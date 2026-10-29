@@ -102,12 +102,16 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   assert.doesNotMatch(plain(panel.render(69))[0]!, /\$/);
   assert.match(summary[1]!, /^ +2 idle · team \$11\.312 \(sub\) · ↓ to select/); // idle workers are counted, their cost too
   assert.ok(panel.render(30).every(line => visibleWidth(line) <= 30));
-  // Down focuses it: every worker listed, running first; Up from the top returns to the prompt.
+  // Down focuses it on the running workers, idle ones still folded; moving past them lists the idle ones.
+  // Up from the top returns to the prompt.
   const editor = { handleInput: (d: string) => focus.push(`typed ${d}`), render: () => [], invalidate() {} };
   panel.enter(editor); panel.focused = true;
   const open = plain(panel.render(80));
-  assert.equal(open.length, 4); assert.match(open[0]!, /› .*reviewer/); assert.match(open[1]!, /scout +idle · last reply/); assert.match(open[2]!, /old +idle/);
-  panel.handleInput("\x1b[B"); panel.handleInput("\r");
+  assert.equal(open.length, 3); assert.match(open[0]!, /› .*reviewer/); assert.match(open[1]!, /^ +2 idle/);
+  panel.handleInput("\x1b[B");
+  const idle = plain(panel.render(80));
+  assert.equal(idle.length, 4); assert.match(idle[1]!, /› .*scout +idle · last reply/); assert.match(idle[2]!, /old +idle/);
+  panel.handleInput("\r");
   assert.equal(opened[0]?.name, "scout");
   panel.handleInput("\x1b[A"); panel.handleInput("\x1b[A");
   assert.equal(focus.at(-1), editor);

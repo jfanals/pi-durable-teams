@@ -58,10 +58,13 @@ test("pane rails fold other teams, expose the open team and highlight the path s
   const stack = ["main<tag>", "busy"];
   const rails = paneRails(agents, stack);
   assert.match(rails.dashboard, /main&lt;tag&gt;/);
-  assert.match(rails.dashboard, /data-open="idle"/);
+  // Idle sub-agents fold into the summary everywhere, the open agent too; its column lists them after a click.
+  assert.doesNotMatch(rails.dashboard + rails.main, /data-open="idle"/);
   assert.match(rails.dashboard, /data-open="busy"/);
   assert.doesNotMatch(rails.dashboard, /data-open="folded"/);
-  assert.match(rails.dashboard, /1 idle/);
+  assert.equal((rails.dashboard.match(/1 idle/g) ?? []).length, 2);
+  assert.match(rails.main, /data-action="idle"[^>]*>1 idle/);
+  assert.match(paneRails(agents, stack, true).main, /data-open="idle"/);
   assert.equal((rails.dashboard.match(/aria-current="true"/g) ?? []).length, 2);
   assert.match(rails.main, /data-depth="1"/);
   assert.match(rails.main, /◌/);

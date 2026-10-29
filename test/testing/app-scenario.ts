@@ -305,11 +305,13 @@ export async function appScenario(width: number, height: number, print?: (name: 
       await click(x, 0); await wait("enter/→ open"); await key("\x1b[C"); await wait("reader ·");
     }
     if (width >= 80) {
-      // The dashboard rail's header returns to the dashboard; its rows open agents, the open main listing its whole team.
+      // The dashboard rail's header returns to the dashboard; its rows open agents. Idle sub-agents stay folded there,
+      // the open main's too: they are listed only from its panel.
       await click(2, 0); await wait("n new"); await key("\r"); await wait("renamed ·");
       await click(4, await railRow("beta")); await wait("beta ·");
       await click(4, await railRow("renamed")); await wait("renamed ·");
-      await click(6, await railRow("reader")); await wait("reader ·");
+      assert.equal(await railRow("reader"), -1);
+      await key("\x1b[B"); await key("\x1b[C"); await wait("reader ·");
     }
     await key("\x1b[D"); const parentChat = await wait("enter/→ open"); assert.match(parentChat, /renamed/); print?.("back to parent panel", parentChat);
     await key("\x1b[D"); await wait("n new");

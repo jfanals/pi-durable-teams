@@ -55,6 +55,8 @@ Host disconnected — reconnecting…</div>${content}<div id="notice" role="stat
 }
 /** The list shows active agents or, toggled, archived ones; `agents` stays the host's full roster. */
 let showArchived = false;
+/** The open agent's idle sub-agents, listed in its column after a click on their summary line. */
+let showIdle = false;
 function list() {
   const scroll = document.querySelector(".list")?.scrollTop ?? 0;
   const focus = (document.activeElement as HTMLElement)?.dataset.open;
@@ -104,7 +106,7 @@ function status(clockOnly = false) {
   if (!a || screen !== "chat" || !document.querySelector("#path")) return;
   if (!clockOnly) {
     document.querySelector("#path")!.innerHTML = panePath(agents, stack);
-    const rails = paneRails(agents, stack);
+    const rails = paneRails(agents, stack, showIdle);
     document.querySelector(".rail.dash")!.innerHTML = rails.dashboard;
     document.querySelector(".rail.main")!.innerHTML = rails.main;
     document.querySelector("#status")!.textContent = statusWord(a);
@@ -121,6 +123,7 @@ function status(clockOnly = false) {
     .join("");
 }
 async function open(id: string, push = true) {
+  if (!stack.length || stack[0] !== id && !agents.find(a => a.id === stack[0])?.children.some(c => c.id === id)) showIdle = false;
   attachments = [];
   imageCache.clear();
   if (push) {
@@ -622,6 +625,10 @@ root.addEventListener("click", async (event) => {
       case "archived":
         showArchived = !showArchived;
         list();
+        break;
+      case "idle":
+        showIdle = true;
+        status();
         break;
       case "bottom": {
         const view = document.querySelector("#messages")!;

@@ -159,9 +159,13 @@ export class TeamPanel implements Component, Focusable {
         push(askLine(ask, selected), ask);
         if (selected && ask.text) for (const line of wrapTextWithAnsi(ask.text, Math.max(10, width - 4))) push(`    ${line}`, ask);
       }
+      // Idle workers stay folded into the summary line until the selection moves past the running ones.
       const worker = this.selected - this.asks.length;
-      const shown = window(this.workers, worker);
+      const running = this.workers.filter(w => w.running).length;
+      const folded = worker < running && running < this.workers.length;
+      const shown = window(folded ? this.workers.slice(0, running) : this.workers, Math.max(0, worker));
       for (const [i, w] of shown.rows.entries()) push(statusRow(w, width, shown.start + i === worker, now, t, nameWidth, this.frame), w);
+      if (folded) push(truncateToWidth(t.fg("dim", `  ${teamGlance(this.workers.slice(running)).summary}`), width));
       const more = asked ? (this.asks.length > visible ? `${this.selected + 1}/${this.asks.length} · ` : "")
         : this.compact || this.workers.length > visible ? `${worker + 1}/${this.workers.length} · ` : "";
       push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · ${asked ? "enter answer" : "enter/→ open"} · esc back`), width));

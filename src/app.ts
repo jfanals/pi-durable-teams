@@ -153,7 +153,7 @@ export class AgentsApp implements Component, Focusable {
       width: columns => railWidth(columns, 0.16, 18, 28), frame: () => this.frame,
       onHeader: () => this.collapseTo(0), onOpen: worker => this.openFromRail(worker.id),
       content: () => {
-        const lines = this.dashboard(this.stack[0]).map(({ agent, tree, summary }) => ({ worker: agent, tree, text: summary, open: !!agent && this.stack.includes(agent.id) }));
+        const lines = this.dashboard().map(({ agent, tree, summary }) => ({ worker: agent, tree, text: summary, open: !!agent && this.stack.includes(agent.id) }));
         return { header: this.theme.fg("accent", this.theme.bold("pi-agents")), lines };
       },
     });
@@ -163,9 +163,12 @@ export class AgentsApp implements Component, Focusable {
       content: () => {
         const main = this.rows().find(row => row.agent.id === this.stack[0])?.agent;
         if (!main) return { header: "", lines: [] };
-        const activity = statusWord(main);
-        return { header: this.theme.bold(main.name), lines: [{ text: activity },
-          ...main.children.map((child, i) => ({ worker: child, tree: tree(i, main.children.length), open: child.id === this.stack[1] }))] };
+        // As everywhere: active sub-agents get a row, idle ones fold into the summary line.
+        const { shown, summary } = teamGlance(main.children);
+        const rows = summary ? shown.length + 1 : shown.length;
+        return { header: this.theme.bold(main.name), lines: [{ text: statusWord(main) },
+          ...shown.map((child, i) => ({ worker: child, tree: tree(i, rows), open: child.id === this.stack[1] })),
+          ...(summary ? [{ tree: "└─ ", text: summary }] : [])] };
       },
     });
   }
@@ -216,15 +219,14 @@ export class AgentsApp implements Component, Focusable {
   }
   /**
    * Dashboard rows: each top-level agent, then its team at a glance as in Pi's panel. Running
-   * sub-agents get a row; the rest fold into one summary line, listed when the agent is opened.
+   * sub-agents get a row; the rest fold into one summary line, listed only from the open agent's panel.
    */
-  private dashboard(expand?: string) {
+  private dashboard() {
     const out: { agent?: AgentSummary; tree: string; summary?: string }[] = [];
     for (const agent of this.agents) {
       out.push({ agent, tree: "" });
       if (!agent.children.length) continue;
-      // The open agent's rail row lists its whole team.
-      const { shown, summary } = agent.id === expand ? { shown: agent.children, summary: "" } : teamGlance(agent.children);
+      const { shown, summary } = teamGlance(agent.children);
       const children = shown.map(w => agent.children.find(child => child.id === w.id)!);
       children.forEach((child, i) => out.push({ agent: child, tree: i === children.length - 1 && !summary ? "└─ " : "├─ " }));
       if (summary) out.push({ tree: "└─ ", summary });
