@@ -78,7 +78,10 @@ test("pane rails fold other teams, expose the open team and highlight the path s
   const asking = { ...agent("lead"), asks: [{ title: "URLs <b>", text: "(a) or (b)?", entry: "42", at: Date.now() - 7_200_000 }] };
   assert.match(paneRails([asking], ["lead"]).dashboard, /class="ask-count"[^>]*>1<\/span> lead/);
   assert.match(panePath([asking], ["lead"]), /id="title"><span class="ask-count"/);
-  assert.match(asksBar(asking), /data-ask="42" data-reply="Re: URLs &lt;b&gt; — "[^>]*>URLs &lt;b&gt;: \(a\) or \(b\)\? <small>2h ago<\/small>/);
+  assert.match(asksBar(asking), /data-ask="42" data-title="URLs &lt;b&gt;"[^>]*>URLs &lt;b&gt;: \(a\) or \(b\)\? <small>2h ago<\/small>/);
+  // Its options are buttons that carry the ask and the option for the "Re:" line.
+  const options = asksBar({ ...asking, asks: [{ ...asking.asks[0]!, options: ["Keep <a>", "Drop"] }] });
+  assert.match(options, /class="ask-options"><button [^>]*data-ask="42" data-title="URLs &lt;b&gt;" data-option="Keep &lt;a&gt;"[^>]*>Keep &lt;a&gt;<\/button><button [^>]*data-option="Drop"/);
   assert.match(transcript([{ id: "42", kind: "reply", parts: [{ type: "text", text: "- [ ] **URLs**: ?" }] }]), /data-entry="42"/);
   assert.equal(asksBar(agent("quiet")), "");
 });

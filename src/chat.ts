@@ -10,30 +10,54 @@ export type ChatItem =
   | { id: string; kind: "notice"; text: string; warning?: boolean }
   /** The summary that replaced the history before it, as Pi's compaction message shows it. */
   | { id: string; kind: "compaction"; summary: string; tokensBefore?: number };
-/** A decision the agent is waiting on from the human: a `- [ ] **Title**: question` line in a reply, until `- [x] **Title**`. */
-export type Ask = { title: string; text: string; entry: string; at?: number };
-const ASK = /^\s*[-*] \[([ xX])\] \*\*(.+?)\*\*:?[ \t]*(.*)$/gm;
+/** A decision the agent is waiting on from the human: a `- [ ] **Title**: question` line in a reply, until `- [x] **Title**`.
+ * `options` are the indented list items right under it, the choices the human can pick with a key. */
+export type Ask = { title: string; text: string; entry: string; at?: number; options?: string[] };
+const ASK = /^(\s*)[-*] \[([ xX])\] \*\*(.+?)\*\*:?[ \t]*(.*)$/;
+const OPTION = /^(\s*)(?:[-*+]|\d+[.)]) (?!\[[ xX]\] )(.+)$/;
+/** The `- [ ]`/`- [x]` lines in `text`, each with the options listed under it. */
+function askLines(text: string) {
+  const found: { open: boolean; title: string; text: string; options: string[] }[] = [];
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const [, indent, mark, title, rest] = lines[i]!.match(ASK) ?? [];
+    if (title === undefined) continue;
+    const options: string[] = [];
+    for (let option; (option = lines[i + 1]?.match(OPTION)) && option[1]!.length > indent!.length; i++) options.push(option[2]!.trim().slice(0, 500));
+    found.push({ open: mark === " ", title: title.trim(), text: rest!.trim().slice(0, 2000), options: options.slice(0, 9) });
+  }
+  return found;
+}
 /** `asks` after `items`' replies open and close theirs, by title (case-insensitive), oldest first.
  * A message's `Re: Title — ` line (see askReply) closes that ask too: the human has answered it. */
 export function foldAsks(asks: readonly Ask[], items: readonly ChatItem[]): Ask[] {
   const open = new Map(asks.map(ask => [ask.title.toLowerCase(), ask]));
   for (const item of items) if (item.kind === "input" && item.from === "Human") for (const ask of answered([...open.values()], item.text)) open.delete(ask.title.toLowerCase());
   else if (item.kind === "reply") for (const part of item.parts) if (part.type === "text") {
-    for (const [, mark, title, text] of part.text.matchAll(ASK)) {
-      const key = title!.trim().toLowerCase();
+    for (const line of askLines(part.text)) {
+      const key = line.title.toLowerCase();
       open.delete(key);
-      if (mark === " ") open.set(key, { title: title!.trim(), text: text!.trim().slice(0, 2000), entry: item.id, ...(item.at ? { at: item.at } : {}) });
+      if (line.open) open.set(key, { title: line.title, text: line.text, entry: item.id, ...(item.at ? { at: item.at } : {}), ...(line.options.length ? { options: line.options } : {}) });
     }
   }
   return [...open.values()];
 }
 /** The editor line that answers an ask; the agent reads it as the subject of what follows. */
 export const askReply = (ask: Pick<Ask, "title">) => `Re: ${ask.title} — `;
+const startsReply = (line: string, ask: Pick<Ask, "title">) => line.trim().toLowerCase().startsWith(askReply(ask).trimEnd().toLowerCase());
 /** The asks a message answers: those named by one of its lines starting with their `Re:` line. */
 export const answered = (asks: readonly Ask[], text: string) => {
-  const lines = text.toLowerCase().split("\n").map(line => line.trim());
-  return asks.filter(ask => lines.some(line => line.startsWith(askReply(ask).trimEnd().toLowerCase())));
+  const lines = text.split("\n");
+  return asks.filter(ask => lines.some(line => startsReply(line, ask)));
 };
+/** `draft` answering `ask` with `answer`: its `Re:` line replaced, or added at the end. */
+export function withReply(draft: string, ask: Pick<Ask, "title">, answer: string) {
+  const reply = askReply(ask) + answer;
+  const lines = draft.split("\n");
+  const at = lines.findIndex(line => startsReply(line, ask));
+  if (at >= 0) { lines[at] = reply; return lines.join("\n"); }
+  return draft.trimEnd() + (draft.trim() ? "\n" : "") + reply;
+}
 /** Messages waiting for the agent's next boundary, oldest first, as Pi shows them above its editor. */
 export type Queued = { mode: "steer" | "followUp"; text: string };
 /** Committed entries only. Prefix entries complete the oldest request without appearing in the returned page. */

@@ -6,7 +6,7 @@ import { escape as e, askCount, asksBar, info, footerInfo, transcript, paneRails
 import { archiveView, formatCost, formatDuration, statusTone, statusWord, teamGlance } from "../status.ts";
 import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
 import { NEW, agentNameError, suggestedAgentName } from "../agent-name.ts";
-import type { ChatItem } from "../chat.ts";
+import { withReply, type ChatItem } from "../chat.ts";
 import type { WorkerModel } from "../config.ts";
 
 const root = document.querySelector<HTMLElement>("#app")!;
@@ -249,18 +249,21 @@ async function older() {
 function saveDraft(id: string, text: string) {
   if (text.trim()) localStorage.setItem(`draft:${id}`, text); else localStorage.removeItem(`draft:${id}`);
 }
-/** An ask: show the reply it was asked in (loading older pages if needed) and add its "Re:" line to the draft. */
-async function answer(entry: string, reply: string) {
+/** An ask: add its "Re:" line to the draft, with `option` when one was picked (replacing an earlier pick),
+ * and centre the line it was asked on, usually at the end of its reply (loading older pages if needed). */
+async function answer(entry: string, title: string, option?: string) {
   const input = document.querySelector<HTMLTextAreaElement>("#message")!;
-  if (!input.value.includes(reply)) input.value = input.value.trimEnd() + (input.value.trim() ? "\n" : "") + reply;
+  if (option !== undefined) input.value = withReply(input.value, { title }, option);
+  else if (!input.value.includes(`Re: ${title} — `)) input.value = withReply(input.value, { title }, "");
   saveDraft(stack.at(-1)!, input.value);
   input.focus(); input.setSelectionRange(input.value.length, input.value.length);
   const version = generation;
   while (!items.some(item => item.id === entry) && next && version === generation) await older();
   const article = document.querySelector<HTMLElement>(`[data-entry="${CSS.escape(entry)}"]`);
   if (!article) return;
-  article.scrollIntoView({ block: "center", behavior: "smooth" });
-  article.classList.remove("flash"); void article.offsetWidth; article.classList.add("flash");
+  const line = [...article.querySelectorAll<HTMLElement>("li, p")].reverse().find(el => el.textContent?.includes(title)) ?? article;
+  line.scrollIntoView({ block: "center", behavior: "smooth" });
+  line.classList.remove("flash"); void line.offsetWidth; line.classList.add("flash");
 }
 async function refresh() {
   if (refreshing) {
@@ -604,7 +607,7 @@ root.addEventListener("click", async (event) => {
   try {
     if (el.dataset.depth !== undefined) { event.preventDefault(); collapseTo(Number(el.dataset.depth)); return; }
     if (el.dataset.rewind) { await rewind(el.dataset.rewind); return; }
-    if (el.dataset.ask) { await answer(el.dataset.ask, el.dataset.reply!); return; }
+    if (el.dataset.ask) { await answer(el.dataset.ask, el.dataset.title!, el.dataset.option); return; }
     if (el.dataset.open) {
       if (el.closest(".rail")) openFromRail(el.dataset.open);
       else await open(el.dataset.open);

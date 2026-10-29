@@ -491,5 +491,9 @@ test("waiting on you: replies open and close asks by title; the roster carries t
     assert.deepEqual((await asks()).map(([title]) => title), ["Size"]);
     await reply("- [ ] **Name**: a, but which a?");
     assert.deepEqual((await asks()).map(([title]) => title), ["Size", "Name"]);
+    // Indented list items under an ask are its options; a nested checkbox or an unindented item is not one.
+    await reply("Intro.\n- [ ] **Scope**: which?\n  - Asks only (recommended): smaller\n  1. Both\n  - [ ] **Nested**: x\n- Not an option\n- [ ] **Plain**: y");
+    const options = Object.fromEntries((await service.agents()).find(agent => agent.id === id)!.asks!.map(ask => [ask.title, ask.options]));
+    assert.deepEqual(options, { Size: undefined, Name: undefined, Scope: ["Asks only (recommended): smaller", "Both"], Nested: undefined, Plain: undefined });
   } finally { await service.close(); }
 });

@@ -1,4 +1,4 @@
-import { chatItems, type Ask, type ChatItem, type TranscriptEntry } from "../src/chat.ts";
+import { chatItems, withReply, type Ask, type ChatItem, type TranscriptEntry } from "../src/chat.ts";
 import { transcript } from "../src/web/render.ts";
 import { markdownForSelection } from "../src/copy.ts";
 import { liveStatus, type WorkerStatus } from "../src/status.ts";
@@ -81,7 +81,7 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   const prompt = { render: () => [], invalidate() {} };
   // The selection is a tinted band; here the tint shows as a leading "›".
   const tinted = { ...theme, bg: (_: string, t: string) => `›${t}` } as unknown as Theme;
-  const panel = new TeamPanel(panelTui, tinted, w => opened.push(w), { asks: { list: () => asks, draft: () => draft, cursorLine: () => cursor, answer: ask => answered.push(ask.title), prompt } });
+  const panel = new TeamPanel(panelTui, tinted, w => opened.push(w), { asks: { list: () => asks, draft: () => draft, cursorLine: () => cursor, answer: ask => answered.push(ask.title), pick: (ask, option) => { answered.push(`${ask.title}: ${option}`); draft = withReply(draft, ask, option); }, prompt } });
   assert.deepEqual(panel.render(80), []);
   const now = Date.now();
   const reviewer = liveStatus({ id: "1", name: "reviewer", live: { run: {}, tools: [{ callId: "c1", name: "read", status: "running" }] },
@@ -152,6 +152,22 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   assert.match(last.find(line => line.includes("›"))!, /› Ask 9/); assert.ok(last.some(line => /Question 9/.test(line)));
   assert.match(last.at(-1)!, /9\/9 · ↑↓ select · enter answer/);
   panel.handleInput("\x1b"); panel.focused = false;
+  // Options: Down walks through them, Enter or a number puts one in the draft and selects the next ask left.
+  asks = [{ title: "Scope", text: "Which?", entry: "30", options: ["Asks only", "Both"] }, { title: "Web", text: "Too?", entry: "31", options: ["Yes", "No"] }, { title: "Free", text: "Say", entry: "32" }];
+  draft = ""; cursor = 0; answered.length = 0;
+  panel.enter(editor); panel.focused = true;
+  const choosing = plain(panel.render(80));
+  assert.match(choosing.join("\n"), /1 +Asks only\n.*2 +Both/); assert.match(choosing.at(-1)!, /enter answer · 1-2 pick/);
+  panel.handleInput("\x1b[B"); panel.handleInput("\x1b[B");
+  assert.match(plain(panel.render(80)).find(line => line.includes("›"))!, /› +2 +Both/);
+  panel.handleInput("\r");
+  assert.equal(draft, "Re: Scope — Both"); assert.match(plain(panel.render(80)).find(line => line.includes("›"))!, /› Web/);
+  panel.handleInput("1"); assert.equal(draft, "Re: Scope — Both\nRe: Web — Yes");
+  assert.match(plain(panel.render(80)).find(line => line.includes("›"))!, /› Free/);
+  panel.handleInput("\x1b[A"); panel.handleInput("\x1b[A"); panel.handleInput("2"); // Up lands on the last option above; a new pick replaces the old one
+  assert.equal(draft, "Re: Scope — Both\nRe: Web — No"); assert.deepEqual(answered, ["Scope: Both", "Web: Yes", "Web: No"]);
+  panel.handleInput("\r"); assert.deepEqual(answered.at(-1), "Free"); assert.equal(focus.at(-1), editor); // no options: Enter answers as before
+  panel.focused = false;
   panel.setWorkers([]); asks = []; panel.dispose();
 
   // Real Durable transcript: input attribution, paired tool call/error, assistant Markdown, no system noise.

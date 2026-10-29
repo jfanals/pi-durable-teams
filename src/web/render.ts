@@ -10,7 +10,7 @@ import {
   formatDuration,
   formatTokens,
 } from "../status.ts";
-import { askReply, type ChatItem } from "../chat.ts";
+import type { ChatItem } from "../chat.ts";
 import type { Agent } from "./api.ts";
 import { marked } from "marked";
 export const escape = (text: unknown): string =>
@@ -44,7 +44,9 @@ export const markdown = (text: string, breaks = false): string =>
 export const askCount = (a: Agent) => a.asks?.length ? `<span class="ask-count" title="${a.asks.length} waiting on you">${a.asks.length}</span> ` : "";
 /** The open agent's asks above the composer: each jumps to where it was asked and adds its reply line. */
 export const asksBar = (a?: Agent) => (a?.asks ?? []).map(ask =>
-  `<button type="button" class="ask" data-ask="${escape(ask.entry)}" data-reply="${escape(askReply(ask))}" title="${escape(ask.text)}">${escape(ask.title)}${ask.text ? `: ${escape(ask.text)}` : ""}${ask.at ? ` <small>${escape(formatAgo(Date.now() - ask.at))}</small>` : ""}</button>`).join("");
+  `<button type="button" class="ask" data-ask="${escape(ask.entry)}" data-title="${escape(ask.title)}" title="${escape(ask.text)}">${escape(ask.title)}${ask.text ? `: ${escape(ask.text)}` : ""}${ask.at ? ` <small>${escape(formatAgo(Date.now() - ask.at))}</small>` : ""}</button>`
+  + (ask.options?.length ? `<div class="ask-options">${ask.options.map(option =>
+    `<button type="button" data-ask="${escape(ask.entry)}" data-title="${escape(ask.title)}" data-option="${escape(option)}" title="${escape(option)}">${escape(option)}</button>`).join("")}</div>` : "")).join("");
 export const info = (a: Agent) =>
   [
     a.model,
