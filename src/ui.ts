@@ -67,20 +67,22 @@ export function statusRow(w: WorkerStatus, width: number, selected: boolean, now
  * is selectable, the selected ask shows its full text, Enter answers it or opens the worker.
  * Up past the first row, Esc, or typing returns to the prompt.
  */
+/** The open agent's asks for the panel: the list, the draft that may already answer some, and where Enter sends them. */
+export type PanelAsks = { list(): Ask[]; draft(): string; answer(ask: Ask): void; prompt: Component };
 export class TeamPanel implements Component, Focusable {
   focused = false;
   private workers: WorkerStatus[] = [];
   private asks: Ask[] = [];
-  private asksOf?: { list(): Ask[]; answer(ask: Ask): void };
+  private asksOf?: PanelAsks;
   private selected = 0;
   private frame = 0;
   private ticker?: ReturnType<typeof setInterval>;
-  private rows: (WorkerStatus | Ask | undefined)[] = [];
+  private rows: (WorkerStatus | Ask | "more" | undefined)[] = [];
   private returnTo?: Component;
   private focus: (component: Component) => void;
   private compact: boolean;
   private tui: TUI; private theme: Theme; private onOpen: (worker: WorkerStatus) => void;
-  constructor(tui: TUI, theme: Theme, onOpen: (worker: WorkerStatus) => void, options: { compact?: boolean; focus?: (component: Component) => void; asks?: { list(): Ask[]; answer(ask: Ask): void } } = {}) { this.tui = tui; this.theme = theme; this.onOpen = onOpen; this.compact = options.compact ?? false; this.focus = options.focus ?? (component => tui.setFocus(component)); this.asksOf = options.asks; }
+  constructor(tui: TUI, theme: Theme, onOpen: (worker: WorkerStatus) => void, options: { compact?: boolean; focus?: (component: Component) => void; asks?: PanelAsks } = {}) { this.tui = tui; this.theme = theme; this.onOpen = onOpen; this.compact = options.compact ?? false; this.focus = options.focus ?? (component => tui.setFocus(component)); this.asksOf = options.asks; }
 
   get hasWorkers() { return this.workers.length > 0; }
   get hasRows() { return this.workers.length + this.asks.length > 0; }
@@ -109,7 +111,15 @@ export class TeamPanel implements Component, Focusable {
     if (!running && this.ticker) { clearInterval(this.ticker); this.ticker = undefined; }
     this.tui.requestRender();
   }
-  enter(editor: Component, target?: string) { const worker = this.workers.findIndex(w => w.id === target); this.returnTo = editor; this.selected = worker >= 0 ? this.asks.length + worker : 0; this.focus(this); this.tui.requestRender(); }
+  /** Asks whose "Re:" line is already in the draft: still open until the agent closes them, shown dimmed. */
+  private drafted(ask: Ask) { return (this.asksOf?.draft() ?? "").toLowerCase().includes(askReply(ask).trimEnd().toLowerCase()); }
+  /** Focus the panel: on `target`'s worker, else on the first ask not yet in the draft. */
+  enter(editor: Component, target?: string) {
+    const worker = this.workers.findIndex(w => w.id === target);
+    this.returnTo = editor;
+    this.selected = worker >= 0 ? this.asks.length + worker : Math.max(0, this.asks.findIndex(ask => !this.drafted(ask)));
+    this.focus(this); this.tui.requestRender();
+  }
   private leave(forward?: string) {
     const editor = this.returnTo;
     if (!editor) return;
@@ -126,25 +136,33 @@ export class TeamPanel implements Component, Focusable {
     this.rows = [];
     if (!this.hasRows) return [];
     const lines: string[] = [];
-    const push = (line: string, row?: WorkerStatus | Ask) => { lines.push(line); this.rows.push(row); };
-    const askLine = (ask: Ask, selected: boolean) => truncateToWidth(`${selected ? t.fg("accent", "› ") : "  "}${t.fg("warning", selected ? t.bold(ask.title) : ask.title)}${ask.at ? t.fg("dim", ` · ${formatAgo(now - ask.at)}`) : ""}`, width);
+    const push = (line: string, row?: WorkerStatus | Ask | "more") => { lines.push(line); this.rows.push(row); };
+    const askLine = (ask: Ask, selected: boolean) => {
+      const title = selected ? t.bold(ask.title) : ask.title;
+      const drafted = this.drafted(ask);
+      return truncateToWidth(`${selected ? t.fg("accent", "› ") : "  "}${drafted ? t.fg("dim", title) : t.fg("warning", title)}${t.fg("dim", `${drafted ? " · in draft" : ""}${ask.at ? ` · ${formatAgo(now - ask.at)}` : ""}`)}`, width);
+    };
     const asked = this.selected < this.asks.length;
+    // Leave room for the conversation and prompt on short terminals.
+    const visible = Math.max(1, Math.min(VISIBLE_FOCUSED, (this.tui.terminal?.rows ?? 24) - 12));
+    const window = <T,>(rows: T[], at: number) => { const start = Math.max(0, Math.min(at - Math.floor(visible / 2), rows.length - visible)); return { start, rows: rows.slice(start, start + visible) }; };
     if (this.focused) {
-      for (const [i, ask] of this.asks.entries()) {
-        push(askLine(ask, i === this.selected), ask);
-        if (i === this.selected && ask.text) for (const line of wrapTextWithAnsi(ask.text, Math.max(10, width - 4))) push(`    ${line}`, ask);
+      const shownAsks = window(this.asks, asked ? this.selected : 0);
+      for (const [i, ask] of shownAsks.rows.entries()) {
+        const selected = shownAsks.start + i === this.selected;
+        push(askLine(ask, selected), ask);
+        if (selected && ask.text) for (const line of wrapTextWithAnsi(ask.text, Math.max(10, width - 4))) push(`    ${line}`, ask);
       }
-      // Leave room for the conversation and prompt on short terminals.
-      const visible = Math.max(1, Math.min(VISIBLE_FOCUSED, (this.tui.terminal?.rows ?? 24) - 12));
       const worker = this.selected - this.asks.length;
-      const start = Math.max(0, Math.min(worker - Math.floor(visible / 2), this.workers.length - visible));
-      for (const [i, w] of this.workers.slice(start, start + visible).entries()) push(statusRow(w, width, start + i === worker, now, t, nameWidth, this.frame), w);
-      const more = !asked && (this.compact || this.workers.length > visible) ? `${worker + 1}/${this.workers.length} · ` : "";
+      const shown = window(this.workers, worker);
+      for (const [i, w] of shown.rows.entries()) push(statusRow(w, width, shown.start + i === worker, now, t, nameWidth, this.frame), w);
+      const more = asked ? (this.asks.length > visible ? `${this.selected + 1}/${this.asks.length} · ` : "")
+        : this.compact || this.workers.length > visible ? `${worker + 1}/${this.workers.length} · ` : "";
       push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · ${asked ? "enter answer" : "enter/→ open"} · esc back`), width));
       return lines;
     }
     for (const ask of this.asks.slice(0, VISIBLE_ASKS)) push(askLine(ask, false), ask);
-    if (this.asks.length > VISIBLE_ASKS) push(truncateToWidth(t.fg("dim", `  +${this.asks.length - VISIBLE_ASKS} more`), width));
+    if (this.asks.length > VISIBLE_ASKS) push(truncateToWidth(t.fg("dim", `  +${this.asks.length - VISIBLE_ASKS} more · ↓`), width), "more");
     if (!this.workers.length) { push(truncateToWidth(t.fg("dim", "  ↓ to select"), width)); return lines; }
     const { shown, summary } = teamGlance(this.workers, this.compact ? Infinity : VISIBLE_RUNNING);
     for (const w of shown) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
@@ -165,6 +183,7 @@ export class TeamPanel implements Component, Focusable {
     if (event.type !== "click" || event.button !== "left") return undefined;
     const row = this.rows[event.y];
     if (!row) return undefined;
+    if (row === "more") { if (this.asksOf) this.enter(this.asksOf.prompt); return { handled: true }; }
     if ("entry" in row) { this.answer(row); return { handled: true }; }
     this.selected = this.asks.length + Math.max(0, this.workers.indexOf(row));
     this.onOpen(row);
@@ -709,7 +728,7 @@ export class ChatView implements Component, Focusable {
     if (children) this.panel = new TeamPanel(tui, theme, children.open, { compact: true, focus: component => {
       this.panel!.focused = component === this.panel;
       this.editor.focused = component !== this.panel;
-    }, asks: { list: () => this.transcript.status?.asks ?? [], answer: ask => void this.answer(ask) } });
+    }, asks: { list: () => this.transcript.status?.asks ?? [], draft: () => this.editor.getText(), answer: ask => void this.answer(ask), prompt: this.editor } });
     const scroll = new HistoryScroll(this.transcript);
     const footer = { render: (width: number) => {
       const s = this.transcript.status;
@@ -918,6 +937,11 @@ export class ChatView implements Component, Focusable {
     this.transcript.changed();
   }
   render(width: number) { return this.layout.render(width); }
+  /** Down leaves the prompt from its last line, unless Pi's prompt history is being browsed (Down steps forward there). */
+  private atPromptEnd() {
+    if ((this.editor as unknown as { historyIndex: number }).historyIndex > -1) return false;
+    return this.editor.getCursor().line >= this.editor.getLines().length - 1;
+  }
   handleInput(data: string) {
     if (this.editingExternally) return;
     if (this.picker) { this.picker.input(data); this.transcript.changed(); return; }
@@ -931,7 +955,7 @@ export class ChatView implements Component, Focusable {
     }
     if (matchesKey(data, Key.left) && !this.editor.getText()) return this.actions.back();
     if (this.panel?.focused) { this.panel.handleInput(data); return; }
-    if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasRows) { this.panel.enter(this.editor); return; }
+    if (matchesKey(data, Key.down) && this.panel?.hasRows && this.atPromptEnd()) { this.panel.enter(this.editor); return; }
     if (getKeybindings().matches(data, "app.editor.external")) { void this.openExternalEditor(); return; }
     if (getKeybindings().matches(data, "app.clipboard.pasteImage")) { void this.pasteClipboard(); return; }
     if (this.editor.isShowingAutocomplete()) { this.editor.handleInput(data); return; }

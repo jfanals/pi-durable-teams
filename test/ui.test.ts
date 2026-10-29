@@ -77,8 +77,9 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   // Team panel: running workers one per line with activity, time, context and cost; others only counted, with the team's cost.
   const focus: unknown[] = []; const opened: WorkerStatus[] = [];
   const panelTui = { setFocus: (c: unknown) => focus.push(c), requestRender() {} } as unknown as TUI;
-  const answered: string[] = []; let asks: Ask[] = [];
-  const panel = new TeamPanel(panelTui, theme, w => opened.push(w), { asks: { list: () => asks, answer: ask => answered.push(ask.title) } });
+  const answered: string[] = []; let asks: Ask[] = []; let draft = "";
+  const prompt = { render: () => [], invalidate() {} };
+  const panel = new TeamPanel(panelTui, theme, w => opened.push(w), { asks: { list: () => asks, draft: () => draft, answer: ask => answered.push(ask.title), prompt } });
   assert.deepEqual(panel.render(80), []);
   const now = Date.now();
   const reviewer = liveStatus({ id: "1", name: "reviewer", live: { run: {}, tools: [{ callId: "c1", name: "read", status: "running" }] },
@@ -124,6 +125,19 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   panel.handleInput("\x1b[A"); panel.handleInput("\r");
   assert.deepEqual(answered, ["Pick a name"]); assert.equal(focus.at(-1), editor);
   panel.focused = false;
+  // Many asks: five titles then "+N more"; ones already answered in the draft are dimmed, and Down starts on the first left.
+  asks = Array.from({ length: 9 }, (_, i) => ({ title: `Ask ${i + 1}`, text: `Question ${i + 1}`, entry: String(10 + i) }));
+  draft = "Re: Ask 1 — yes\nRe: ask 2 — no\n";
+  const many = plain(panel.render(80));
+  assert.match(many[0]!, /Ask 1 · in draft/); assert.match(many[1]!, /Ask 2 · in draft/); assert.doesNotMatch(many[2]!, /in draft/);
+  assert.match(many[5]!, /\+4 more/);
+  panel.enter(editor); panel.focused = true;
+  assert.match(plain(panel.render(80)).find(line => line.includes("›"))!, /› Ask 3/);
+  for (let i = 0; i < 6; i++) panel.handleInput("\x1b[B"); // every ask is reachable, the list scrolls
+  const last = plain(panel.render(80));
+  assert.match(last.find(line => line.includes("›"))!, /› Ask 9/); assert.ok(last.some(line => /Question 9/.test(line)));
+  assert.match(last.at(-1)!, /9\/9 · ↑↓ select · enter answer/);
+  panel.handleInput("\x1b"); panel.focused = false;
   panel.setWorkers([]); asks = []; panel.dispose();
 
   // Real Durable transcript: input attribution, paired tool call/error, assistant Markdown, no system noise.
