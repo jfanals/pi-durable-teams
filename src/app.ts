@@ -10,7 +10,7 @@ import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent"
 import { type WorkerModel } from "./config.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { workerSource, type HostSource } from "./source.ts";
-import { ChatView, RAIL_DASHBOARD_MIN, RAIL_MAIN_MIN, Rail, railWidth, statusCard } from "./ui.ts";
+import { ChatView, RAIL_DASHBOARD_MIN, RAIL_MAIN_MIN, Rail, railWidth, agentCard, dimLine } from "./ui.ts";
 import { cmuxTab } from "./cmux.ts";
 import { markdownForSelection } from "./copy.ts";
 
@@ -154,7 +154,7 @@ export class AgentsApp implements Component, Focusable {
       onHeader: () => this.collapseTo(0), onOpen: worker => this.openFromRail(worker.id),
       content: () => {
         const lines = this.dashboard().map(({ agent, tree, summary }) => ({ worker: agent, tree, text: summary, open: !!agent && this.stack.includes(agent.id) }));
-        return { header: this.theme.fg("dim", "agents"), lines };
+        return { header: this.theme.fg("dim", " agents"), lines };
       },
     });
     this.mainRail = new Rail(this.tui, this.theme, {
@@ -166,7 +166,7 @@ export class AgentsApp implements Component, Focusable {
         // As everywhere: active sub-agents get a row, idle ones fold into the summary line.
         const { shown, summary } = teamGlance(main.children);
         const rows = summary ? shown.length + 1 : shown.length;
-        return { header: this.theme.bold(main.name), lines: [{ text: statusWord(main) },
+        return { header: ` ${this.theme.bold(main.name)}`, lines: [{ text: statusWord(main) },
           ...shown.map((child, i) => ({ worker: child, tree: tree(i, rows), open: child.id === this.stack[1] })),
           ...(summary ? [{ tree: "└─ ", text: summary }] : [])] };
       },
@@ -401,26 +401,24 @@ export class AgentsApp implements Component, Focusable {
     const keys = this.showArchived ? ["↑↓ select · enter/→ open", "u unarchive · d delete · tab active · q quit"]
       : ["↑↓ select · enter/→ open · n new", `r rename · a archive${this.archivedCount ? " · tab archived" : ""} · q quit`];
     const hints = this.showKeys ? (width >= 75 ? [keys.join(" · ")] : keys) : [];
-    // Two lines per agent, a blank line between teams; the selected agent is a tinted band.
-    const blocks = rows.map(({ agent, tree, summary }, index) => {
-      const lines = agent ? statusCard(agent, width, rows[index] === selectable[this.selected], Date.now(), t, this.frame, tree)
-        : [truncateToWidth(`  ${t.fg("dim", `${tree}${summary}`)}`, width)];
-      return !tree && index ? ["", ...lines] : lines;
-    });
+    // Cards and spacing as in the rails: two lines per agent, the selected one a tinted band.
+    const blocks = rows.map(({ agent, tree, summary }, index) => agent
+      ? agentCard(agent, width, t, { selected: rows[index] === selectable[this.selected], frame: this.frame, tree })
+      : [dimLine(`${tree}${summary}`, width, t)]);
     const at = rows.indexOf(selectable[this.selected]!);
     const capacity = Math.max(2, height - 5 - hints.length);
     let start = 0;
     while (start < at && blocks.slice(start, at + 1).flat().length > capacity) start++;
     const body = blocks.slice(start).flat().slice(0, capacity);
-    const lines = [t.fg("dim", this.showArchived ? "archived agents" : "agents"), "", ...body];
+    const lines = [t.fg("dim", ` ${this.showArchived ? "archived agents" : "agents"}`), "", ...body];
     while (lines.length < height - 2 - hints.length) lines.push("");
     const all = this.rows();
     const total = formatCost(all.reduce((sum, row) => sum + (row.agent.cost ?? 0), 0));
     const running = this.agents.filter(a => a.running).length;
     const summary = this.showArchived ? `${this.agents.length} archived` : `${running} running · ${this.agents.length - running} idle${this.archivedCount ? ` · ${this.archivedCount} archived` : ""} · total ${total || "$0.000"}${all.some(row => row.agent.subscription) ? " (sub)" : ""}`;
     const short = `${this.showArchived ? "u unarchive" : "n new"} · ? ${this.showKeys ? "hide keys" : "keys"}`;
-    const gap = width - visibleWidth(summary) - visibleWidth(short);
-    lines.push(t.fg("dim", gap >= 2 ? summary + " ".repeat(gap) + short : `${summary} · ${short}`), this.note, ...hints.map(line => t.fg("dim", line)));
+    const gap = width - 2 - visibleWidth(summary) - visibleWidth(short);
+    lines.push(dimLine(gap >= 2 ? summary + " ".repeat(gap) + short : `${summary} · ${short}`, width, t), this.note ? ` ${this.note}` : "", ...hints.map(line => dimLine(line, width, t)));
     return lines.map(line => truncateToWidth(line, width));
   }
   render(width: number): string[] {

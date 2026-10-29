@@ -62,31 +62,24 @@ function meta(w: WorkerStatus, width: number, now: number, modelMinWidth: number
   return [model, time, formatContext(w), width >= 70 && formatCost(w.cost)].filter(Boolean).join(" · ");
 }
 
-export function statusRow(w: WorkerStatus, width: number, selected: boolean, now: number, theme: Theme, nameWidth: number, frame = 0, idleText?: string, modelMinWidth = 80, tree = "") {
-  const t = theme;
-  const name = truncateToWidth(clean(w.name), nameWidth, "…", true);
-  const left = `${selected ? t.fg("accent", "› ") : "  "}${t.fg("dim", tree)}${markOf(w, t, frame)} ${askCount(w, t)}${selected ? t.fg("accent", t.bold(name)) : w.running ? name : t.fg("muted", name)}  `;
-  const right = meta(w, width, now, modelMinWidth);
-  const showRight = width >= 40 && right;
-  const middle = w.running ? w.activity ?? "running"
-    : idleText ?? `idle${w.finishedAt ? ` · last reply ${formatAgo(now - w.finishedAt)}` : ""}`;
-  const space = width - visibleWidth(left) - (showRight ? visibleWidth(right) + 2 : 0);
-  const mid = width >= 60 && space > 4 ? truncateToWidth(w.running ? middle : t.fg("dim", middle), space, "…", true) : " ".repeat(Math.max(0, space));
-  return truncateToWidth(`${left}${mid}${showRight ? `  ${t.fg("dim", right)}` : ""}`, width);
-}
-
-/** A dashboard row as two lines: mark and name, details on the right; what it is doing beneath. The selection is a tinted band. */
-export function statusCard(w: WorkerStatus, width: number, selected: boolean, now: number, theme: Theme, frame = 0, tree = "") {
+/**
+ * An agent as two lines, the same on the dashboard, in the rails and in the team panel: mark and name, with
+ * model, time, context and cost on the right when there is room; what it is doing beneath. The selected or
+ * open agent is a tinted band.
+ */
+export function agentCard(w: WorkerStatus, width: number, theme: Theme, { selected = false, now = Date.now(), frame = 0, tree = "" } = {}) {
   const t = theme;
   const name = clean(w.name);
-  const left = `  ${t.fg("dim", tree)}${markOf(w, t, frame)} ${askCount(w, t)}${selected || w.running ? t.bold(name) : t.fg("muted", name)}`;
+  const left = ` ${t.fg("dim", tree)}${markOf(w, t, frame)} ${askCount(w, t)}${selected || w.running ? t.bold(name) : t.fg("muted", name)}`;
   const right = width >= 50 ? meta(w, width, now, 80) : "";
   const gap = width - 1 - visibleWidth(left) - visibleWidth(right);
   const lines = [`${left}${right && gap >= 2 ? `${" ".repeat(gap)}${t.fg("dim", right)}` : ""}`,
-    `  ${t.fg("dim", treeBelow(tree))}  ${statusText(w, t, w.finishedAt ? ` · last reply ${formatAgo(now - w.finishedAt)}` : "")}`]
+    ` ${t.fg("dim", treeBelow(tree))}  ${statusText(w, t, w.finishedAt ? ` · last reply ${formatAgo(now - w.finishedAt)}` : "")}`]
     .map(line => truncateToWidth(line, width, "…"));
   return selected ? lines.map(line => t.bg("selectedBg", line + " ".repeat(Math.max(0, width - visibleWidth(line))))) : lines;
 }
+/** A line under the agents, such as a folded team's summary or the keys, indented like a card's status line. */
+export const dimLine = (text: string, width: number, theme: Theme) => truncateToWidth(theme.fg("dim", ` ${text}`), width, "…");
 
 /**
  * Team panel under the prompt. First the asks waiting on the human (titles), then the team: running
@@ -164,7 +157,6 @@ export class TeamPanel implements Component, Focusable {
   render(width: number): string[] {
     const t = this.theme;
     const now = Date.now();
-    const nameWidth = Math.min(16, Math.max(6, ...this.workers.map(w => visibleWidth(clean(w.name)))));
     if (this.asksOf) this.setAsks(this.asksOf.list());
     this.rows = [];
     if (!this.hasRows) return [];
@@ -173,7 +165,8 @@ export class TeamPanel implements Component, Focusable {
     const askLine = (ask: Ask, selected: boolean) => {
       const title = selected ? t.bold(ask.title) : ask.title;
       const drafted = this.drafted(ask);
-      return truncateToWidth(`${selected ? t.fg("accent", "› ") : "  "}${drafted ? t.fg("dim", title) : t.fg("error", title)}${t.fg("dim", `${drafted ? " · in draft" : ""}${ask.at ? ` · ${formatAgo(now - ask.at)}` : ""}`)}`, width);
+      const line = truncateToWidth(` ${drafted ? t.fg("dim", title) : t.fg("error", title)}${t.fg("dim", `${drafted ? " · in draft" : ""}${ask.at ? ` · ${formatAgo(now - ask.at)}` : ""}`)}`, width);
+      return selected ? t.bg("selectedBg", line + " ".repeat(Math.max(0, width - visibleWidth(line)))) : line;
     };
     const asked = this.selected < this.asks.length;
     // Leave room for the conversation and prompt on short terminals.
@@ -191,11 +184,11 @@ export class TeamPanel implements Component, Focusable {
       const running = this.workers.filter(w => w.running).length;
       const folded = worker < running && running < this.workers.length;
       const shown = window(folded ? this.workers.slice(0, running) : this.workers, Math.max(0, worker));
-      for (const [i, w] of shown.rows.entries()) push(statusRow(w, width, shown.start + i === worker, now, t, nameWidth, this.frame), w);
-      if (folded) push(truncateToWidth(t.fg("dim", `  ${teamGlance(this.workers.slice(running)).summary}`), width));
+      for (const [i, w] of shown.rows.entries()) for (const line of agentCard(w, width, t, { selected: shown.start + i === worker, now, frame: this.frame })) push(line, w);
+      if (folded) push(dimLine(teamGlance(this.workers.slice(running)).summary, width, t));
       const more = asked ? (this.asks.length > visible ? `${this.selected + 1}/${this.asks.length} · ` : "")
         : this.compact || this.workers.length > visible ? `${worker + 1}/${this.workers.length} · ` : "";
-      push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · ${asked ? "enter answer" : "enter/→ open"} · esc back`), width));
+      push(dimLine(`${more}↑↓ select · ${asked ? "enter answer" : "enter/→ open"} · esc back`, width, t));
       return lines;
     }
     // Collapsed: the first titles, plus the ask being answered in the prompt, shown in full.
@@ -206,11 +199,11 @@ export class TeamPanel implements Component, Focusable {
       push(askLine(ask, false), ask);
       if (ask === editing && ask.text) for (const line of wrapTextWithAnsi(ask.text, Math.max(10, width - 4))) push(`    ${line}`, ask);
     }
-    if (this.asks.length > glance.length) push(truncateToWidth(t.fg("dim", `  +${this.asks.length - glance.length} more · ↓`), width), "more");
-    if (!this.workers.length) { push(truncateToWidth(t.fg("dim", "  ↓ to select"), width)); return lines; }
+    if (this.asks.length > glance.length) push(dimLine(`+${this.asks.length - glance.length} more · ↓`, width, t), "more");
+    if (!this.workers.length) { push(dimLine("↓ to select", width, t)); return lines; }
     const { shown, summary } = teamGlance(this.workers, this.compact ? Infinity : VISIBLE_RUNNING);
-    for (const w of shown) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
-    push(truncateToWidth(t.fg("dim", `  ${shown.length || summary.includes("team ") ? "" : "team · "}${summary ? `${summary} · ` : ""}↓ to select`), width));
+    for (const w of shown) for (const line of agentCard(w, width, t, { now, frame: this.frame })) push(line, w);
+    push(dimLine(`${shown.length || summary.includes("team ") ? "" : "team · "}${summary ? `${summary} · ` : ""}↓ to select`, width, t));
     return lines;
   }
   handleInput(data: string) {
@@ -264,18 +257,14 @@ export class Rail implements Component {
     const inner = Math.max(1, width - 2);
     const { header, lines } = this.content(this.frame());
     const out: string[] = []; this.rows = [];
-    const push = (text: string, row?: WorkerStatus | "header", open = false) => {
+    const push = (text: string, row?: WorkerStatus | "header") => {
       const cut = truncateToWidth(text, inner, "…");
-      const line = `${cut}${" ".repeat(Math.max(0, inner - visibleWidth(cut)))}`;
-      out.push(`${open ? t.bg("selectedBg", line) : line} ${t.fg("borderMuted", "│")}`); this.rows.push(row);
+      out.push(`${cut}${" ".repeat(Math.max(0, inner - visibleWidth(cut)))} ${t.fg("borderMuted", "│")}`); this.rows.push(row);
     };
     push(header, "header"); push("");
-    // Two lines per agent, as on the dashboard: mark and name, then what it is doing and its model.
     for (const { worker, tree = "", text, open } of lines) {
-      if (!worker) { push(t.fg("dim", `${tree}${text ?? ""}`)); continue; }
-      const name = clean(worker.name);
-      push(`${t.fg("dim", tree)}${markOf(worker, t, this.frame())} ${askCount(worker, t)}${open || worker.running ? t.bold(name) : t.fg("muted", name)}`, worker, open);
-      push(`${t.fg("dim", treeBelow(tree))}  ${statusText(worker, t, worker.model ? ` · ${worker.model}` : "")}`, worker, open);
+      if (!worker) { push(dimLine(`${tree}${text ?? ""}`, inner, t)); continue; }
+      for (const line of agentCard(worker, inner, t, { selected: open, frame: this.frame(), tree })) push(line, worker);
     }
     while (out.length < this.tui.terminal.rows) push("");
     return out;

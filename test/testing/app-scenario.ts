@@ -72,7 +72,7 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x15");
     await key("Hello"); await key("\r"); const chat = await wait("Hello from the faux agent."); print?.("chat", chat);
     // From 80 columns the dashboard stays beside the chat as a narrow rail; below, only the chat shows and the footer names the path.
-    if (width >= 80) assert.match(chat, /^agents +│/); else assert.doesNotMatch(chat, /beta/);
+    if (width >= 80) assert.match(chat, /^ agents +│/); else assert.doesNotMatch(chat, /beta/);
     assert.match(chat, /↑.*↓/);
     assert.match(chat, /faux-1/);
     assert.match(chat, /\(footer-test\) • alpha/);
@@ -291,8 +291,8 @@ export async function appScenario(width: number, height: number, print?: (name: 
     await key("\x1b[B"); await key("\x1b[C"); const childChat = await wait("reader ·"); // → opens the selected sub-agent, like Enter
     assert.doesNotMatch(childChat, /↓ to select|team \$/); print?.("sub-agent chat", childChat);
     // Rails: the dashboard from 80 columns, the main agent above a sub-agent from 140; otherwise the footer path names them.
-    assert.equal(/^agents +│/.test(childChat), width >= 80);
-    assert.equal(/^agents +│ renamed +│/.test(childChat), width >= 140);
+    assert.equal(/^ agents +│/.test(childChat), width >= 80);
+    assert.equal(/^ agents +│  renamed +│/.test(childChat), width >= 140);
     if (width < 140) assert.match(childChat, /pi-agents › renamed › reader ·/);
     // alt+2 collapses to the main agent, alt+1 to the dashboard; enter, ↓ and → then open as before.
     await key("\x1b2"); await wait("enter/→ open"); await key("\x1b[C"); await wait("reader ·");

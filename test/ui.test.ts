@@ -74,12 +74,14 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
     { args: { action: "send" }, isError: true }).render(80)).join("\n");
   assert.match(failed, /Worker stopped/);
 
-  // Team panel: running workers one per line with activity, time, context and cost; others only counted, with the team's cost.
+  // Team panel: running workers as two-line cards (name with model, time, context and cost; activity beneath); others only counted, with the team's cost.
   const focus: unknown[] = []; const opened: WorkerStatus[] = [];
   const panelTui = { setFocus: (c: unknown) => focus.push(c), requestRender() {} } as unknown as TUI;
   const answered: string[] = []; let asks: Ask[] = []; let draft = ""; let cursor = 0;
   const prompt = { render: () => [], invalidate() {} };
-  const panel = new TeamPanel(panelTui, theme, w => opened.push(w), { asks: { list: () => asks, draft: () => draft, cursorLine: () => cursor, answer: ask => answered.push(ask.title), prompt } });
+  // The selection is a tinted band; here the tint shows as a leading "›".
+  const tinted = { ...theme, bg: (_: string, t: string) => `›${t}` } as unknown as Theme;
+  const panel = new TeamPanel(panelTui, tinted, w => opened.push(w), { asks: { list: () => asks, draft: () => draft, cursorLine: () => cursor, answer: ask => answered.push(ask.title), prompt } });
   assert.deepEqual(panel.render(80), []);
   const now = Date.now();
   const reviewer = liveStatus({ id: "1", name: "reviewer", live: { run: {}, tools: [{ callId: "c1", name: "read", status: "running" }] },
@@ -96,21 +98,22 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   reviewer.context = 188_364;
   panel.setWorkers([{ id: "2", name: "scout", since: now - 90_000, finishedAt: now - 30_000 }, reviewer, { id: "3", name: "old", cost: 1.5 }]);
   const summary = plain(panel.render(80));
-  assert.equal(summary.length, 2, summary.join("\n"));
-  assert.match(summary[0]!, /reviewer +reading src\/ui\.ts +opus-5-5 medium · 2m 1[45]s · 18\.8%\/1\.0M · \$9\.812$/);
+  assert.equal(summary.length, 3, summary.join("\n"));
+  assert.match(summary[0]!, /reviewer +opus-5-5 medium · 2m 1[45]s · 18\.8%\/1\.0M · \$9\.812$/);
+  assert.match(summary[1]!, /^ +reading src\/ui\.ts$/);
   assert.doesNotMatch(plain(panel.render(70))[0]!, /opus/); // model drops first on narrow terminals, then the cost
   assert.doesNotMatch(plain(panel.render(69))[0]!, /\$/);
-  assert.match(summary[1]!, /^ +2 idle · team \$11\.312 \(sub\) · ↓ to select/); // idle workers are counted, their cost too
+  assert.match(summary[2]!, /^ +2 idle · team \$11\.312 \(sub\) · ↓ to select/); // idle workers are counted, their cost too
   assert.ok(panel.render(30).every(line => visibleWidth(line) <= 30));
   // Down focuses it on the running workers, idle ones still folded; moving past them lists the idle ones.
   // Up from the top returns to the prompt.
   const editor = { handleInput: (d: string) => focus.push(`typed ${d}`), render: () => [], invalidate() {} };
   panel.enter(editor); panel.focused = true;
   const open = plain(panel.render(80));
-  assert.equal(open.length, 3); assert.match(open[0]!, /› .*reviewer/); assert.match(open[1]!, /^ +2 idle/);
+  assert.equal(open.length, 4); assert.match(open[0]!, /› .*reviewer/); assert.match(open[2]!, /^ +2 idle/);
   panel.handleInput("\x1b[B");
   const idle = plain(panel.render(80));
-  assert.equal(idle.length, 4); assert.match(idle[1]!, /› .*scout +idle · last reply/); assert.match(idle[2]!, /old +idle/);
+  assert.equal(idle.length, 7); assert.match(idle[2]!, /› .*scout/); assert.match(idle[3]!, /› +idle · last reply/); assert.match(idle[4]!, /^ +○ old/);
   panel.handleInput("\r");
   assert.equal(opened[0]?.name, "scout");
   panel.handleInput("\x1b[A"); panel.handleInput("\x1b[A");
