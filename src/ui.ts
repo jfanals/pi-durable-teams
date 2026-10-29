@@ -531,9 +531,12 @@ class Transcript implements Component {
     }
     return this.imageCache.get(entryId);
   };
+  private render_(entries: ChatItem[], width: number) {
+    return renderTranscript(entries, this.name, width, this.theme, { showThinking: this.showThinking, expanded: this.expanded, tui: this.tui, cwd: this.status?.cwd, showImages: SettingsManager.create(this.status?.cwd ?? homedir(), agentDir).getShowImages(), images: this.images });
+  }
   lines(width: number) {
     if (this.cache?.width !== width || this.cache.version !== this.version) {
-      this.cache = { width, version: this.version, lines: renderTranscript([...this.entries.values()], this.name, width, this.theme, { showThinking: this.showThinking, expanded: this.expanded, tui: this.tui, cwd: this.status?.cwd, showImages: SettingsManager.create(this.status?.cwd ?? homedir(), agentDir).getShowImages(), images: this.images }) };
+      this.cache = { width, version: this.version, lines: this.render_([...this.entries.values()], width) };
     }
     const lines = this.cache.lines;
     // Keep a scrolled-up view anchored when activity is appended; prepending older pages needs no shift.
@@ -567,7 +570,7 @@ class Transcript implements Component {
     while (!this.entries.has(entry) && this.next && !this.life.signal.aborted) await this.older();
     if (!this.entries.has(entry)) return undefined;
     const before = [...this.entries.values()].filter(item => Number(item.id) < Number(entry));
-    return renderTranscript(before, this.name, width, this.theme, { showThinking: this.showThinking, expanded: this.expanded, tui: this.tui, cwd: this.status?.cwd }).length + (before.length ? 1 : 0);
+    return this.render_(before, width).length + (before.length ? 1 : 0);
   }
   render(width: number) { return this.lines(width); }
   invalidate() { this.cache = undefined; }
@@ -637,11 +640,15 @@ export class WorkerView implements Component {
  * adds above keep the visible ones in place, so scrolling continues back to the first message. */
 class HistoryScroll extends ScrollView {
   private transcript: Transcript;
+  /** A line to show at the top once the next layout knows the content height (pages just loaded would clamp it). */
+  private jump?: number;
   constructor(transcript: Transcript) { super(transcript, { follow: "end", primary: true }); this.transcript = transcript; }
+  jumpTo(line: number) { this.jump = line; }
   override updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void) {
     super.updateLayout(contentHeight, viewportHeight, requestRender);
     const added = this.transcript.grewAtTop; this.transcript.grewAtTop = 0;
-    if (added > 0 && !this.isFollowingEnd) this.scrollTo(this.scrollTop + added);
+    if (this.jump !== undefined) { this.scrollTo(this.jump); this.jump = undefined; }
+    else if (added > 0 && !this.isFollowingEnd) this.scrollTo(this.scrollTop + added);
     if (this.scrollTop === 0 && this.transcript.next && this.transcript.connection !== "loading") void this.transcript.older();
   }
 }
@@ -708,7 +715,7 @@ export class ChatView implements Component, Focusable {
     const text = this.editor.getText(); const reply = askReply(ask);
     if (!text.includes(reply)) this.editor.setText(text.trimEnd() + (text.trim() ? "\n" : "") + reply);
     const line = await this.transcript.lineOf(ask.entry);
-    if (line !== undefined && !this.disposed) { this.scroll.scrollTo(line); this.tui.requestRender(); }
+    if (line !== undefined && !this.disposed) { this.scroll.jumpTo(line); this.tui.requestRender(); }
   }
   /** Text for the editor, as Pi restores a forked message. */
   setDraft(text: string) { this.editor.setText(text); }
