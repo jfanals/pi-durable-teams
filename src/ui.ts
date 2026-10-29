@@ -16,7 +16,7 @@ import {
   Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi,
   type Component, type DefaultTextStyle, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import { clean, firstLine, textOf, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, teamGlance, type WorkerStatus } from "./status.ts";
+import { clean, firstLine, textOf, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, teamGlance, statusTone, type WorkerStatus } from "./status.ts";
 import type { TreeResult } from "./source.ts";
 import { askReply, type Ask, type ChatItem, type Queued } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
@@ -36,29 +36,56 @@ const expandKey = () => { try { return keyText("app.tools.expand") || "ctrl+o"; 
 
 
 export const glyph = (w: WorkerStatus) => w.running ? "●" : "○";
-/** Decisions waiting on the human: an amber count before the agent's name ("" when none). */
-export const askCount = (w: WorkerStatus | undefined, theme: Theme) => w?.asks?.length ? `${theme.fg("warning", String(w.asks.length))} ` : "";
+/** Decisions waiting on the human: a red count before the agent's name ("" when none). */
+export const askCount = (w: WorkerStatus | undefined, theme: Theme) => w?.asks?.length ? `${theme.fg("error", String(w.asks.length))} ` : "";
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const VISIBLE_RUNNING = 5;
 const VISIBLE_FOCUSED = 8;
 const VISIBLE_ASKS = 5;
 
-export function statusRow(w: WorkerStatus, width: number, selected: boolean, now: number, theme: Theme, nameWidth: number, frame = 0, idleText?: string, modelMinWidth = 80, tree = "") {
-  const t = theme;
-  const mark = w.running ? t.fg("accent", SPINNER[frame % SPINNER.length]!) : t.fg("muted", "○");
-  const name = truncateToWidth(clean(w.name), nameWidth, "…", true);
-  const left = `${selected ? t.fg("accent", "› ") : "  "}${t.fg("dim", tree)}${mark} ${askCount(w, t)}${selected ? t.fg("accent", t.bold(name)) : w.running ? name : t.fg("muted", name)}  `;
+/** Colour of an agent's mark and status line: red while it waits on the human, yellow while it works, grey when idle. */
+const TONE = { ask: "error", running: "warning", idle: "muted" } as const;
+const markOf = (w: WorkerStatus, t: Theme, frame: number) => t.fg(TONE[statusTone(w)], w.running ? SPINNER[frame % SPINNER.length]! : "○");
+/** What an agent is doing, in its status colour: the running activity, waiting on you, or idle (with `idle` appended). */
+const statusText = (w: WorkerStatus, t: Theme, idle = "") => {
+  const tone = statusTone(w);
+  const text = w.archived ? "archived" : w.running ? w.activity ?? "running" : tone === "ask" ? "waiting on you" : "idle";
+  return `${t.fg(tone === "idle" ? "dim" : TONE[tone], text)}${idle && !w.running ? t.fg("dim", idle) : ""}`;
+};
+/** A tree prefix's continuation on the lines below its row. */
+const treeBelow = (tree: string) => tree.replace("├─ ", "│  ").replace("└─ ", "   ");
+/** Model, time, context and cost; on narrow terminals the model drops first, then the cost. */
+function meta(w: WorkerStatus, width: number, now: number, modelMinWidth: number) {
   const time = w.running && w.since ? formatDuration(now - w.since)
     : !w.running && w.since && w.finishedAt && w.finishedAt >= w.since ? formatDuration(w.finishedAt - w.since) : "";
-  // On narrow terminals the model drops first, then the cost, then the activity text.
   const model = width >= modelMinWidth && w.model ? `${w.model}${w.thinking ? ` ${w.thinking}` : ""}` : "";
-  const right = [model, time, formatContext(w), width >= 70 && formatCost(w.cost)].filter(Boolean).join(" · ");
+  return [model, time, formatContext(w), width >= 70 && formatCost(w.cost)].filter(Boolean).join(" · ");
+}
+
+export function statusRow(w: WorkerStatus, width: number, selected: boolean, now: number, theme: Theme, nameWidth: number, frame = 0, idleText?: string, modelMinWidth = 80, tree = "") {
+  const t = theme;
+  const name = truncateToWidth(clean(w.name), nameWidth, "…", true);
+  const left = `${selected ? t.fg("accent", "› ") : "  "}${t.fg("dim", tree)}${markOf(w, t, frame)} ${askCount(w, t)}${selected ? t.fg("accent", t.bold(name)) : w.running ? name : t.fg("muted", name)}  `;
+  const right = meta(w, width, now, modelMinWidth);
   const showRight = width >= 40 && right;
   const middle = w.running ? w.activity ?? "running"
     : idleText ?? `idle${w.finishedAt ? ` · last reply ${formatAgo(now - w.finishedAt)}` : ""}`;
   const space = width - visibleWidth(left) - (showRight ? visibleWidth(right) + 2 : 0);
   const mid = width >= 60 && space > 4 ? truncateToWidth(w.running ? middle : t.fg("dim", middle), space, "…", true) : " ".repeat(Math.max(0, space));
   return truncateToWidth(`${left}${mid}${showRight ? `  ${t.fg("dim", right)}` : ""}`, width);
+}
+
+/** A dashboard row as two lines: mark and name, details on the right; what it is doing beneath. The selection is a tinted band. */
+export function statusCard(w: WorkerStatus, width: number, selected: boolean, now: number, theme: Theme, frame = 0, tree = "") {
+  const t = theme;
+  const name = clean(w.name);
+  const left = `  ${t.fg("dim", tree)}${markOf(w, t, frame)} ${askCount(w, t)}${selected || w.running ? t.bold(name) : t.fg("muted", name)}`;
+  const right = width >= 50 ? meta(w, width, now, 80) : "";
+  const gap = width - 1 - visibleWidth(left) - visibleWidth(right);
+  const lines = [`${left}${right && gap >= 2 ? `${" ".repeat(gap)}${t.fg("dim", right)}` : ""}`,
+    `  ${t.fg("dim", treeBelow(tree))}  ${statusText(w, t, w.finishedAt ? ` · last reply ${formatAgo(now - w.finishedAt)}` : "")}`]
+    .map(line => truncateToWidth(line, width, "…"));
+  return selected ? lines.map(line => t.bg("selectedBg", line + " ".repeat(Math.max(0, width - visibleWidth(line))))) : lines;
 }
 
 /**
@@ -146,7 +173,7 @@ export class TeamPanel implements Component, Focusable {
     const askLine = (ask: Ask, selected: boolean) => {
       const title = selected ? t.bold(ask.title) : ask.title;
       const drafted = this.drafted(ask);
-      return truncateToWidth(`${selected ? t.fg("accent", "› ") : "  "}${drafted ? t.fg("dim", title) : t.fg("warning", title)}${t.fg("dim", `${drafted ? " · in draft" : ""}${ask.at ? ` · ${formatAgo(now - ask.at)}` : ""}`)}`, width);
+      return truncateToWidth(`${selected ? t.fg("accent", "› ") : "  "}${drafted ? t.fg("dim", title) : t.fg("error", title)}${t.fg("dim", `${drafted ? " · in draft" : ""}${ask.at ? ` · ${formatAgo(now - ask.at)}` : ""}`)}`, width);
     };
     const asked = this.selected < this.asks.length;
     // Leave room for the conversation and prompt on short terminals.
@@ -237,16 +264,18 @@ export class Rail implements Component {
     const inner = Math.max(1, width - 2);
     const { header, lines } = this.content(this.frame());
     const out: string[] = []; this.rows = [];
-    const push = (text: string, row?: WorkerStatus | "header") => {
+    const push = (text: string, row?: WorkerStatus | "header", open = false) => {
       const cut = truncateToWidth(text, inner, "…");
-      out.push(`${cut}${" ".repeat(Math.max(0, inner - visibleWidth(cut)))} ${t.fg("borderMuted", "│")}`); this.rows.push(row);
+      const line = `${cut}${" ".repeat(Math.max(0, inner - visibleWidth(cut)))}`;
+      out.push(`${open ? t.bg("selectedBg", line) : line} ${t.fg("borderMuted", "│")}`); this.rows.push(row);
     };
-    push(header, "header"); push(t.fg("borderMuted", "─".repeat(inner)));
+    push(header, "header"); push("");
+    // Two lines per agent, as on the dashboard: mark and name, then what it is doing and its model.
     for (const { worker, tree = "", text, open } of lines) {
       if (!worker) { push(t.fg("dim", `${tree}${text ?? ""}`)); continue; }
-      const mark = worker.running ? t.fg("accent", SPINNER[this.frame() % SPINNER.length]!) : t.fg("muted", "○");
       const name = clean(worker.name);
-      push(`${t.fg("dim", tree)}${mark} ${askCount(worker, t)}${open ? t.fg("accent", t.bold(name)) : worker.running ? name : t.fg("muted", name)}`, worker);
+      push(`${t.fg("dim", tree)}${markOf(worker, t, this.frame())} ${askCount(worker, t)}${open || worker.running ? t.bold(name) : t.fg("muted", name)}`, worker, open);
+      push(`${t.fg("dim", treeBelow(tree))}  ${statusText(worker, t, worker.model ? ` · ${worker.model}` : "")}`, worker, open);
     }
     while (out.length < this.tui.terminal.rows) push("");
     return out;
@@ -427,8 +456,9 @@ export function renderTranscript(items: ChatItem[], worker: string, width: numbe
       }
       if (item.error) block(new Text(theme.fg("error", item.error), 1, 0).render(width));
       if (item.turn) {
-        const parts = [item.at !== undefined && clock(item.at), item.turn.ms !== undefined && formatDuration(item.turn.ms), item.turn.tokens && `${formatTokens(item.turn.tokens)} tok`, formatCost(item.turn.cost)];
-        block(new Text(theme.fg("dim", parts.filter(Boolean).join(" · ")), 1, 0).render(width));
+        // As Claude Code closes a turn: how long it took and when it finished, then what it cost.
+        const parts = [item.turn.ms !== undefined && `took ${formatDuration(item.turn.ms)}`, item.at !== undefined && `done ${clock(item.at)}`, item.turn.tokens && `${formatTokens(item.turn.tokens)} tok`, formatCost(item.turn.cost)];
+        block(new Text(theme.fg("dim", `✻ ${parts.filter(Boolean).join(" · ")}`), 1, 0).render(width));
       }
     } else if (item.kind === "notice") block(new Text(theme.fg(item.warning ? "warning" : "dim", item.text), 1, 0).render(width));
     else if (item.kind === "compaction") {
@@ -739,7 +769,7 @@ export class ChatView implements Component, Focusable {
     this.actions = actions;
     this.tui = tui;
     this.transcript = new Transcript(tui, theme, name, source, parent, true);
-    this.editor = new Editor(tui, { borderColor: text => theme.fg("accent", text), selectList: getSelectListTheme() });
+    this.editor = new Editor(tui, { borderColor: text => theme.fg("borderMuted", text), selectList: getSelectListTheme() });
     this.editor.setAutocompleteProvider(promptAutocomplete(() => this.transcript.status?.cwd ?? homedir()));
     this.editor.onSubmit = text => this.submit(text, "steer");
     if (children) this.panel = new TeamPanel(tui, theme, children.open, { compact: true, focus: component => {
@@ -752,16 +782,20 @@ export class ChatView implements Component, Focusable {
       const cwd = s?.cwd ? formatCwd(s.cwd) : "";
       const time = s?.running ? `working${s.since ? ` ${formatDuration(Date.now() - s.since)}` : ""}` : s ? statusWord(s) : "idle";
       const suffix = `${branch() ? ` (${branch()})` : ""} • ${s?.asks?.length ? `${s.asks.length} waiting on you · ` : ""}${s?.name ?? name} · ${time}`;
-      const location = truncateToWidth(cwd, Math.max(0, width - visibleWidth(suffix))) + suffix;
-      const stats = formatUsage(s);
       const model = s?.modelId ?? s?.model;
       const right = model ? `${s?.provider ? `(${s.provider}) ` : ""}${model}${s?.thinking ? ` • ${s.thinking}` : ""}` : "";
-      // Keep a useful stats prefix; omit the model rather than showing a fragment of its ID.
-      const room = width - visibleWidth(right) - 2;
-      const left = truncateToWidth(stats, right && room >= 24 ? room : width);
-      const statsLine = right && room >= 24 ? left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right : left;
-      const hints = `${path() || s?.name || name} · ${s?.id ?? "…"} · ← back · esc stop · ${keyText("app.message.followUp")} follow-up · ${keyText("app.tools.expand")} ${this.transcript.expanded ? "collapse" : "expand"} · ${keyText("app.thinking.toggle")} thinking`;
-      return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
+      const hints = [`${path() || s?.name || name} · ${s?.id ?? "…"} · ← back · esc stop`, this.transcript.note, notice()].filter(Boolean).join(" · ");
+      // Two quiet lines: where and who on the left, the model on the right; keys on the left, usage on the right.
+      // Too narrow for both, the right side takes its own line.
+      const pair = (left: string, right: string) => {
+        const room = width - visibleWidth(right) - 2;
+        if (!right) return [left];
+        if (room < 24) return [left, right];
+        const cut = truncateToWidth(left, room);
+        return [cut + " ".repeat(width - visibleWidth(cut) - visibleWidth(right)) + right];
+      };
+      const location = truncateToWidth(cwd, Math.max(0, width - visibleWidth(suffix) - visibleWidth(right) - 2)) + suffix;
+      return [...pair(location, right), ...pair(hints, formatUsage(s))].map(line => truncateToWidth(theme.fg("dim", line), width));
     }, invalidate() {} };
     const working = { render: (width: number) => [...this.transcript.queuedLines(width), ...this.transcript.workingLine(width), ...(this.modelNote ? [truncateToWidth(theme.fg("muted", this.modelNote), width)] : [])], invalidate() {} };
     // Pi's selectors take the editor's place while open.

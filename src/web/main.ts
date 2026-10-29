@@ -3,7 +3,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
 import { escape as e, askCount, asksBar, info, footerInfo, transcript, paneRails, panePath } from "./render.ts";
-import { archiveView, formatCost, formatDuration, statusWord, teamGlance } from "../status.ts";
+import { archiveView, formatCost, formatDuration, statusTone, statusWord, teamGlance } from "../status.ts";
 import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
 import { NEW, agentNameError, suggestedAgentName } from "../agent-name.ts";
 import type { ChatItem } from "../chat.ts";
@@ -73,7 +73,7 @@ function list() {
     `<button class="agent ${child ? "child" : ""}" data-open="${e(a.id)}">
 <div class="row">
 <strong>${askCount(a)}${e(a.name)}</strong>
-<span>${a.running ? '<i class="spinner"></i>' : ""}${e(statusWord(a))}</span>
+<span class="tone-${statusTone(a)}">${a.running ? '<i class="spinner"></i>' : ""}${e(statusWord(a))}</span>
 </div>
 <small data-time="${e(a.id)}">${e(info(a))}</small>
 </button>${child ? "" : team(a)}`;

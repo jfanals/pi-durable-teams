@@ -10,7 +10,7 @@ import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent"
 import { type WorkerModel } from "./config.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { workerSource, type HostSource } from "./source.ts";
-import { ChatView, RAIL_DASHBOARD_MIN, RAIL_MAIN_MIN, Rail, railWidth, statusRow } from "./ui.ts";
+import { ChatView, RAIL_DASHBOARD_MIN, RAIL_MAIN_MIN, Rail, railWidth, statusCard } from "./ui.ts";
 import { cmuxTab } from "./cmux.ts";
 import { markdownForSelection } from "./copy.ts";
 
@@ -27,7 +27,7 @@ export class AgentsApp implements Component, Focusable {
   private source: HostSource; private tui: TuiAltScreen; private theme: Theme;
   private life = new AbortController(); private agents: AgentSummary[] = [];
   /** The host's full roster; `agents` is the active or archived view of it (tab toggles). */
-  private allAgents: AgentSummary[] = []; private showArchived = false; private archivedCount = 0;
+  private allAgents: AgentSummary[] = []; private showArchived = false; private archivedCount = 0; private showKeys = false;
   /** The active view's selection, restored when leaving the archived view. */
   private activeSelected = 0;
   private setRoster(rows: AgentSummary[]) {
@@ -154,7 +154,7 @@ export class AgentsApp implements Component, Focusable {
       onHeader: () => this.collapseTo(0), onOpen: worker => this.openFromRail(worker.id),
       content: () => {
         const lines = this.dashboard().map(({ agent, tree, summary }) => ({ worker: agent, tree, text: summary, open: !!agent && this.stack.includes(agent.id) }));
-        return { header: this.theme.fg("accent", this.theme.bold("pi-agents")), lines };
+        return { header: this.theme.fg("dim", "agents"), lines };
       },
     });
     this.mainRail = new Rail(this.tui, this.theme, {
@@ -394,27 +394,33 @@ export class AgentsApp implements Component, Focusable {
     this.tui.requestRender();
   }
   private list(width: number): string[] {
+    const t = this.theme;
     const rows = this.dashboard(); const selectable = rows.filter(row => row.agent);
     this.selected = Math.max(0, Math.min(this.selected, selectable.length - 1));
     const height = this.tui.terminal.rows;
     const keys = this.showArchived ? ["↑↓ select · enter/→ open", "u unarchive · d delete · tab active · q quit"]
       : ["↑↓ select · enter/→ open · n new", `r rename · a archive${this.archivedCount ? " · tab archived" : ""} · q quit`];
-    const hints = width >= 75 ? [keys.join(" · ")] : keys;
-    const capacity = Math.max(1, height - 4 - hints.length);
+    const hints = this.showKeys ? (width >= 75 ? [keys.join(" · ")] : keys) : [];
+    // Two lines per agent, a blank line between teams; the selected agent is a tinted band.
+    const blocks = rows.map(({ agent, tree, summary }, index) => {
+      const lines = agent ? statusCard(agent, width, rows[index] === selectable[this.selected], Date.now(), t, this.frame, tree)
+        : [truncateToWidth(`  ${t.fg("dim", `${tree}${summary}`)}`, width)];
+      return !tree && index ? ["", ...lines] : lines;
+    });
     const at = rows.indexOf(selectable[this.selected]!);
-    const start = Math.max(0, at - capacity + 1);
-    const lines = [this.theme.fg("accent", this.theme.bold("pi-agents")) + (this.showArchived ? this.theme.fg("dim", " · archived") : ""), ""];
-    const nameWidth = Math.min(24, Math.max(6, ...selectable.map(({ agent, tree }) => tree.length + agent!.name.length)));
-    for (const [index, { agent, tree, summary }] of rows.slice(start, start + capacity).entries()) {
-      lines.push(agent ? statusRow(agent, width, index + start === at, Date.now(), this.theme, nameWidth - visibleWidth(tree), this.frame, undefined, 60, tree)
-        : `  ${this.theme.fg("dim", `${tree}${summary}`)}`);
-    }
+    const capacity = Math.max(2, height - 5 - hints.length);
+    let start = 0;
+    while (start < at && blocks.slice(start, at + 1).flat().length > capacity) start++;
+    const body = blocks.slice(start).flat().slice(0, capacity);
+    const lines = [t.fg("dim", this.showArchived ? "archived agents" : "agents"), "", ...body];
     while (lines.length < height - 2 - hints.length) lines.push("");
     const all = this.rows();
     const total = formatCost(all.reduce((sum, row) => sum + (row.agent.cost ?? 0), 0));
     const running = this.agents.filter(a => a.running).length;
     const summary = this.showArchived ? `${this.agents.length} archived` : `${running} running · ${this.agents.length - running} idle${this.archivedCount ? ` · ${this.archivedCount} archived` : ""} · total ${total || "$0.000"}${all.some(row => row.agent.subscription) ? " (sub)" : ""}`;
-    lines.push(this.theme.fg("dim", summary), this.note, ...hints);
+    const short = `${this.showArchived ? "u unarchive" : "n new"} · ? ${this.showKeys ? "hide keys" : "keys"}`;
+    const gap = width - visibleWidth(summary) - visibleWidth(short);
+    lines.push(t.fg("dim", gap >= 2 ? summary + " ".repeat(gap) + short : `${summary} · ${short}`), this.note, ...hints.map(line => t.fg("dim", line)));
     return lines.map(line => truncateToWidth(line, width));
   }
   render(width: number): string[] {
@@ -456,6 +462,7 @@ export class AgentsApp implements Component, Focusable {
       const agent = this.selectable()[this.selected];
       if (agent) { this.renaming = { agent }; this.editor.setText(agent.name); }
     }
+    else if (data === "?") this.showKeys = !this.showKeys;
     else if (data === "q") { this.dispose(); this.tui.stop(); this.exit(); return; }
     else if (matchesKey(data, Key.tab) && (this.showArchived || this.archivedCount)) {
       this.toggleArchived();

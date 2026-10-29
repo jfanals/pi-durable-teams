@@ -1,6 +1,7 @@
 import {
   archiveView,
   statusWord,
+  statusTone,
   teamGlance,
   formatUsage,
   formatAgo,
@@ -119,7 +120,7 @@ ${turn ? `<small class="stamp">${stamp}</small>` : ""}</article>`;
 export function paneRails(agents: Agent[], stack: string[], showIdle = false) {
   const main = agents.find(a => a.id === stack[0]);
   const row = (a: Agent, child = false) => `<button tabindex="-1" class="rail-row ${child ? "child" : ""} ${stack.includes(a.id) ? "open" : ""}" data-open="${escape(a.id)}" title="${escape(a.name)} · ${escape(statusWord(a))}" ${stack.includes(a.id) ? 'aria-current="true"' : ""}>
-<span aria-hidden="true">${a.running ? "◌" : "○"}</span><span>${askCount(a)}${escape(a.name)}</span></button>`;
+<span aria-hidden="true" class="tone-${statusTone(a)}">${a.running ? "◌" : "○"}</span><span>${askCount(a)}${escape(a.name)}</span></button>`;
   const dashboard = archiveView(agents, false).agents.map(a => {
     const glance = teamGlance(a.children);
     return row(a) + (glance.shown as Agent[]).map(c => row(c, true)).join("")

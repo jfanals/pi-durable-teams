@@ -6,7 +6,8 @@
   --muted: #acb4c9;
   --line: #343c50;
   --accent: #a8c6ff;
-  --ask: #ffd28a;
+  --ask: #ff9b8a;
+  --running: #ffd28a;
   font:
     16px/1.5 system-ui,
     sans-serif;
@@ -402,6 +403,8 @@ a:focus-visible {
     --muted: #536079;
     --line: #ccd3e1;
     --accent: #174d9d;
+    --ask: #b3261e;
+    --running: #8a5a00;
   }
   .input {
     background: #dce8fc;
@@ -473,6 +476,11 @@ a:focus-visible {
 
 /* Waiting on you: amber counts before names, the open agent's asks above the composer. */
 .ask-count { color: var(--ask); font-weight: 600; }
+/* One colour per state, as in the terminal: waiting on you, running, idle. */
+.tone-ask { color: var(--ask); }
+.tone-running { color: var(--running); }
+.tone-running .spinner { border-top-color: var(--running); }
+.tone-idle { color: var(--muted); }
 .asks { display: flex; flex-direction: column; gap: 2px; }
 .asks .ask { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 4px; padding: 2px 4px; color: var(--ask); font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .asks .ask:hover { background: color-mix(in srgb, var(--ask) 12%, transparent); }

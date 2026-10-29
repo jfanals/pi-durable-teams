@@ -29,6 +29,8 @@ export const clean = (value: unknown): string => String(value ?? "")
 export const firstLine = (text: unknown) => clean(text).split("\n").find(line => line.trim())?.trim() ?? "";
 /** An agent is running, idle or archived: the one vocabulary of every view. */
 export const statusWord = (w: WorkerStatus) => w.archived ? "archived" : w.running ? (w.activity ?? "running") : "idle";
+/** What colours an agent's mark and status, in every view: waiting on the human, running, or idle. */
+export const statusTone = (w: WorkerStatus) => w.asks?.length ? "ask" : w.running ? "running" : "idle";
 
 const VERBS: Record<string, string> = { read: "reading", edit: "editing", write: "writing", bash: "bash:" };
 /** What a running worker is doing, from its committed live state. Never infers success. */
