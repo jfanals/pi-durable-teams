@@ -230,9 +230,13 @@ Reference revision: `earendil-works/pi@73f8de80bc87021375f8b525292ac07492253002`
 - Coding-agent's **subagent extension**: ordinary Pi tools/messages and expandable
   rendering; not its separate subprocess delegation engine.
 
-The reference main revision and npm 1.4.0 differ: released IDs are numeric branded
-IDs and session documents do not declare `history`. We adapt to the pinned package
-API, not unpublished API shapes. Domain IDs are strings at the external boundary.
+Runtime: the Pi packages (`chord`, `pi-durable`, `pi-ai`, `pi-coding-agent`, ...) are
+built from upstream main at the commit in `vendor/pi/REVISION` and installed from the
+tarballs in `vendor/pi/` (all report version 1.4.0, so `overrides` keep every copy on
+the vendored build). To update: build upstream (`npm ci && npm run build` from its real
+path), `npm pack` each package into `vendor/pi/`, write the commit to `REVISION`, then
+`npm install` and adapt to the `[Unreleased]` notes in upstream's
+`packages/durable/CHANGELOG.md`. Domain IDs are strings at the external boundary.
 
 Local additions are team membership/scoping, peer/cross-main messaging, ordinary-Pi
 transport/receipts, provider restrictions, and human archive. Whole-team stop

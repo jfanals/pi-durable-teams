@@ -297,7 +297,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         // Background compactions are designed not to hold input back.
         if (current.where.kind === "hosted") {
           const live = await harness.snapshot(LiveDoc, current.where.conversationId, ctx);
-          for (const { taskId } of (live?.compactions ?? []).filter(c => c.reason === "manual")) await harness.waitForTask(taskId, ctx);
+          for (const { taskId } of (live?.compactions ?? []).filter(c => c.trigger === "manual")) await harness.waitForTask(taskId, ctx);
         }
         const submission = await post(recipient, { id: `teams-input:${task.id}`, from, text: message, mode, images });
         if (!submission || note) {
@@ -361,7 +361,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   async function heldByCompaction(agent: Agent): Promise<Queued[]> {
     if (agent.where.kind !== "hosted") return [];
     const live = await harness.snapshot(LiveDoc, agent.where.conversationId, context);
-    if (!live?.compactions?.some(c => c.reason === "manual")) return [];
+    if (!live?.compactions?.some(c => c.trigger === "manual")) return [];
     const tasks = (await harness.inspect(context)).tasks.flatMap(({ record: task }) => task.kind === "teams.reporter" && task.state.status !== "terminal"
       && (task.input as ReporterInput).recipient === agent.id && (task.state as { checkpoint?: ReporterState }).checkpoint?.phase === "deliver" ? [task] : []);
     const held: Queued[] = [];
@@ -563,9 +563,8 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       let inherited: WorkerModel | undefined;
       if (own?.where.kind === "external") inherited = { ...own.where.session.model, thinking: own.where.session.thinking ?? undefined };
       if (own?.where.kind === "hosted") {
-        const view = await (await conversationOf(own)).viewState(context);
-        try { const agent = view.value.docs["pi.agent"] as AgentChange; if (agent?.model) inherited = { ...agent.model, thinking: agent.thinkingLevel ?? undefined }; }
-        finally { view.dispose(); }
+        const agent = await harness.snapshot(AgentDoc, own.where.conversationId, context);
+        if (agent?.model) inherited = { ...agent.model, thinking: agent.thinkingLevel ?? undefined };
       }
       // Only the human picks a model; spawn uses worker rules, launch the top-level default.
       const chosen = actor.id === human.id && args.model ? { ...args.model, thinking: args.thinking } : undefined;
@@ -739,7 +738,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   }
   harness.resume();
   // Commit listeners must not re-enter Session APIs through subscribers.
-  const unsubscribeCommits = harness.subscribeCommits(publication => {
+  const commits = harness.observeCommits({ end: () => {}, advance: publication => {
     warming?.onCommit(publication);
     for (const change of publication.changes) {
       if (change.type === "document") {
@@ -750,7 +749,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       } else if (change.type === "conversation") dirtyConversations.add(change.value.id);
     }
     queueMicrotask(notify);
-  });
+  } });
   return {
     harness, action,
     /** Human-only: abort the agent and its sub-agents, withdraw their reports and set them aside; `unarchive` brings them back idle. */
@@ -982,19 +981,30 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     subscribe(listener: () => void) { changed.add(listener); return () => { changed.delete(listener); }; },
     async watch(actor: Actor, target: string, listener: (value: unknown) => void | Promise<void>) {
       const agent = resolveTarget(await read(), actor, target);
-      const unsubscribe = harness.subscribeCommits(async publication => {
+      // Registry changes from stored commits; a hosted agent's view also on streamed progress, which is stored later.
+      // Tree navigation moves an agent to another conversation, so follow it on registry changes.
+      const changed = () => { void listener({ changed: true }); };
+      let stopped = false; let observed: ConversationId | undefined; let view: { detach(): void } | undefined;
+      const follow = async () => {
         const current = (await read()).agents[agent.id];
-        if (publication.changes.some(change =>
-          change.type === "document" && change.record.kind === "teams.registry"
-          || current?.where.kind === "hosted" && (change.type === "entry" ? change.value.conversationId
-            : change.type === "document" ? change.conversationId : undefined) === current.where.conversationId)) {
-          await listener({ changed: true });
+        const id = current?.where.kind === "hosted" ? current.where.conversationId : undefined;
+        if (stopped || id === observed) return;
+        view?.detach(); view = undefined; observed = id;
+        if (id === undefined) return;
+        const next = await harness.observeConversation(id, { advance: changed, end: () => {} }, context, { min: 1, max: 2 });
+        if (stopped || observed !== id) next.detach(); else view = next;
+      };
+      const commits = harness.observeCommits({ end: () => {}, advance: publication => {
+        if (publication.changes.some(change => change.type === "document" && change.record.kind === "teams.registry")) {
+          changed(); queueMicrotask(() => { void follow().catch(() => {}); });
         }
-      });
+      } });
+      await follow();
+      const unsubscribe = () => { stopped = true; commits.detach(); view?.detach(); };
       await listener({ changed: true });
       return unsubscribe;
     },
-    close: () => { unsubscribeCommits(); warming?.dispose(); return harness.close(context); },
+    close: () => { commits.detach(); warming?.dispose(); return harness.close(context); },
   };
 }
 export type TeamsService = Awaited<ReturnType<typeof openTeams>>;

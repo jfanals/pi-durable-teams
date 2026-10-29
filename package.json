@@ -24,9 +24,9 @@
     "screen": "node scripts/screen.ts"
   },
   "dependencies": {
-    "@earendil-works/chord": "1.4.0",
-    "@earendil-works/pi-durable": "1.4.0",
-    "@earendil-works/pi-mcp": "1.4.0",
+    "@earendil-works/chord": "file:vendor/pi/earendil-works-chord-1.4.0.tgz",
+    "@earendil-works/pi-durable": "file:vendor/pi/earendil-works-pi-durable-1.4.0.tgz",
+    "@earendil-works/pi-mcp": "file:vendor/pi/earendil-works-pi-mcp-1.4.0.tgz",
     "marked": "18.0.11",
     "pi-web-access": "0.45.0",
     "web-push": "3.6.7"
@@ -38,9 +38,9 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.4.0",
-    "@earendil-works/pi-coding-agent": "1.4.0",
-    "@earendil-works/pi-tui": "1.4.0",
+    "@earendil-works/pi-ai": "file:vendor/pi/earendil-works-pi-ai-1.4.0.tgz",
+    "@earendil-works/pi-coding-agent": "file:vendor/pi/earendil-works-pi-coding-agent-1.4.0.tgz",
+    "@earendil-works/pi-tui": "file:vendor/pi/earendil-works-pi-tui-1.4.0.tgz",
     "@types/node": "^24.0.0",
     "@types/web-push": "^3.6.4",
     "@xterm/headless": "^6.0.0",
@@ -48,5 +48,16 @@
   },
   "bin": {
     "pi-agents": "./src/pi-agents.ts"
+  },
+  "overrides": {
+    "@earendil-works/chord": "file:vendor/pi/earendil-works-chord-1.4.0.tgz",
+    "@earendil-works/pi-durable": "file:vendor/pi/earendil-works-pi-durable-1.4.0.tgz",
+    "@earendil-works/pi-mcp": "file:vendor/pi/earendil-works-pi-mcp-1.4.0.tgz",
+    "@earendil-works/pi-ai": "file:vendor/pi/earendil-works-pi-ai-1.4.0.tgz",
+    "@earendil-works/pi-coding-agent": "file:vendor/pi/earendil-works-pi-coding-agent-1.4.0.tgz",
+    "@earendil-works/pi-tui": "file:vendor/pi/earendil-works-pi-tui-1.4.0.tgz",
+    "@earendil-works/pi-telemetry": "file:vendor/pi/earendil-works-pi-telemetry-1.4.0.tgz",
+    "@earendil-works/pi-codemode": "file:vendor/pi/earendil-works-pi-codemode-1.4.0.tgz",
+    "@earendil-works/pi-agent-core": "file:vendor/pi/earendil-works-pi-agent-core-1.4.0.tgz"
   }
 }

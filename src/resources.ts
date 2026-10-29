@@ -103,6 +103,6 @@ export async function productionOptions(): Promise<TeamsOptions> {
       if (!runtime.getModel(model.provider, model.modelId)) throw new Error(`Unavailable model ${model.provider}/${model.modelId}`);
     },
     async workerAgent(cwd) { return { instructions: await workerInstructions(cwd) }; },
-    onReport: error => console.error("durable-teams", error),
+    onReport: report => console.error("durable-teams", report.kind, report.error),
   };
 }

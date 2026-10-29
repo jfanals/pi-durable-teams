@@ -8,7 +8,7 @@ import { Value } from "typebox/value";
 import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { AgentDoc, InboxDoc, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool, Harness, MemoryStorage, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
+import { AgentDoc, InboxDoc, LiveDoc, configure, createRegistry, defineDoc, defineExtension, defineTask, defineTool, Harness, MemoryStorage, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { human, openTeams, Teams, type TeamsService } from "../src/teams.ts";
 import { textOf } from "../src/status.ts";
@@ -39,8 +39,8 @@ const roster = async (service: TeamsService, actor = human, scope?: "mains") => 
 };
 /** The agent's latest assistant message, as stored. */
 async function conversationLatest(service: TeamsService, id: string) {
-  const view = await (await service.harness.conversation(Number(id) as ConversationId, ctx))!.viewState(ctx);
-  try { return view.value.entries.flatMap(entry => entry.model ?? []).findLast(m => m.role === "assistant") as any; } finally { view.dispose(); }
+  const { messages } = await (await service.harness.conversation(Number(id) as ConversationId, ctx))!.context(ctx);
+  return messages.findLast(m => m.role === "assistant") as any;
 }
 const page = (service: TeamsService, target: string) => service.action(human, { action: "inspect", target, transcript: true }, "");
 async function idle(service: TeamsService, id: string) {
@@ -295,15 +295,14 @@ test("inspection matches active view across paged tool tails, resets and compact
     const cid = Number(id) as ConversationId;
     const conversation = (await service.harness.conversation(cid, ctx))!;
     const equivalent = async () => {
-      const view = await conversation.viewState(ctx);
-      try {
-        const messages = view.value.entries.flatMap(entry => entry.model ?? []);
+      const { messages } = await conversation.context(ctx);
+      {
         const inspected = await service.action(human, { action: "inspect", target: id }, "") as any;
         assert.equal(inspected.latest, textOf(messages.findLast(m => m.role === "assistant")));
         const row = (await service.agents()).find(agent => agent.id === id)!;
         assert.equal(row.since, (messages.findLast(m => m.role === "user") as { timestamp?: number } | undefined)?.timestamp);
-        assert.equal(row.running, Boolean((view.value.docs["pi.live"] as any)?.run));
-      } finally { view.dispose(); }
+        assert.equal(row.running, Boolean((await service.harness.snapshot(LiveDoc, cid, ctx))?.run));
+      }
     };
     await equivalent(); // Empty conversation.
     await service.harness.commit(async tx => {

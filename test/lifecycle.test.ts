@@ -5,7 +5,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createRegistry, defineExtension, defineTool, MemoryStorage, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
+import { createRegistry, defineExtension, defineTool, LiveDoc, MemoryStorage, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import { openTeams } from "../src/teams.ts";
 
 const ctx = BACKGROUND_CONTEXT;
@@ -36,14 +36,14 @@ async function setup() {
   const first = await service.action(main, { action: "spawn", name: "busy", message: "HOLD" }, "create") as any;
   await started;
   const worker = (await service.harness.conversation(Number(first.workerId) as ConversationId, ctx))!;
-  const view = await worker.viewState(ctx);
+  const view = await worker.watch(ctx);
   return { service, main, first, worker, view, release, requests };
 }
-async function waitForInbox(view: Awaited<ReturnType<Awaited<ReturnType<typeof setup>>["worker"]["viewState"]>>) {
+async function waitForInbox(view: Awaited<ReturnType<Awaited<ReturnType<typeof setup>>["worker"]["watch"]>>) {
   await new Promise<void>(resolve => {
     const check = () => ((view.value.docs["pi.inbox"] as any)?.items?.length ?? 0) >= 2;
     if (check()) return resolve();
-    const unsubscribe = view.subscribe(() => { if (check()) { unsubscribe(); resolve(); } });
+    view.start(async () => { if (check()) resolve(); });
   });
 }
 
@@ -59,7 +59,7 @@ test("native steer joins after the current tool round; follow-up waits for the a
     assert.match(requests.at(-1)!, /FOLLOW_UP/);
     // The first input and steer share an answer: only one report for that answer.
     assert.equal((await service.pending(main)).length, 2);
-  } finally { release(); view.dispose(); await service.close(); }
+  } finally { release(); void view.stop(); await service.close(); }
 });
 
 test("/team stop aborts active tools and queued inputs; no late worker reports restart the main", { timeout: 5000 }, async () => {
@@ -71,11 +71,9 @@ test("/team stop aborts active tools and queued inputs; no late worker reports r
     await service.abortTeam(main);
     await worker.waitForIdle(ctx);
     release();
-    const live = (await worker.viewState(ctx));
-    try { assert.equal((live.value.docs["pi.live"] as any)?.run, undefined); }
-    finally { live.dispose(); }
+    assert.equal((await service.harness.snapshot(LiveDoc, worker.id, ctx))?.run, undefined);
     assert.equal((await service.pending(main)).length, 0);
     const task = await service.harness.getTask(first.taskId, ctx);
     assert.equal(task?.state.status, "terminal");
-  } finally { release(); view.dispose(); await service.close(); }
+  } finally { release(); void view.stop(); await service.close(); }
 });
