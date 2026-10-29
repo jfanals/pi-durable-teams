@@ -1,6 +1,7 @@
 // Terminal presentation only. Nothing here changes delivery, acknowledgement or worker execution.
 import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import { promptAutocomplete } from "./autocomplete.ts";
+import { NEW } from "./agent-name.ts";
 import { agentDir } from "./paths.ts";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -386,7 +387,7 @@ export type ChatActions = {
   models?(): Promise<ModelChoice[]>;
   setModel?(model: ModelChoice, thinking: ModelThinkingLevel): Promise<unknown>;
   compact?(instructions: string): Promise<{ outcome: "compacted" | "nothing" | "running" | "failed"; error?: string }>;
-  /** `/fork` and `/clone`, top-level agents only: the human's messages, and a fork before one of them or of everything. */
+  /** `/fork`, `/clone` and `/new`, top-level agents only: the human's messages, and a fork before one of them, of everything or (NEW) of nothing. */
   inputs?(): Promise<{ id: string; text: string }[]>;
   fork?(before?: string, draft?: string): Promise<unknown>;
   tree?(entryId?: string): Promise<TreeResult>;
@@ -819,9 +820,10 @@ export class ChatView implements Component, Focusable {
     if (this.actions.tree && command === "/tree") {
       this.editor.setText(""); void this.showTreePicker(); return;
     }
-    if (this.actions.fork && (command === "/fork" || command === "/clone")) {
+    if (this.actions.fork && (command === "/fork" || command === "/clone" || command === "/new")) {
       this.editor.setText("");
       if (command === "/clone") this.run("Cloning…", this.actions.fork(), () => undefined);
+      else if (command === "/new") this.run("Starting a new agent…", this.actions.fork(NEW), () => undefined);
       else void this.showForkPicker();
       return;
     }

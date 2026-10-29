@@ -348,6 +348,10 @@ loaded yet.
   selecting another message continues from there. The agent keeps its ID, name and children. Previous branches
   remain navigable and usage totals include their spend. Navigation creates a Durable fork behind the same agent
   identity; it does not undo files or tool side effects. Branch summaries are not supported.
+- **/fork**, **/clone** and **/new** (top-level agents, terminal and web) create a new top-level agent in the same
+  folder and open it, leaving the original idle. `/fork` copies the conversation up to a chosen message and puts that
+  message in the editor; `/clone` copies all of it; `/new` copies nothing, only the model, thinking level,
+  instructions and tools, under the folder's next free name. Sub-agents are not copied.
 - **Ctrl+C** exits.
 
 Archive, unarchive and delete are human-only (terminal **a**/**u**/**d**, web **⋮** menu and the

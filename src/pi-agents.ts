@@ -13,6 +13,11 @@ if (process.argv[2] === "pair") {
 } else if (process.argv[2] === "restart-host") {
   try { await (await import("./restart.ts")).restartHost(); }
   catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; }
+} else if (process.argv[2] !== undefined || !process.stdin.isTTY || !process.stdout.isTTY) {
+  // Anything else would open the full-screen app, which waits for keys forever without a terminal.
+  console.error(process.argv[2] !== undefined ? `Unknown command: ${process.argv[2]}` : "pi-agents is an interactive app and needs a terminal");
+  console.error("Usage: pi-agents            open the app (in a terminal)\n       pi-agents pair [--rotate]\n       pi-agents restart-host\nAgents list and inspect agents with the team tool.");
+  process.exitCode = 2;
 } else {
 const settings = SettingsManager.create(process.cwd());
 initTheme(settings.getTheme(), false);

@@ -5,7 +5,7 @@ import { api, mutate, stream, token, unpair, type Agent, type Page, type Model }
 import { escape as e, info, footerInfo, transcript, paneRails, panePath } from "./render.ts";
 import { archiveView, formatCost, formatDuration, statusWord, teamGlance } from "../status.ts";
 import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
-import { agentNameError, suggestedAgentName } from "../agent-name.ts";
+import { NEW, agentNameError, suggestedAgentName } from "../agent-name.ts";
 import type { ChatItem } from "../chat.ts";
 import type { WorkerModel } from "../config.ts";
 
@@ -780,6 +780,7 @@ root.addEventListener("submit", async (event) => {
     }
     if (message === "/tree") { input.value = ""; await treePicker(); return; }
     if (message === "/clone") { input.value = ""; await busy("Cloning…", () => fork()); return; }
+    if (message === "/new") { input.value = ""; await busy("Starting a new agent…", () => fork(NEW)); return; }
     if (message === "/fork") {
       input.value = "";
       const inputs = await api<{ id: string; text: string }[]>("/inputs", { target });

@@ -13,7 +13,7 @@ import type { WorkerModel } from "./config.ts";
 import { chatItems, type ChatItem, type Queued } from "./chat.ts";
 import { cacheMissText, piCacheMisses, piCacheWarming } from "./presentation.ts";
 import { CACHE_WARM_KIND, cacheWarming, type CacheWarmData } from "./warming.ts";
-import { agentNameError } from "./agent-name.ts";
+import { NEW, agentNameError, suggestedAgentName, uniqueAgentName } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import { clean, firstLine, formatContext, formatCost, formatDuration, formatTokens, liveStatus, statusWord, teamGlance, textOf, type WorkerStatus } from "./status.ts";
 import type { AgentSummary } from "./protocol.ts";
@@ -467,6 +467,19 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     return item;
   }
   /** A hosted agent the human can archive or remove, and its sub-agents. */
+  /** Keep "You are agent <name>." true after a rename or fork. */
+  async function renameInstructions(tx: Tx, conversationId: ConversationId, from: string, to: string) {
+    const stored = await tx.doc(AgentDoc, conversationId);
+    const prefix = `You are agent ${from}.`;
+    if (stored.instructions?.startsWith(prefix)) await configure(tx, conversationId, { instructions: `You are agent ${to}.` + stored.instructions.slice(prefix.length) });
+  }
+  /** Replace `to`'s agent configuration (model, thinking, instructions, cwd, tools) with `from`'s. */
+  async function copyConfig(tx: Tx, from: ConversationId, to: ConversationId) {
+    const now = JSON.parse(JSON.stringify(await tx.doc(AgentDoc, from)));
+    const config = await tx.doc(AgentDoc, to) as Record<string, unknown>;
+    for (const key of Object.keys(config)) delete config[key];
+    Object.assign(config, now);
+  }
   function teamOf(state: Registry, target: string) {
     const agent = state.agents[target] ?? resolveTarget(state, human, target);
     if (agent.where.kind !== "hosted") throw new Error("Only hosted agents can be archived or removed");
@@ -516,9 +529,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         const agent = doc.agents[target!.id]!;
         if (Object.values(doc.agents).some(sibling => !sibling.removed && sibling.id !== agent.id && sibling.where.kind === "hosted" && sibling.parent === agent.parent && sibling.name === args.name)) throw new Error("Name already exists; reuse the agent or choose a distinct name");
         if (agent.where.kind !== "hosted") throw new Error("External Pi sessions cannot be renamed");
-        const stored = await tx.doc(AgentDoc, agent.where.conversationId);
-        const prefix = `You are agent ${agent.name}.`;
-        if (stored.instructions?.startsWith(prefix)) await configure(tx, agent.where.conversationId, { instructions: `You are agent ${args.name}.` + stored.instructions.slice(prefix.length) });
+        await renameInstructions(tx, agent.where.conversationId, agent.name, args.name!);
         // Sub-agent identity (including Parent) is rendered from Teams on each model request,
         // not stored in the child's instructions; see resources.ts.
         agent.name = args.name!;
@@ -846,10 +857,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
           const child = at !== undefined ? await tx.forkConversation(from!, at, { ownership })
             : await tx.createConversation({ ownership });
           // Tree navigation keeps the current configuration, not the historical one: replace the branch's copy outright.
-          const now = JSON.parse(JSON.stringify(await tx.doc(AgentDoc, current)));
-          const config = await tx.doc(AgentDoc, child.id) as Record<string, unknown>;
-          for (const key of Object.keys(config)) delete config[key];
-          Object.assign(config, now);
+          await copyConfig(tx, current, child.id);
           stored.branches = [current, ...(stored.branches ?? [])];
           stored.where.conversationId = child.id;
           navigated = true;
@@ -884,7 +892,9 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
     },
     /**
      * Human-only fork of a top-level agent into a new top-level agent: `/clone` copies the whole conversation, `/fork`
-     * stops just before input `before`, whose text the client puts back in the editor. Sub-agents are not copied.
+     * stops just before input `before`, whose text the client puts back in the editor, and `/new` (`before: NEW`) copies
+     * nothing. With no history to copy, the new agent starts empty with the source's current configuration (model,
+     * thinking, instructions, tools). `/new` takes the folder's next name, as the new-agent form suggests. Sub-agents are not copied.
      */
     async fork(target: string, requestId: string, before?: string) {
       if (!requestId) throw new Error("A stable request ID is required");
@@ -896,19 +906,16 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
       const from = source.where.conversationId;
       const conversation = await conversationOf(source);
       const last = (await conversation.entries({ order: "descending", ...(before ? { maxEntryId: (Number(before) - 1) as EntryId } : {}) }, 1, undefined, context)).items[0];
-      if (!last) throw new Error("Nothing to fork before the first entry");
       const result = await (await root()).commit(async tx => {
         const doc = await tx.doc(Teams);
         if (doc.requests[requestKey]) return { ...doc.requests[requestKey]! };
-        const taken = new Set(Object.values(doc.agents).filter(agent => !agent.removed && !agent.parent).map(agent => agent.name));
-        const base = `${source.name.slice(0, 58)}-fork`;
-        let name = base;
-        for (let n = 2; taken.has(name); n++) name = `${base}-${n}`;
+        const taken = Object.values(doc.agents).filter(agent => !agent.removed && !agent.parent).map(agent => agent.name);
+        const name = before === NEW ? suggestedAgentName(source.cwd, taken) : uniqueAgentName(`${source.name.slice(0, 59)}-fork`, taken);
         const anchor = await tx.createTask(Anchor, null, { ownership: { kind: "conversation" }, background: true });
-        const child = await tx.forkConversation(from, last.id, { ownership: { kind: "task", taskId: anchor } });
-        const stored = await tx.doc(AgentDoc, child.id);
-        const prefix = `You are agent ${source.name}.`;
-        if (stored.instructions?.startsWith(prefix)) await configure(tx, child.id, { instructions: `You are agent ${name}.` + stored.instructions.slice(prefix.length) });
+        const ownership = { kind: "task" as const, taskId: anchor };
+        const child = last ? await tx.forkConversation(from, last.id, { ownership }) : await tx.createConversation({ ownership });
+        if (!last) await copyConfig(tx, from, child.id);
+        await renameInstructions(tx, child.id, source.name, name);
         const id = String(child.id);
         if (doc.agents[id]) throw new Error("Agent ID collision with a registered Pi session");
         doc.agents[id] = { id, name, cwd: source.cwd, activeAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };

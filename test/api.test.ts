@@ -11,7 +11,8 @@ import { createECDH, randomBytes } from "node:crypto";
 import { finished, openPush } from "../src/push.ts";
 import { mkdtemp, rm, mkdir, writeFile, stat, chmod, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { NEW } from "../src/agent-name.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -509,16 +510,23 @@ test("queued messages, /compact, /fork, /clone and Pi's cache-miss notices", { t
     await until(async () => (await source.inputs(agent.id!)).length === 2 && !(await source.list()).find(row => row.id === agent.id)?.running);
     const inputs = await source.inputs(agent.id!);
     assert.deepEqual(inputs.map(input => input.text), ["Start", "Second request"]);
-    await assert.rejects(source.fork(agent.id!, inputs[0]!.id), /Nothing to fork before the first entry/);
+    // Forking before the first message, or /new (NEW), copies no history: an empty agent with the same configuration.
     const forked = await source.fork(agent.id!, inputs[1]!.id, { requestId: "fork-1" });
     assert.deepEqual(await source.fork(agent.id!, inputs[1]!.id, { requestId: "fork-1" }), forked);
     const cloned = await source.fork(agent.id!);
+    const first = await source.fork(agent.id!, inputs[0]!.id);
+    const fresh = await source.fork(agent.id!, NEW);
     const rows = await source.list();
     const row = (id?: string) => rows.find(r => r.id === id)!;
-    assert.deepEqual([row(forked.id).name, row(cloned.id).name], ["busy-fork", "busy-fork-2"]);
+    assert.deepEqual([forked, cloned, first, fresh].map(r => row(r.id).name), ["busy-fork", "busy-fork-2", "busy-fork-3", basename(directory)]);
     assert.equal(row(forked.id).cwd, row(agent.id).cwd);
     assert.deepEqual((await source.inputs(forked.id!)).map(input => input.text), ["Start"]);
     assert.deepEqual((await source.inputs(cloned.id!)).map(input => input.text), ["Start", "Second request"]);
+    assert.deepEqual([(await source.page(first.id!)).items, (await source.page(fresh.id!)).items], [[], []]);
+    const config = async (id: string) => host.service.harness.snapshot(AgentDoc, Number((await source.page(id)).conversationId) as ConversationId, BACKGROUND_CONTEXT);
+    const [sourceConfig, freshConfig] = [(await config(agent.id!))!, (await config(fresh.id!))!];
+    assert.deepEqual([freshConfig.model, freshConfig.cwd], [sourceConfig.model, sourceConfig.cwd]);
+    assert.ok(freshConfig.instructions?.startsWith(`You are agent ${basename(directory)}.`));
     // /tree switches conversation behind the same identity, retaining all old branch entries.
     const originalPage = await source.page(agent.id!);
     const tree = await source.tree(agent.id!);
