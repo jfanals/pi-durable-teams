@@ -13,12 +13,12 @@ import { homedir } from "node:os";
 import { CompactionSummaryMessageComponent, getMarkdownTheme, getSelectListTheme, keyText, ToolExecutionComponent, UserMessageSelectorComponent, type Theme, type ThemeBg } from "@earendil-works/pi-coding-agent";
 import { builtInRenderers, loadToolRenderers, piExternalEditor, piModelSelector, piThinkingSelector, piTreeSelector } from "./presentation.ts";
 import {
-  Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth,
+  Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi,
   type Component, type DefaultTextStyle, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
 import { clean, firstLine, textOf, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, teamGlance, type WorkerStatus } from "./status.ts";
 import type { TreeResult } from "./source.ts";
-import { askReply, type ChatItem, type Queued } from "./chat.ts";
+import { askReply, type Ask, type ChatItem, type Queued } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import type { ImageContent, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { nextModel, modelThinking, modelNotice, thinkingSelection } from "./model-selection.ts";
@@ -41,6 +41,7 @@ export const askCount = (w: WorkerStatus | undefined, theme: Theme) => w?.asks?.
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const VISIBLE_RUNNING = 5;
 const VISIBLE_FOCUSED = 8;
+const VISIBLE_ASKS = 5;
 
 export function statusRow(w: WorkerStatus, width: number, selected: boolean, now: number, theme: Theme, nameWidth: number, frame = 0, idleText?: string, modelMinWidth = 80, tree = "") {
   const t = theme;
@@ -61,17 +62,20 @@ export function statusRow(w: WorkerStatus, width: number, selected: boolean, now
 }
 
 /**
- * Team panel under the prompt. Collapsed, it lists running workers (one per line, animated) and
- * summarizes the rest. Down from an empty prompt focuses it: every worker is listed and selectable.
+ * Team panel under the prompt. First the asks waiting on the human (titles), then the team: running
+ * workers one per line (animated), the rest summarized. Down from an empty prompt focuses it: every row
+ * is selectable, the selected ask shows its full text, Enter answers it or opens the worker.
  * Up past the first row, Esc, or typing returns to the prompt.
  */
 export class TeamPanel implements Component, Focusable {
   focused = false;
   private workers: WorkerStatus[] = [];
+  private asks: Ask[] = [];
+  private onAnswer?: (ask: Ask) => void;
   private selected = 0;
   private frame = 0;
   private ticker?: ReturnType<typeof setInterval>;
-  private rows: (WorkerStatus | undefined)[] = [];
+  private rows: (WorkerStatus | Ask | undefined)[] = [];
   private returnTo?: Component;
   private focus: (component: Component) => void;
   private compact: boolean;
@@ -79,23 +83,34 @@ export class TeamPanel implements Component, Focusable {
   constructor(tui: TUI, theme: Theme, onOpen: (worker: WorkerStatus) => void, options: { compact?: boolean; focus?: (component: Component) => void } = {}) { this.tui = tui; this.theme = theme; this.onOpen = onOpen; this.compact = options.compact ?? false; this.focus = options.focus ?? (component => tui.setFocus(component)); }
 
   get hasWorkers() { return this.workers.length > 0; }
+  get hasRows() { return this.workers.length + this.asks.length > 0; }
+  /** Open asks, shown above the team; Enter on one calls `onAnswer` after returning to the prompt. */
+  setAsks(asks: Ask[], onAnswer: (ask: Ask) => void) {
+    this.onAnswer = onAnswer;
+    if (JSON.stringify(asks) === JSON.stringify(this.asks)) return;
+    const keep = this.selected < this.asks.length ? undefined : this.workers[this.selected - this.asks.length]?.id;
+    this.asks = asks;
+    const worker = this.workers.findIndex(w => w.id === keep);
+    this.selected = worker >= 0 ? asks.length + worker : Math.min(this.selected, Math.max(0, asks.length + this.workers.length - 1));
+    if (!this.hasRows && this.focused) this.leave();
+  }
   /** Focused component, so the caller can check the main prompt has focus. Not on Pi's public TUI type. */
   currentFocus() { return (this.tui as { getFocusedComponent?: () => unknown }).getFocusedComponent?.(); }
   setWorkers(workers: WorkerStatus[]) {
-    const keep = this.workers[this.selected]?.id;
+    const keep = this.workers[this.selected - this.asks.length]?.id;
     const rank = (w: WorkerStatus) => w.running ? 0 : 1;
     this.workers = [...workers].sort((a, b) => rank(a) - rank(b)
       || (rank(a) === 0 ? (a.since ?? 0) - (b.since ?? 0) : (b.finishedAt ?? 0) - (a.finishedAt ?? 0)));
     const index = this.workers.findIndex(w => w.id === keep);
-    this.selected = index >= 0 ? index : Math.min(this.selected, Math.max(0, this.workers.length - 1));
-    if (!this.workers.length && this.focused) this.leave();
+    this.selected = index >= 0 ? this.asks.length + index : Math.min(this.selected, Math.max(0, this.asks.length + this.workers.length - 1));
+    if (!this.hasRows && this.focused) this.leave();
     // Animate only running workers.
     const running = this.workers.some(w => w.running);
     if (running && !this.ticker) this.ticker = setInterval(() => { this.frame++; this.tui.requestRender(); }, 100);
     if (!running && this.ticker) { clearInterval(this.ticker); this.ticker = undefined; }
     this.tui.requestRender();
   }
-  enter(editor: Component, target?: string) { this.returnTo = editor; this.selected = Math.max(0, this.workers.findIndex(w => w.id === target)); this.focus(this); this.tui.requestRender(); }
+  enter(editor: Component, target?: string) { const worker = this.workers.findIndex(w => w.id === target); this.returnTo = editor; this.selected = worker >= 0 ? this.asks.length + worker : 0; this.focus(this); this.tui.requestRender(); }
   private leave(forward?: string) {
     const editor = this.returnTo;
     if (!editor) return;
@@ -109,18 +124,28 @@ export class TeamPanel implements Component, Focusable {
     const now = Date.now();
     const nameWidth = Math.min(16, Math.max(6, ...this.workers.map(w => visibleWidth(clean(w.name)))));
     this.rows = [];
-    if (!this.workers.length) return [];
+    if (!this.hasRows) return [];
     const lines: string[] = [];
-    const push = (line: string, worker?: WorkerStatus) => { lines.push(line); this.rows.push(worker); };
+    const push = (line: string, row?: WorkerStatus | Ask) => { lines.push(line); this.rows.push(row); };
+    const askLine = (ask: Ask, selected: boolean) => truncateToWidth(`${selected ? t.fg("accent", "› ") : "  "}${t.fg("warning", selected ? t.bold(ask.title) : ask.title)}${ask.at ? t.fg("dim", ` · ${formatAgo(now - ask.at)}`) : ""}`, width);
+    const asked = this.selected < this.asks.length;
     if (this.focused) {
+      for (const [i, ask] of this.asks.entries()) {
+        push(askLine(ask, i === this.selected), ask);
+        if (i === this.selected && ask.text) for (const line of wrapTextWithAnsi(ask.text, Math.max(10, width - 4))) push(`    ${line}`, ask);
+      }
       // Leave room for the conversation and prompt on short terminals.
       const visible = Math.max(1, Math.min(VISIBLE_FOCUSED, (this.tui.terminal?.rows ?? 24) - 12));
-      const start = Math.max(0, Math.min(this.selected - Math.floor(visible / 2), this.workers.length - visible));
-      for (const [i, w] of this.workers.slice(start, start + visible).entries()) push(statusRow(w, width, start + i === this.selected, now, t, nameWidth, this.frame), w);
-      const more = this.compact || this.workers.length > visible ? `${this.selected + 1}/${this.workers.length} · ` : "";
-      push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · enter/→ open · esc back`), width));
+      const worker = this.selected - this.asks.length;
+      const start = Math.max(0, Math.min(worker - Math.floor(visible / 2), this.workers.length - visible));
+      for (const [i, w] of this.workers.slice(start, start + visible).entries()) push(statusRow(w, width, start + i === worker, now, t, nameWidth, this.frame), w);
+      const more = !asked && (this.compact || this.workers.length > visible) ? `${worker + 1}/${this.workers.length} · ` : "";
+      push(truncateToWidth(t.fg("dim", `  ${more}↑↓ select · ${asked ? "enter answer" : "enter/→ open"} · esc back`), width));
       return lines;
     }
+    for (const ask of this.asks.slice(0, VISIBLE_ASKS)) push(askLine(ask, false), ask);
+    if (this.asks.length > VISIBLE_ASKS) push(truncateToWidth(t.fg("dim", `  +${this.asks.length - VISIBLE_ASKS} more`), width));
+    if (!this.workers.length) { push(truncateToWidth(t.fg("dim", "  ↓ to select"), width)); return lines; }
     const { shown, summary } = teamGlance(this.workers, this.compact ? Infinity : VISIBLE_RUNNING);
     for (const w of shown) push(statusRow(w, width, false, now, t, nameWidth, this.frame), w);
     push(truncateToWidth(t.fg("dim", `  ${shown.length || summary.includes("team ") ? "" : "team · "}${summary ? `${summary} · ` : ""}↓ to select`), width));
@@ -128,21 +153,25 @@ export class TeamPanel implements Component, Focusable {
   }
   handleInput(data: string) {
     if (matchesKey(data, Key.up)) { if (this.selected === 0) return this.leave(); this.selected--; }
-    else if (matchesKey(data, Key.down)) this.selected = Math.min(this.workers.length - 1, this.selected + 1);
+    else if (matchesKey(data, Key.down)) this.selected = Math.min(this.asks.length + this.workers.length - 1, this.selected + 1);
+    else if (matchesKey(data, Key.enter) && this.selected < this.asks.length) return this.answer(this.asks[this.selected]!);
     // As on the dashboard, → opens like Enter and ← goes back (handled by the chat view).
-    else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) { const w = this.workers[this.selected]; if (w) this.onOpen(w); return; }
+    else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) { const w = this.workers[this.selected - this.asks.length]; if (w) this.onOpen(w); return; }
     else if (matchesKey(data, Key.escape)) return this.leave();
     else return this.leave(data);
     this.tui.requestRender();
   }
   handleMouse(event: TuiMouseEvent) {
     if (event.type !== "click" || event.button !== "left") return undefined;
-    const worker = this.rows[event.y];
-    if (!worker) return undefined;
-    this.selected = Math.max(0, this.workers.indexOf(worker));
-    this.onOpen(worker);
+    const row = this.rows[event.y];
+    if (!row) return undefined;
+    if ("entry" in row) { this.answer(row); return { handled: true }; }
+    this.selected = this.asks.length + Math.max(0, this.workers.indexOf(row));
+    this.onOpen(row);
     return { handled: true };
   }
+  /** Back to the prompt, then let the chat add the ask's "Re:" line and show where it was asked. */
+  private answer(ask: Ask) { this.leave(); this.onAnswer?.(ask); }
   invalidate() {}
   dispose() { if (this.ticker) clearInterval(this.ticker); this.ticker = undefined; }
 }
@@ -669,7 +698,6 @@ export class ChatView implements Component, Focusable {
   private lastEscapeTime = 0;
   private inFlight = 0;
   private scroll: HistoryScroll;
-  private askIndex = 0;
   readonly layout: VStack;
   constructor(tui: TUI, theme: Theme, name: string, source: WorkerSource, parent: AbortSignal, actions: ChatActions, notice: () => string = () => "", children?: { open(worker: WorkerStatus): void }, branch: () => string = () => "", path: () => string = () => "") {
     this.actions = actions;
@@ -699,19 +727,14 @@ export class ChatView implements Component, Focusable {
       const hints = `${path() || s?.name || name} · ${s?.id ?? "…"} · ← back · esc stop · ${keyText("app.message.followUp")} follow-up · ${keyText("app.tools.expand")} ${this.transcript.expanded ? "collapse" : "expand"} · ${keyText("app.thinking.toggle")} thinking`;
       return [location, statsLine, [hints, this.transcript.note, notice()].filter(Boolean).join(" · ")].map(line => truncateToWidth(theme.fg("dim", line), width));
     }, invalidate() {} };
-    // Waiting on you: the agent's open asks, one amber line each, just above the editor.
-    const asks = { render: (width: number) => (this.transcript.status?.asks ?? []).map((ask, i) => truncateToWidth(` ${theme.fg("warning", `${ask.title}${ask.text ? `: ${ask.text}` : ""}`)}${ask.at ? theme.fg("dim", ` · ${formatAgo(Date.now() - ask.at)}`) : ""}${i ? "" : theme.fg("dim", " · ctrl+q answer")}`, width)), invalidate() {} };
     const working = { render: (width: number) => [...this.transcript.queuedLines(width), ...this.transcript.workingLine(width), ...(this.modelNote ? [truncateToWidth(theme.fg("muted", this.modelNote), width)] : [])], invalidate() {} };
     // Pi's selectors take the editor's place while open.
     const input = { render: (width: number) => (this.picker?.component ?? this.editor).render(width), invalidate: () => this.editor.invalidate() };
     this.scroll = scroll;
-    this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, asks, working, input, ...(this.panel ? [this.panel] : []), footer]);
+    this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, working, input, ...(this.panel ? [this.panel] : []), footer]);
   }
-  /** ctrl+q: the next open ask. Scrolls to where it was asked and adds its "Re:" line to the end of the draft. */
-  private async answerNext() {
-    const asks = this.transcript.status?.asks ?? [];
-    if (!asks.length) { this.transcript.note = "Nothing is waiting on you"; this.transcript.changed(); return; }
-    const ask = asks[this.askIndex++ % asks.length]!;
+  /** An ask chosen under the prompt: add its "Re:" line to the end of the draft and scroll to where it was asked. */
+  private async answer(ask: Ask) {
     const text = this.editor.getText(); const reply = askReply(ask);
     if (!text.includes(reply)) this.editor.setText(text.trimEnd() + (text.trim() ? "\n" : "") + reply);
     const line = await this.transcript.lineOf(ask.entry);
@@ -719,6 +742,8 @@ export class ChatView implements Component, Focusable {
   }
   /** Text for the editor, as Pi restores a forked message. */
   setDraft(text: string) { this.editor.setText(text); }
+  /** The unsent prompt, kept per agent while other panes are open. */
+  draft() { return this.editor.getText(); }
   /** The markdown of every loaded message and answer, oldest first: what a terminal selection is copied from. */
   markdown() {
     return [...this.transcript.entries.values()].flatMap(item => item.kind === "input" ? [item.text]
@@ -892,7 +917,10 @@ export class ChatView implements Component, Focusable {
     } catch (error) { this.transcript.note = `Failed to paste from clipboard: ${error}`; }
     this.transcript.changed();
   }
-  render(width: number) { return this.layout.render(width); }
+  render(width: number) {
+    this.panel?.setAsks(this.transcript.status?.asks ?? [], ask => void this.answer(ask));
+    return this.layout.render(width);
+  }
   handleInput(data: string) {
     if (this.editingExternally) return;
     if (this.picker) { this.picker.input(data); this.transcript.changed(); return; }
@@ -906,7 +934,7 @@ export class ChatView implements Component, Focusable {
     }
     if (matchesKey(data, Key.left) && !this.editor.getText()) return this.actions.back();
     if (this.panel?.focused) { this.panel.handleInput(data); return; }
-    if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasWorkers) { this.panel.enter(this.editor); return; }
+    if (matchesKey(data, Key.down) && !this.editor.getText() && this.panel?.hasRows) { this.panel.enter(this.editor); return; }
     if (getKeybindings().matches(data, "app.editor.external")) { void this.openExternalEditor(); return; }
     if (getKeybindings().matches(data, "app.clipboard.pasteImage")) { void this.pasteClipboard(); return; }
     if (this.editor.isShowingAutocomplete()) { this.editor.handleInput(data); return; }
@@ -934,7 +962,6 @@ export class ChatView implements Component, Focusable {
       });
       return;
     }
-    if (matchesKey(data, Key.ctrl("q"))) { void this.answerNext(); return; }
     // Pi's follow-up key (option+enter on a Mac, or the user's own binding in Pi's keybindings.json).
     if (getKeybindings().matches(data, "app.message.followUp")) return this.submit(this.editor.getExpandedText(), "followUp");
     if (this.transcript.toggle(data)) return;

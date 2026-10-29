@@ -53,6 +53,12 @@ export class AgentsApp implements Component, Focusable {
   }
   private renaming?: { agent: AgentSummary; error?: string };
   private selected = 0; private view?: ChatView;
+  /** Unsent prompts by agent, so opening another agent and coming back keeps what was typed. */
+  private drafts = new Map<string, string>(); private viewAgent?: string;
+  private closeView() {
+    if (this.view && this.viewAgent) { const text = this.view.draft(); if (text.trim()) this.drafts.set(this.viewAgent, text); else this.drafts.delete(this.viewAgent); }
+    this.view?.dispose(); this.view = undefined; this.viewAgent = undefined;
+  }
   private note = "Connecting…"; private editor: Editor;
   private lastCtrlC = 0;
   private form?: { step: number; name: string; cwd: string; nameEdited?: boolean; model?: WorkerModel; choices: ModelChoice[]; error?: string; creating?: boolean; loading?: boolean; folderRequest?: number };
@@ -187,7 +193,7 @@ export class AgentsApp implements Component, Focusable {
     const parent = this.rows().find(row => row.agent.id === this.stack.at(-1))?.agent;
     if (parent) { this.open(parent, false); if (child) this.view?.focusChild(child); }
     else {
-      this.view?.dispose(); this.view = undefined; this.panes = undefined;
+      this.closeView(); this.panes = undefined;
       this.setScreen();
     }
     this.tui.requestRender();
@@ -235,7 +241,7 @@ export class AgentsApp implements Component, Focusable {
       }
       this.stack.push(agent.id);
     }
-    this.view?.dispose();
+    this.closeView();
     this.loadBranch(agent.cwd);
     const bound = workerSource(this.source, agent.id);
     this.view = new ChatView(this.tui, this.theme, agent.name, bound, this.life.signal, {
@@ -262,7 +268,7 @@ export class AgentsApp implements Component, Focusable {
     }, () => this.note, !this.rows().some(row => row.agent.children.some(child => child.id === agent.id)) ? { open: worker => {
       const child = this.rows().find(row => row.agent.id === worker.id)?.agent;
       if (child) this.open(child);
-    } } : undefined, () => this.branches.get(agent.cwd ?? "") ?? "", () => this.path()); this.view.setChildren(agent.children); this.buildPanes(); this.setScreen(); this.tui.requestRender();
+    } } : undefined, () => this.branches.get(agent.cwd ?? "") ?? "", () => this.path()); this.viewAgent = agent.id; this.view.setDraft(this.drafts.get(agent.id) ?? ""); this.view.setChildren(agent.children); this.buildPanes(); this.setScreen(); this.tui.requestRender();
   }
   private nameError(name: string, target?: AgentSummary) {
     const siblings = target ? this.rows().find(row => row.agent.children.some(child => child.id === target.id))?.agent.children ?? this.agents : this.agents;

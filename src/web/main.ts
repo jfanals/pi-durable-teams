@@ -175,7 +175,11 @@ ${button("Model & thinking", "model", 'type="button"')}
 </form>
 </footer></section></div>`,
   );
-  attachAutocomplete(document.querySelector<HTMLTextAreaElement>("#message")!, id);
+  const message = document.querySelector<HTMLTextAreaElement>("#message")!;
+  // Unsent prompts are kept per agent in this browser, across panes and closed tabs.
+  message.value = localStorage.getItem(`draft:${id}`) ?? "";
+  message.addEventListener("input", () => saveDraft(id, message.value));
+  attachAutocomplete(message, id);
   document.querySelector("#messages")!.addEventListener("scroll", () => {
     const view = document.querySelector("#messages");
     if (!view) return; // A queued scroll event can outlive a collapsed pane.
@@ -239,10 +243,14 @@ async function older() {
     drawChat(true);
   } finally { loadingOlder = false; }
 }
+function saveDraft(id: string, text: string) {
+  if (text.trim()) localStorage.setItem(`draft:${id}`, text); else localStorage.removeItem(`draft:${id}`);
+}
 /** An ask: show the reply it was asked in (loading older pages if needed) and add its "Re:" line to the draft. */
 async function answer(entry: string, reply: string) {
   const input = document.querySelector<HTMLTextAreaElement>("#message")!;
   if (!input.value.includes(reply)) input.value = input.value.trimEnd() + (input.value.trim() ? "\n" : "") + reply;
+  saveDraft(stack.at(-1)!, input.value);
   input.focus(); input.setSelectionRange(input.value.length, input.value.length);
   const version = generation;
   while (!items.some(item => item.id === entry) && next && version === generation) await older();
@@ -761,6 +769,7 @@ root.addEventListener("submit", async (event) => {
     stack = [];
     await open(id);
     document.querySelector<HTMLTextAreaElement>("#message")!.value = draft;
+    saveDraft(id, draft);
   };
   const busy = async (label: string, work: () => Promise<void>) => {
     pending = label; status();
@@ -815,6 +824,7 @@ root.addEventListener("submit", async (event) => {
       mode: (document.querySelector("#steer") as HTMLInputElement).checked ? "steer" : "followUp",
     });
     input.value = "";
+    saveDraft(target, "");
     attachments = [];
     showAttachments();
     const view = document.querySelector("#messages")!;

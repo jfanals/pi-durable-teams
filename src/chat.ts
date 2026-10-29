@@ -20,7 +20,7 @@ export function foldAsks(asks: readonly Ask[], items: readonly ChatItem[]): Ask[
     for (const [, mark, title, text] of part.text.matchAll(ASK)) {
       const key = title!.trim().toLowerCase();
       open.delete(key);
-      if (mark === " ") open.set(key, { title: title!.trim(), text: text!.trim().slice(0, 300), entry: item.id, ...(item.at ? { at: item.at } : {}) });
+      if (mark === " ") open.set(key, { title: title!.trim(), text: text!.trim().slice(0, 2000), entry: item.id, ...(item.at ? { at: item.at } : {}) });
     }
   }
   return [...open.values()];
