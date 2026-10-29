@@ -927,7 +927,8 @@ export class ChatView implements Component, Focusable {
       });
       return;
     }
-    if (matchesKey(data, Key.alt("q"))) { void this.answerNext(); return; }
+    // alt+q; "œ" is what macOS Option+q types when the terminal doesn't send Option as Alt.
+    if (matchesKey(data, Key.alt("q")) || data === "œ") { void this.answerNext(); return; }
     // Pi's follow-up key (option+enter on a Mac, or the user's own binding in Pi's keybindings.json).
     if (getKeybindings().matches(data, "app.message.followUp")) return this.submit(this.editor.getExpandedText(), "followUp");
     if (this.transcript.toggle(data)) return;
