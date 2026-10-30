@@ -86,6 +86,8 @@ export const info = (a: Agent) =>
 export function footerInfo(a: Agent) {
   return { summary: [a.model, a.thinking, formatContext(a)].filter(Boolean).join(" · "), details: `${formatUsage(a)}${a.cwd ? `\n${a.cwd}` : ""}` };
 }
+/** Shown only in rewind mode (⋮ → Rewind…): goes back to just before this message of the human's, or just after this reply. */
+const rewindButton = (id: string) => `<button type="button" class="rewind" data-rewind="${escape(id)}" aria-label="Rewind here" title="Rewind here">↶</button>`;
 export function transcript(items: ChatItem[]) {
   const results = new Map(items.flatMap((i) => (i.kind === "result" ? [[i.callId, i] as const] : [])));
   return items
@@ -98,7 +100,7 @@ export function transcript(items: ChatItem[]) {
 </details>`;
       if (item.kind === "notice") return `<p class="notice${item.warning ? " warning" : ""}">${escape(item.text)}</p>`;
       if (item.kind === "input")
-        return `<article class="input">
+        return `<article class="input" data-entry="${escape(item.id)}">${!item.report && item.from === "Human" ? rewindButton(item.id) : ""}
 <small>${escape(item.from)}${item.report ? " · report" : ""}</small>
 <div class="markdown">${markdown(item.text, true)}</div>
 ${item.images?.length ? `<span data-images="${escape(item.id)}">[image]</span>` : ""}
@@ -131,7 +133,7 @@ ${result?.content?.some(part => part.type === "image") ? `<span data-images="${e
             .join(" · ")
         : "";
       const error = item.error ? `<p class="error">${escape(item.error)}</p>` : "";
-      return `<article class="reply" data-entry="${escape(item.id)}">${parts}${error}
+      return `<article class="reply" data-entry="${escape(item.id)}">${rewindButton(item.id)}${parts}${error}
 ${turn ? `<small class="stamp">${stamp}</small>` : ""}</article>`;
     })
     .join("");

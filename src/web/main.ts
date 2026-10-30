@@ -25,6 +25,8 @@ let generation = 0;
 let pending = "";
 let attachments: ImageContent[] = [];
 // The asks bar: open on a wide screen, one line on a phone until tapped; a tapped ask keeps its options in view.
+// Rewind mode (⋮ → Rewind…): each message shows ↶, and a tap goes back to it.
+let rewinding = false;
 let asksOpen = matchMedia("(min-width: 700px)").matches, chosenAsk = "", lastAsks = "";
 const imageCache = new Map<string, Promise<ImageContent[]>>();
 const reconnecting = new Set<string>();
@@ -128,6 +130,8 @@ function status(clockOnly = false) {
     ? `<span>${e(a.activity ?? "working")}</span>${a.since ? `<small> · ${formatDuration(Date.now() - a.since)}</small>` : ""}` : "";
   working.title = working.textContent ?? "";
   if (clockOnly) return;
+  document.querySelector("#messages")!.classList.toggle("rewinding", rewinding);
+  (document.querySelector("#rewind-bar") as HTMLElement).hidden = !rewinding;
   // Running, Send becomes Steer (interrupt now, as Enter does in Pi) and Queue waits for the answer.
   (document.querySelector("#stop") as HTMLButtonElement).hidden = !a.running;
   (document.querySelector("#queue") as HTMLButtonElement).hidden = !a.running;
@@ -140,7 +144,7 @@ async function open(id: string, push = true) {
   if (!stack.length || stack[0] !== id && !agents.find(a => a.id === stack[0])?.children.some(c => c.id === id)) showIdle = false;
   attachments = [];
   imageCache.clear();
-  lastAsks = ""; chosenAsk = "";
+  lastAsks = ""; chosenAsk = ""; rewinding = false;
   if (push) {
     direction = "forward";
     // A sub-agent opened from the list goes back to its main agent, not the list, as in the terminal.
@@ -172,6 +176,7 @@ async function open(id: string, push = true) {
 <button id="new-messages" hidden data-action="bottom">New messages ↓</button>
 <div id="asks"></div>
 <div id="queued" class="queued"></div>
+<div id="rewind-bar" class="rewind-bar" hidden>Tap ↶ on a message to go back to it ${button("Cancel", "rewind-cancel", 'type="button"')}</div>
 <div id="working" role="status">
 </div>
 <details id="info"${matchMedia("(min-width: 700px)").matches ? " open" : ""}><summary></summary><small></small>${button("Model & thinking", "model", 'type="button"')}</details>
@@ -592,18 +597,29 @@ async function rewind(entryId: string) {
   const input = document.querySelector<HTMLTextAreaElement>("#message");
   if (input && result.editorText !== undefined && !input.value.trim()) input.value = result.editorText;
 }
+/** `/tree`: every branch's messages and replies, one line each (a branch indents); a tap goes there. */
 async function treePicker() {
   type Node = { entry: { id: string; message: { role: string; content: string | { type: string; text?: string }[] } }; children: Node[] };
   const tree = await api<{ nodes: Node[]; leafId: string | null }>("/tree", { target: stack.at(-1) });
-  const options = (nodes: Node[], depth = 0): string => nodes.map(node => {
+  let here = "";
+  const rows = (nodes: Node[], depth = 0, shown = ""): string => nodes.map(node => {
     const m = node.entry.message;
-    const text = typeof m.content === "string" ? m.content : m.content.filter(p => p.type === "text").map(p => p.text).join(" ");
-    return `<option value="${e(node.entry.id)}" ${node.entry.id === tree.leafId ? "selected" : ""}>${e("—".repeat(depth) + " " + m.role + ": " + text.slice(0, 120))}</option>` + options(node.children, depth + 1);
+    const text = (typeof m.content === "string" ? m.content : m.content.filter(p => p.type === "text").map(p => p.text).join(" ")).replace(/\s+/g, " ").trim();
+    // System prompts, tool results and tool-only turns are not places a person goes back to.
+    const row = (m.role === "user" || m.role === "assistant") && text
+      ? `<button type="button" class="tree-row ${m.role}" data-tree="${e(node.entry.id)}" style="--depth:${depth}"><span>${m.role === "user" ? "You" : "Agent"}</span>${e(text.slice(0, 200))}</button>` : "";
+    if (row) shown = node.entry.id;
+    if (node.entry.id === tree.leafId) here = shown;
+    return row + rows(node.children, depth + (node.children.length > 1 ? 1 : 0), shown);
   }).join("");
-  if (!tree.nodes.length) throw new Error("No entries in session");
-  showDialog("Session tree", `<select name="entryId" size="12">${options(tree.nodes)}</select>`, async form => {
-    const id = String(form.get("entryId"));
-    if (id !== tree.leafId) await rewind(id);
+  const list = rows(tree.nodes);
+  if (!list) throw new Error("No messages in this session yet");
+  const dialog = showDialog("Session tree", `<div class="tree">${list}</div>`);
+  const current = dialog.querySelector<HTMLElement>(`[data-tree="${CSS.escape(here)}"]`);
+  current?.classList.add("here"); current?.scrollIntoView({ block: "center" });
+  dialog.querySelectorAll<HTMLElement>("[data-tree]").forEach(row => row.onclick = async () => {
+    dialog.remove();
+    if (row.dataset.tree !== here) await rewind(row.dataset.tree!).catch(fail);
   });
 }
 // Rail navigation first returns to the shared parent history entry, then pushes a new pane.
@@ -623,6 +639,7 @@ root.addEventListener("click", async (event) => {
   if (!el) return;
   try {
     if (el.dataset.depth !== undefined) { event.preventDefault(); collapseTo(Number(el.dataset.depth)); return; }
+    if (el.dataset.rewind) { rewinding = false; status(); await rewind(el.dataset.rewind); return; }
     if (el.dataset.ask) { await answer(el.dataset.ask, el.dataset.title!, el.dataset.option); return; }
     if (el.dataset.open) {
       if (el.closest(".rail")) openFromRail(el.dataset.open);
@@ -672,6 +689,9 @@ root.addEventListener("click", async (event) => {
       case "model":
         if (a) await pickModel(a);
         break;
+      case "rewind-cancel":
+        rewinding = false; status();
+        break;
       case "stop":
         await mutate("/stop", { target: a?.id });
         break;
@@ -708,7 +728,7 @@ ${a.archived ? `<button type="button" data-menu="unarchive">Unarchive</button>
                     },
                   );
                 if (item.dataset.menu === "model") await pickModel(a);
-                if (item.dataset.menu === "rewind") await treePicker(); // as /tree: the session's messages, pick where to go back to
+                if (item.dataset.menu === "rewind") { rewinding = true; status(); }
                 if (item.dataset.menu === "unarchive") await mutate("/unarchive", { target: a.id });
                 // Archive is undoable, so it needs no confirmation; delete is only offered for archived agents.
                 if (item.dataset.menu === "archive" || item.dataset.menu === "remove" && confirm(`Delete ${a.name}${a.children.length ? ` and ${a.children.length} sub-agent${a.children.length === 1 ? "" : "s"}` : ""}? This can't be undone.`)) {
