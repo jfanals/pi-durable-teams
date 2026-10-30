@@ -408,8 +408,8 @@ export class AgentsApp implements Component, Focusable {
     const rows = this.dashboard(); const selectable = rows.filter(row => row.agent);
     this.selected = Math.max(0, Math.min(this.selected, selectable.length - 1));
     const height = this.tui.terminal.rows;
-    const keys = this.showArchived ? ["↑↓ select · enter/→ open", "u unarchive · d delete · tab active · q quit"]
-      : ["↑↓ select · enter/→ open · n new", `r rename · a archive${this.archivedCount ? " · tab archived" : ""} · q quit`];
+    const keys = this.showArchived ? ["↑↓ select · enter/→ open", "u unarchive · x delete · tab active · q quit"]
+      : ["↑↓ select · enter/→ open · n new", `r rename · x archive${this.archivedCount ? " · tab archived" : ""} · q quit`];
     const hints = this.showKeys ? (width >= 75 ? [keys.join(" · ")] : keys) : [];
     // Cards and spacing as in the rails: two lines per agent, the selected one a tinted band.
     const blocks = rows.map(({ agent, tree, summary }, index) => agent
@@ -476,10 +476,10 @@ export class AgentsApp implements Component, Focusable {
     else if (matchesKey(data, Key.tab) && (this.showArchived || this.archivedCount)) {
       this.toggleArchived();
     }
-    // Archive is undoable, so it needs no confirmation; delete is only offered for archived agents.
-    else if (data === "a" && !this.showArchived) { const agent = this.selectable()[this.selected]; if (agent) void this.source.archive(agent.id).catch(error => this.fail(error)); }
+    // x archives, and in the archived view deletes. Archive is undoable, so only delete asks for confirmation.
+    else if (data === "x" && !this.showArchived) { const agent = this.selectable()[this.selected]; if (agent) void this.source.archive(agent.id).catch(error => this.fail(error)); }
     else if (data === "u" && this.showArchived) { const agent = this.selectable()[this.selected]; if (agent) void this.source.unarchive(agent.id).catch(error => this.fail(error)); }
-    else if (data === "d" && this.showArchived) { const agent = this.selectable()[this.selected]; if (agent) this.confirming = agent; }
+    else if (data === "x" && this.showArchived) { const agent = this.selectable()[this.selected]; if (agent) this.confirming = agent; }
     else if (data === "n" && !this.showArchived) {
       this.form = { step: 4, name: suggestedAgentName(this.launchCwd, this.allAgents.map(agent => agent.name)), cwd: this.launchCwd, choices: [] };
       this.note = ""; this.formStep(4); void this.loadReview(this.launchCwd);

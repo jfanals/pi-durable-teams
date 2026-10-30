@@ -361,7 +361,7 @@ loaded yet.
   instructions and tools, under the folder's next free name. Sub-agents are not copied.
 - **Ctrl+C** exits.
 
-Archive, unarchive and delete are human-only (terminal **a**/**u**/**d**, web **⋮** menu and the
+Archive, unarchive and delete are human-only (terminal **x** archives and, in the archived view, deletes; **u** unarchives; web **⋮** menu and the
 **Archived** toggle). Archiving aborts the agent and its sub-agents and hides them from agents'
 `team list`; messages to them fail until unarchived, which brings them back idle. Delete is offered only for archived agents: it hides them everywhere for
 good. History is kept and a deleted agent's name is reusable. External Pi sessions cannot be archived
