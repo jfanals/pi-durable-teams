@@ -234,8 +234,10 @@ Runtime: the Pi packages (`chord`, `pi-durable`, `pi-ai`, `pi-coding-agent`, ...
 built from upstream main at the commit in `vendor/pi/REVISION` and installed from the
 tarballs in `vendor/pi/` (all report version 1.4.0, so `overrides` keep every copy on
 the vendored build). To update: build upstream (`npm ci && npm run build` from its real
-path), `npm pack` each package into `vendor/pi/`, write the commit to `REVISION`, then
-`npm install` and adapt to the `[Unreleased]` notes in upstream's
+path), `npm pack` each package into `vendor/pi/`, write the commit to `REVISION`, delete the
+`integrity` of every `file:vendor/` entry in `package-lock.json` (the versions don't
+change, so npm otherwise reinstalls the old build from its cache), then
+`rm -rf node_modules && npm install` and adapt to the `[Unreleased]` notes in upstream's
 `packages/durable/CHANGELOG.md`. Domain IDs are strings at the external boundary.
 
 Local additions are team membership/scoping, peer/cross-main messaging, ordinary-Pi
