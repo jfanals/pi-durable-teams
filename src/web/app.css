@@ -497,12 +497,13 @@ a:focus-visible {
 .asks-fold summary { min-height: 0; padding: 2px 4px; font-size: .85rem; }
 /* Open, the list takes at most a third of the screen and scrolls inside. */
 .asks-list { display: flex; flex-direction: column; gap: 2px; max-height: 33dvh; overflow: auto; }
-.asks-list .ask { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 4px; padding: 2px 4px; color: var(--ask); font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.asks-list .ask { display: block; width: 100%; min-height: 0; text-align: left; background: none; border: 0; border-radius: 4px; padding: 3px 4px; color: var(--ask); font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.asks-list .ask.drafted, .asks-fold.all-drafted summary { color: var(--muted); }
 .asks-list .ask:hover { background: color-mix(in srgb, var(--ask) 12%, transparent); }
 .asks-list .ask small { display: inline; color: var(--muted); }
 .ask-options { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 2px 4px 4px 16px; }
 .ask-options small { color: var(--muted); font-size: .8rem; }
-.ask-options button { max-width: 100%; border: 1px solid color-mix(in srgb, var(--ask) 40%, transparent); background: none; border-radius: 4px; padding: 1px 8px; color: inherit; font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ask-options button { min-height: 0; max-width: 100%; border: 1px solid color-mix(in srgb, var(--ask) 40%, transparent); background: none; border-radius: 4px; padding: 1px 8px; color: inherit; font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ask-options button:hover { background: color-mix(in srgb, var(--ask) 12%, transparent); }
 article .flash, article.flash { animation: ask-flash 1.6s; }
 @keyframes ask-flash { 0%, 40% { background: color-mix(in srgb, var(--ask) 22%, transparent); } }

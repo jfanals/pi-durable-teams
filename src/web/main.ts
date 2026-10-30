@@ -117,7 +117,7 @@ function status(clockOnly = false) {
     const info = footerInfo(a);
     document.querySelector("#info summary")!.textContent = info.summary;
     document.querySelector("#info small")!.textContent = info.details;
-    const asks = asksBar(a, { open: asksOpen, chosen: chosenAsk });
+    const asks = asksBar(a, { open: asksOpen, chosen: chosenAsk, draft: (document.querySelector("#message") as HTMLTextAreaElement | null)?.value ?? "" });
     if (asks !== lastAsks) document.querySelector("#asks")!.innerHTML = lastAsks = asks; // redrawn only on change: keeps its scroll
     const fold = document.querySelector<HTMLDetailsElement>(".asks-fold");
     if (fold) fold.open = asksOpen;

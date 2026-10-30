@@ -92,8 +92,12 @@ test("pane rails fold other teams, expose the open team and highlight the path s
   const { withDraft } = await import("../src/chat.ts");
   const drafted = paneRails([withDraft(asking, "Re: URLs <b> — (a)")], ["lead"]).dashboard;
   assert.doesNotMatch(drafted, /ask-count|tone-ask/); assert.match(paneRails([withDraft(asking, "Re: other — x")], ["lead"]).dashboard, /tone-ask/);
-  assert.match(asksBar(asking), /<details class="asks-fold"><summary>waiting on you · 1<\/summary>[\s\S]*data-ask="42" data-title="URLs &lt;b&gt;"[^>]*>URLs &lt;b&gt;: \(a\) or \(b\)\? <small>2h ago<\/small>/);
+  assert.match(asksBar(asking), /<details class="asks-fold"><summary>waiting on you · 1<\/summary>[\s\S]*data-ask="42" data-title="URLs &lt;b&gt;"[^>]*>URLs &lt;b&gt;: \(a\) or \(b\)\?<small> · 2h ago<\/small>/);
   assert.match(asksBar(asking, { open: true }), /<details class="asks-fold" open>/);
+  // Picked into the draft, an ask stays listed but dimmed "in draft" and leaves the count, as in the terminal.
+  const both = { ...asking, asks: [...asking.asks, { title: "Other", text: "?", entry: "43" }] };
+  assert.match(asksBar(both, { draft: "Re: URLs <b> — (a)" }), /waiting on you · 1<\/summary>[\s\S]*class="ask drafted"[^>]*>URLs &lt;b&gt;[^<]*<small> · in draft/);
+  assert.match(asksBar(asking, { draft: "Re: URLs <b> — " }), /class="asks-fold all-drafted"><summary>waiting on you · all in draft/);
   // Options are buttons that carry the ask and the option for the "Re:" line, outside the fold: the only ask's, or the chosen one's.
   const choice = { ...asking.asks[0]!, options: ["Keep <a>", "Drop"] };
   const options = asksBar({ ...asking, asks: [choice] });

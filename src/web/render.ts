@@ -13,7 +13,7 @@ import {
   formatDuration,
   formatTokens,
 } from "../status.ts";
-import type { ChatItem } from "../chat.ts";
+import { answered, type ChatItem } from "../chat.ts";
 import type { Agent } from "./api.ts";
 import { marked } from "marked";
 export const escape = (text: unknown): string =>
@@ -55,12 +55,15 @@ export const askKey = (ask: { entry: string; title: string }) => `${ask.entry}\n
  * The open agent's asks above the composer, folded to one line on a phone. Each jumps to where it was asked and adds
  * its reply line; the options of the chosen ask (or the only one) stay below the fold, so it can be read and answered.
  */
-export function asksBar(a?: Agent, { open = false, chosen = "" } = {}) {
+export function asksBar(a?: Agent, { open = false, chosen = "", draft = "" } = {}) {
   const asks = a?.asks ?? [];
   if (!asks.length) return "";
   const picked = asks.length === 1 ? asks[0] : asks.find(ask => askKey(ask) === chosen);
-  return `<details class="asks-fold"${open ? " open" : ""}><summary>waiting on you · ${asks.length}</summary><div class="asks-list">${asks.map(ask =>
-    `<button type="button" class="ask" data-ask="${escape(ask.entry)}" data-title="${escape(ask.title)}" title="${escape(ask.text)}">${escape(ask.title)}${ask.text ? `: ${escape(ask.text)}` : ""}${ask.at ? ` <small>${escape(formatAgo(Date.now() - ask.at))}</small>` : ""}</button>`).join("")}</div></details>`
+  // As in the terminal: asks the draft answers stay listed, dimmed "in draft", and leave the count (chat.ts answered).
+  const drafted = answered(asks, draft);
+  const left = asks.length - drafted.length;
+  return `<details class="asks-fold${left ? "" : " all-drafted"}"${open ? " open" : ""}><summary>waiting on you · ${left || "all in draft"}</summary><div class="asks-list">${asks.map(ask =>
+    `<button type="button" class="ask${drafted.includes(ask) ? " drafted" : ""}" data-ask="${escape(ask.entry)}" data-title="${escape(ask.title)}" title="${escape(ask.text)}">${escape(ask.title)}${ask.text ? `: ${escape(ask.text)}` : ""}<small>${drafted.includes(ask) ? " · in draft" : ""}${ask.at ? ` · ${escape(formatAgo(Date.now() - ask.at))}` : ""}</small></button>`).join("")}</div></details>`
     + (picked?.options?.length ? `<div class="ask-options"><small>${escape(picked.title)}</small>${picked.options.map(option =>
       `<button type="button" data-ask="${escape(picked.entry)}" data-title="${escape(picked.title)}" data-option="${escape(option)}" title="${escape(option)}">${escape(option)}</button>`).join("")}</div>` : "");
 }
