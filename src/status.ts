@@ -17,6 +17,8 @@ export type WorkerStatus = {
   context?: number; contextWindow?: number; cwd?: string;
   /** Top-level agents: decisions waiting on the human, oldest first (see chat.ts foldAsks). */
   asks?: Ask[];
+  /** A main agent that finished since the human last had it open (host-computed). */
+  unread?: boolean;
 };
 
 /** Strip terminal escape sequences and unsafe controls, preserving text layout. */

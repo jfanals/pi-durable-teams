@@ -30,6 +30,8 @@ export type Agent = {
   archived?: boolean;
   /** Last creation, registration or publication (ms); the list orders by recency with run times. */
   activeAt?: number;
+  /** When the human last had it open (ms); a reply after this is unread. Unset for agents created before this existed: read. */
+  seenAt?: number;
   /** Retained conversation branches, newest first; identity is independent of the current conversation. */
   branches?: ConversationId[];
   where: { kind: "hosted"; conversationId: ConversationId }
@@ -586,7 +588,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         if (taken) throw new Error(taken.archived ? "Name belongs to an archived agent; choose a distinct name" : "Name already exists; reuse the agent or choose a distinct name");
         const anchor = await tx.createTask(Anchor, null, { ownership: { kind: "conversation" }, background: true });
         const child = await tx.createConversation({ ownership: { kind: "task", taskId: anchor } });
-        recipient = { id: String(child.id), name: args.name!, ...(parent ? { parent } : {}), cwd: cwd!, activeAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
+        recipient = { id: String(child.id), name: args.name!, ...(parent ? { parent } : {}), cwd: cwd!, activeAt: Date.now(), seenAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
         if (doc.agents[recipient.id]) throw new Error("Agent ID collision with a registered Pi session");
         await configure(tx, child.id, prepared!);
         doc.agents[recipient.id] = recipient;
@@ -671,6 +673,9 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   const dirtyConversations = new Set<ConversationId>();
   const statusRows = new Map<string, { key: string; row: AgentSummary }>();
   let roster: AgentSummary[] = [];
+  /** Agents the human has open now, with how many views; they are read while open and marked seen on leaving. */
+  const viewing = new Map<string, number>();
+  const markSeen = (id: string) => harness.commit(async tx => { const agent = (await tx.doc(Teams)).agents[id]; if (agent) agent.seenAt = Date.now(); }, context);
   let refreshing: Promise<AgentSummary[]> | undefined;
   // Asks are folded from replies once: each refresh reads only entries after the last one seen.
   const askScans = new Map<string, { conversationId: ConversationId; after: number; asks: Ask[] }>();
@@ -724,6 +729,11 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         rows.sort((a, b) => recency(b) - recency(a));
         const byId = new Map(rows.map(row => [row.id, row]));
         for (const row of rows) { const parent = state.agents[row.id]!.parent; if (parent) byId.get(parent)?.children.push(row); }
+        // Unread: a main agent that finished after the human last had it open, and is not open now. Sub-agents report to their parent.
+        for (const row of rows) {
+          const { seenAt, parent } = state.agents[row.id]!;
+          if (!parent && !row.running && !row.archived && !viewing.has(row.id) && seenAt !== undefined && (row.finishedAt ?? 0) > seenAt) row.unread = true;
+        }
         roster = rows.filter(row => !state.agents[row.id]!.parent);
       } catch (error) {
         registryDirty = true;
@@ -946,7 +956,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         await renameInstructions(tx, child.id, source.name, name);
         const id = String(child.id);
         if (doc.agents[id]) throw new Error("Agent ID collision with a registered Pi session");
-        doc.agents[id] = { id, name, cwd: source.cwd, activeAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
+        doc.agents[id] = { id, name, cwd: source.cwd, activeAt: Date.now(), seenAt: Date.now(), where: { kind: "hosted", conversationId: child.id } };
         return doc.requests[requestKey] = { id };
       }, context);
       notify();
@@ -1000,7 +1010,16 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         }
       } });
       await follow();
-      const unsubscribe = () => { stopped = true; commits.detach(); view?.detach(); };
+      const byHuman = actor.id === human.id;
+      if (byHuman) { viewing.set(agent.id, (viewing.get(agent.id) ?? 0) + 1); await markSeen(agent.id); }
+      const unsubscribe = async () => {
+        if (stopped) return;
+        stopped = true; commits.detach(); view?.detach();
+        if (!byHuman) return;
+        const left = (viewing.get(agent.id) ?? 1) - 1;
+        if (left) viewing.set(agent.id, left); else viewing.delete(agent.id);
+        await markSeen(agent.id).catch(() => {});
+      };
       await listener({ changed: true });
       return unsubscribe;
     },

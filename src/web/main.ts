@@ -72,7 +72,7 @@ function list() {
   const row = (a: Agent, child = false): string =>
     `<button class="agent ${child ? "child" : ""}" data-open="${e(a.id)}">
 <div class="row">
-<strong>${askCount(a)}${e(a.name)}</strong>
+<strong class="${a.running || a.unread ? "" : "read"}">${askCount(a)}${e(a.name)}</strong>
 <span class="tone-${statusTone(a)}">${a.running ? '<i class="spinner"></i>' : ""}${e(statusWord(a))}</span>
 </div>
 <small data-time="${e(a.id)}">${e(info(a))}</small>

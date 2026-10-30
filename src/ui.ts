@@ -70,7 +70,7 @@ function meta(w: WorkerStatus, width: number, now: number, modelMinWidth: number
 export function agentCard(w: WorkerStatus, width: number, theme: Theme, { selected = false, now = Date.now(), frame = 0, tree = "" } = {}) {
   const t = theme;
   const name = clean(w.name);
-  const left = ` ${t.fg("dim", tree)}${markOf(w, t, frame)} ${askCount(w, t)}${selected || w.running ? t.bold(name) : t.fg("muted", name)}`;
+  const left = ` ${t.fg("dim", tree)}${markOf(w, t, frame)} ${askCount(w, t)}${selected || w.running || w.unread ? t.bold(name) : t.fg("muted", name)}`;
   const right = width >= 50 ? meta(w, width, now, 80) : "";
   const gap = width - 1 - visibleWidth(left) - visibleWidth(right);
   const lines = [`${left}${right && gap >= 2 ? `${" ".repeat(gap)}${t.fg("dim", right)}` : ""}`,

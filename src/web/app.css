@@ -133,6 +133,9 @@ small {
   text-overflow: ellipsis;
 }
 /* The name keeps its width; a long status (a whole bash command) is cut to one line instead. */
+/* Names are bold while the agent works or has a reply you haven't opened; plain once read. */
+.row > strong.read { font-weight: normal; color: var(--muted); }
+.rail .busy { font-weight: bold; }
 .row > strong {
   flex-shrink: 0;
   max-width: 70%;

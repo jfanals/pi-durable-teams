@@ -462,6 +462,31 @@ test("registry v2 migrates to v3: stopped hosted agents become archived; enabled
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
+test("unread: a main agent's reply after the human last had it open stays unread until opened; open agents and old agents are read", async () => {
+  const service = await openTeams(new MemoryStorage(), { models: fixture().models, agentModel: async () => model });
+  try {
+    const { id } = await service.action(human, { action: "newAgent", name: "unread", cwd: process.cwd() }, "unread") as { id: string };
+    const cid = Number(id) as ConversationId;
+    const reply = (text: string) => service.harness.commit(async tx => { await tx.appendEntry(cid, { kind: "pi.assistant", model: [{ ...fauxAssistantMessage(text), timestamp: Date.now() + 1 }] }); }, ctx);
+    const unread = async () => (await service.agents()).find(agent => agent.id === id)!.unread === true;
+    assert.equal(await unread(), false, "new agents start read");
+    await reply("done");
+    assert.equal(await unread(), true);
+    // Open: read at once, and replies while it is open stay read; leaving marks it seen.
+    const close = await service.watch(human, id, () => {});
+    assert.equal(await unread(), false);
+    await reply("more");
+    assert.equal(await unread(), false, "a reply while open is read");
+    await close();
+    assert.equal(await unread(), false);
+    await reply("after leaving");
+    assert.equal(await unread(), true);
+    // Agents from before this existed have no seenAt: read.
+    await service.harness.commit(async tx => { delete (await tx.doc(Teams)).agents[id]!.seenAt; }, ctx);
+    assert.equal(await unread(), false);
+  } finally { await service.close(); }
+});
+
 test("waiting on you: replies open and close asks by title; the roster carries the open ones, read incrementally", async () => {
   const service = await openTeams(new MemoryStorage(), { models: fixture().models, agentModel: async () => model });
   try {
