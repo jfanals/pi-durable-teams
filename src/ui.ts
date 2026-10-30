@@ -81,15 +81,17 @@ export function agentCard(w: WorkerStatus, width: number, theme: Theme, { select
 export const dimLine = (text: string, width: number, theme: Theme) => truncateToWidth(theme.fg("dim", ` ${text}`), width, "…");
 
 /**
- * Team panel under the prompt. First the asks waiting on the human (titles), then the team: running
- * workers one per line (animated), the rest summarized. Down from an empty prompt focuses it: every row
- * is selectable, the selected ask shows its full text and its options, Enter answers it or opens the worker.
+ * Team panel under the prompt. First the asks waiting on the human (titles) under a yellow heading, then
+ * a `── team ──` divider and the team: running workers one per line (animated), the rest summarized.
+ * Down from an empty prompt focuses it: every row is selectable, the selected ask shows its full text and
+ * its options and the conversation shows where it was asked, Enter answers it or opens the worker.
  * An option (Down onto it and Enter, or its number) goes into the draft as the ask's "Re:" line, and the
  * selection moves on to the next ask not yet in the draft, so several are answered before sending.
- * Up past the first row, Esc, or typing returns to the prompt.
+ * Up past the first row, Esc, or typing returns to the prompt and to where the conversation was scrolled.
  */
-/** The open agent's asks for the panel: the list, the draft that may already answer some, and where Enter sends them. */
-export type PanelAsks = { list(): Ask[]; draft(): string; cursorLine(): number; answer(ask: Ask): void; pick(ask: Ask, option: string): void; prompt: Component };
+/** The open agent's asks for the panel: the list, the draft that may already answer some, and where Enter sends them.
+ * `show` scrolls to where an ask was asked while it is selected; `restore` scrolls back to before the first `show`. */
+export type PanelAsks = { list(): Ask[]; draft(): string; cursorLine(): number; answer(ask: Ask): void; pick(ask: Ask, option: string): void; show(ask: Ask): void; restore(): void; prompt: Component };
 export class TeamPanel implements Component, Focusable {
   focused = false;
   private workers: WorkerStatus[] = [];
@@ -148,11 +150,15 @@ export class TeamPanel implements Component, Focusable {
     this.returnTo = editor;
     this.selected = worker >= 0 ? this.asks.length + worker : Math.max(0, this.asks.findIndex(ask => !this.drafted(ask)));
     this.option = -1;
-    this.focus(this); this.tui.requestRender();
+    this.focus(this); this.show(); this.tui.requestRender();
   }
-  private leave(forward?: string) {
+  /** Scroll the conversation to the selected ask, if any. */
+  private show() { const ask = this.asks[this.selected]; if (ask) this.asksOf?.show(ask); }
+  /** Back to the prompt; the conversation scrolls back unless an ask was just answered (`keep`). */
+  private leave(forward?: string, keep = false) {
     const editor = this.returnTo;
     if (!editor) return;
+    if (!keep) this.asksOf?.restore();
     this.focus(editor);
     if (forward) editor.handleInput?.(forward);
     this.tui.requestRender();
@@ -167,6 +173,9 @@ export class TeamPanel implements Component, Focusable {
     const lines: string[] = [];
     const push = (line: string, row?: (typeof this.rows)[number]) => { lines.push(line); this.rows.push(row); };
     const band = (line: string) => t.bg("selectedBg", line + " ".repeat(Math.max(0, width - visibleWidth(line))));
+    // Section rules, as the dashboard's `── idle over 24h ──`: a yellow heading over the asks, a dim one over the team.
+    if (this.asks.length) push(truncateToWidth(t.fg("warning", ` ── waiting on you · ${this.asks.length} ──`), width, "…"));
+    const team = () => { if (this.asks.length && this.workers.length) push(dimLine("── team ──", width, t)); };
     const askLine = (ask: Ask, selected: boolean, highlighted = selected) => {
       const title = selected ? t.bold(ask.title) : ask.title;
       const drafted = this.drafted(ask);
@@ -192,6 +201,7 @@ export class TeamPanel implements Component, Focusable {
         push(askLine(ask, selected, selected && this.option < 0), ask);
         if (selected) askBody(ask, this.option);
       }
+      team();
       // Idle workers stay folded into the summary line until the selection moves past the running ones.
       const worker = this.selected - this.asks.length;
       const running = this.workers.filter(w => w.running).length;
@@ -216,6 +226,7 @@ export class TeamPanel implements Component, Focusable {
     }
     if (this.asks.length > glance.length) push(dimLine(`+${this.asks.length - glance.length} more · ↓`, width, t), "more");
     if (!this.workers.length) { push(dimLine("↓ to select", width, t)); return lines; }
+    team();
     const { shown, summary } = teamGlance(this.workers, this.compact ? Infinity : VISIBLE_RUNNING);
     for (const w of shown) for (const line of agentCard(w, width, t, { now, frame: this.frame })) push(line, w);
     push(dimLine(`${shown.length || summary.includes("team ") ? "" : "team · "}${summary ? `${summary} · ` : ""}↓ to select`, width, t));
@@ -224,6 +235,7 @@ export class TeamPanel implements Component, Focusable {
   handleInput(data: string) {
     const ask = this.asks[this.selected];
     const options = ask?.options ?? [];
+    const before = this.selected;
     if (matchesKey(data, Key.up)) {
       if (ask && this.option >= 0) this.option--;
       else if (this.selected === 0) return this.leave();
@@ -240,6 +252,7 @@ export class TeamPanel implements Component, Focusable {
     else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) { const w = this.workers[this.selected - this.asks.length]; if (w) this.onOpen(w); return; }
     else if (matchesKey(data, Key.escape)) return this.leave();
     else return this.leave(data);
+    if (this.selected !== before) this.show();
     this.tui.requestRender();
   }
   handleMouse(event: TuiMouseEvent) {
@@ -254,15 +267,15 @@ export class TeamPanel implements Component, Focusable {
     return { handled: true };
   }
   /** Back to the prompt, then let the chat add the ask's "Re:" line and show where it was asked. */
-  private answer(ask: Ask) { this.leave(); this.asksOf?.answer(ask); }
+  private answer(ask: Ask) { this.leave(undefined, true); this.asksOf?.answer(ask); }
   /** Put `ask`'s option in the draft, then select the next ask not in it yet, or go back to the prompt to send. */
   private pick(ask: Ask, option: number) {
     this.asksOf?.pick(ask, ask.options![option]!);
     const at = this.asks.indexOf(ask);
     const next = [...this.asks.slice(at + 1), ...this.asks.slice(0, at)].find(other => !this.drafted(other));
-    if (!next || !this.focused) return this.leave();
+    if (!next || !this.focused) return this.leave(undefined, true);
     this.selected = this.asks.indexOf(next); this.option = -1;
-    this.tui.requestRender();
+    this.show(); this.tui.requestRender();
   }
   invalidate() {}
   dispose() { if (this.ticker) clearInterval(this.ticker); this.ticker = undefined; }
@@ -794,11 +807,21 @@ class HistoryScroll extends ScrollView {
   private transcript: Transcript;
   /** A line to centre once the next layout knows the content height (pages just loaded would clamp it). */
   private jump?: number;
+  /** Where the view was before asks were browsed, put back by `release`. */
+  private held?: { top: number; end: boolean };
   constructor(transcript: Transcript) { super(transcript, { follow: "end", primary: true }); this.transcript = transcript; }
   jumpTo(line: number) { this.jump = line; }
+  /** Remember the current position (the first call wins); `drop` forgets it, `release` returns to it. */
+  hold() { this.held ??= { top: this.scrollTop, end: this.isFollowingEnd }; }
+  drop() { this.held = undefined; }
+  release() {
+    const held = this.held; this.held = this.jump = undefined;
+    if (held?.end) this.scrollToEnd(); else if (held) this.scrollTo(held.top);
+  }
   override updateLayout(contentHeight: number, viewportHeight: number, requestRender: () => void) {
     super.updateLayout(contentHeight, viewportHeight, requestRender);
     const added = this.transcript.grewAtTop; this.transcript.grewAtTop = 0;
+    if (this.held) this.held.top += added;
     if (this.jump !== undefined) { this.scrollTo(Math.max(0, this.jump - Math.floor(viewportHeight / 2))); this.jump = undefined; }
     else if (added > 0 && !this.isFollowingEnd) this.scrollTo(this.scrollTop + added);
     if (this.scrollTop === 0 && this.transcript.next && this.transcript.connection !== "loading") void this.transcript.older();
@@ -832,7 +855,8 @@ export class ChatView implements Component, Focusable {
     if (children) this.panel = new TeamPanel(tui, theme, children.open, { compact: true, focus: component => {
       this.panel!.focused = component === this.panel;
       this.editor.focused = component !== this.panel;
-    }, asks: { list: () => this.transcript.status?.asks ?? [], draft: () => this.editor.getText(), cursorLine: () => this.editor.getCursor().line, answer: ask => void this.answer(ask), pick: (ask, option) => void this.pick(ask, option), prompt: this.editor } });
+    }, asks: { list: () => this.transcript.status?.asks ?? [], draft: () => this.editor.getText(), cursorLine: () => this.editor.getCursor().line, answer: ask => void this.answer(ask), pick: (ask, option) => void this.pick(ask, option),
+      show: ask => void this.reveal(ask, true), restore: () => { this.revealing = undefined; this.scroll.release(); this.tui.requestRender(); }, prompt: this.editor } });
     const scroll = new HistoryScroll(this.transcript);
     const footer = { render: (width: number) => {
       const s = this.transcript.status;
@@ -872,10 +896,15 @@ export class ChatView implements Component, Focusable {
     this.editor.setText(withReply(this.editor.getText(), ask, option));
     await this.reveal(ask);
   }
-  /** Scroll the conversation so the ask's line, usually at the end of its reply, sits mid-screen. */
-  private async reveal(ask: Ask) {
+  /** The ask last scrolled to; an earlier one whose older pages load late does not jump. */
+  private revealing?: Ask;
+  /** Scroll the conversation so the ask's line, usually at the end of its reply, sits mid-screen. Browsing
+   * (`browse`) remembers where the view was to go back to; answering stays there. */
+  private async reveal(ask: Ask, browse = false) {
+    if (browse) this.scroll.hold(); else this.scroll.drop();
+    this.revealing = ask;
     const line = await this.transcript.lineOf(ask.entry, ask.title);
-    if (line !== undefined && !this.disposed) { this.scroll.jumpTo(line); this.tui.requestRender(); }
+    if (line !== undefined && !this.disposed && this.revealing === ask) { this.scroll.jumpTo(line); this.tui.requestRender(); }
   }
   /** Text for the editor, as Pi restores a forked message. */
   setDraft(text: string) { this.editor.setText(text); }

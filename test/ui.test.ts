@@ -77,11 +77,12 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   // Team panel: running workers as two-line cards (name with model, time, context and cost; activity beneath); others only counted, with the team's cost.
   const focus: unknown[] = []; const opened: WorkerStatus[] = [];
   const panelTui = { setFocus: (c: unknown) => focus.push(c), requestRender() {} } as unknown as TUI;
-  const answered: string[] = []; let asks: Ask[] = []; let draft = ""; let cursor = 0;
+  const answered: string[] = []; const shown: string[] = []; let asks: Ask[] = []; let draft = ""; let cursor = 0;
   const prompt = { render: () => [], invalidate() {} };
   // The selection is a tinted band; here the tint shows as a leading "›".
   const tinted = { ...theme, bg: (_: string, t: string) => `›${t}` } as unknown as Theme;
-  const panel = new TeamPanel(panelTui, tinted, w => opened.push(w), { asks: { list: () => asks, draft: () => draft, cursorLine: () => cursor, answer: ask => answered.push(ask.title), pick: (ask, option) => { answered.push(`${ask.title}: ${option}`); draft = withReply(draft, ask, option); }, prompt } });
+  const panel = new TeamPanel(panelTui, tinted, w => opened.push(w), { asks: { list: () => asks, draft: () => draft, cursorLine: () => cursor, answer: ask => answered.push(ask.title), pick: (ask, option) => { answered.push(`${ask.title}: ${option}`); draft = withReply(draft, ask, option); },
+    show: ask => shown.push(ask.title), restore: () => shown.push("restore"), prompt } });
   assert.deepEqual(panel.render(80), []);
   const now = Date.now();
   const reviewer = liveStatus({ id: "1", name: "reviewer", live: { run: {}, tools: [{ callId: "c1", name: "read", status: "running" }] },
@@ -119,18 +120,27 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   panel.handleInput("\x1b[A"); panel.handleInput("\x1b[A");
   assert.equal(focus.at(-1), editor);
   panel.handleInput("x"); assert.equal(focus.at(-1), "typed x"); // typing goes back to the prompt
+  assert.deepEqual(shown, ["restore", "restore"]); shown.length = 0; // leaving puts the conversation back
   panel.focused = false;
   // Waiting on you: ask titles above the team; Down selects one and shows its full text; Enter returns to the prompt and answers it.
   asks = [{ title: "Pick a name", text: "Option one or option two? I recommend one because it is shorter and reads better in the list.", entry: "9" }];
+  // A yellow heading over the asks, a dim divider over the team.
   const glance = plain(panel.render(40));
-  assert.match(glance[0]!, /^ +Pick a name$/); assert.doesNotMatch(glance.join("\n"), /Option one/);
+  assert.match(glance[0]!, /^ ── waiting on you · 1 ──$/); assert.match(glance[1]!, /^ +Pick a name$/); assert.match(glance[2]!, /^ ── team ──$/);
+  assert.doesNotMatch(glance.join("\n"), /Option one/);
+  // Selecting an ask, on entering or with the arrows, scrolls to it; leaving scrolls back, answering stays.
   panel.enter(editor); panel.focused = true;
+  assert.deepEqual(shown, ["Pick a name"]);
   const asked = plain(panel.render(40));
-  assert.match(asked[0]!, /› Pick a name/); assert.match(asked.join(" "), /recommend one because it is shorter/); assert.match(asked.at(-1)!, /enter answer/);
+  assert.match(asked[1]!, /› Pick a name/); assert.match(asked.join(" "), /recommend one because it is shorter/); assert.match(asked.at(-1)!, /enter answer/);
   assert.ok(asked.every(line => visibleWidth(line) <= 40));
-  panel.handleInput("\x1b[B"); assert.match(plain(panel.render(80))[1]!, /› .*reviewer/); // Down past the asks reaches the team
-  panel.handleInput("\x1b[A"); panel.handleInput("\r");
-  assert.deepEqual(answered, ["Pick a name"]); assert.equal(focus.at(-1), editor);
+  panel.handleInput("\x1b[B"); const past = plain(panel.render(80)); // Down past the asks reaches the team, below its divider
+  assert.match(past[2]!, /^ ── team ──$/); assert.match(past[3]!, /› .*reviewer/);
+  panel.handleInput("\x1b[A"); assert.deepEqual(shown, ["Pick a name", "Pick a name"]);
+  panel.handleInput("\x1b"); assert.equal(shown.at(-1), "restore");
+  panel.enter(editor); panel.focused = true; shown.length = 0;
+  panel.handleInput("\r");
+  assert.deepEqual(answered, ["Pick a name"]); assert.equal(focus.at(-1), editor); assert.deepEqual(shown, []);
   panel.focused = false;
   // Many asks: five titles then "+N more"; ones already answered in the draft are dimmed, and Down starts on the first left.
   asks = Array.from({ length: 9 }, (_, i) => ({ title: `Ask ${i + 1}`, text: `Question ${i + 1}`, entry: String(10 + i) }));
@@ -147,7 +157,9 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   draft = "Re: Ask 1 — yes\nRe: ask 2 — no\n"; cursor = 2;
   panel.enter(editor); panel.focused = true;
   assert.match(plain(panel.render(80)).find(line => line.includes("›"))!, /› Ask 3/);
+  shown.length = 0;
   for (let i = 0; i < 6; i++) panel.handleInput("\x1b[B"); // every ask is reachable, the list scrolls
+  assert.deepEqual(shown, ["Ask 4", "Ask 5", "Ask 6", "Ask 7", "Ask 8", "Ask 9"]);
   const last = plain(panel.render(80));
   assert.match(last.find(line => line.includes("›"))!, /› Ask 9/); assert.ok(last.some(line => /Question 9/.test(line)));
   assert.match(last.at(-1)!, /9\/9 · ↑↓ select · enter answer/);
@@ -158,7 +170,8 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   panel.enter(editor); panel.focused = true;
   const choosing = plain(panel.render(80));
   assert.match(choosing.join("\n"), /1 +Asks only\n.*2 +Both/); assert.match(choosing.at(-1)!, /enter answer · 1-2 pick/);
-  panel.handleInput("\x1b[B"); panel.handleInput("\x1b[B");
+  shown.length = 0;
+  panel.handleInput("\x1b[B"); panel.handleInput("\x1b[B"); assert.deepEqual(shown, []); // options of the same ask: no scroll
   assert.match(plain(panel.render(80)).find(line => line.includes("›"))!, /› +2 +Both/);
   panel.handleInput("\r");
   assert.equal(draft, "Re: Scope — Both"); assert.match(plain(panel.render(80)).find(line => line.includes("›"))!, /› Web/);
