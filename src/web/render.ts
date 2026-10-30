@@ -44,12 +44,26 @@ marked.use({
 export const markdown = (text: string, breaks = false): string =>
   marked.parse(text, { async: false, breaks });
 /** Decisions waiting on the human: an amber count before the agent's name. */
-export const askCount = (a: Agent) => a.asks?.length ? `<span class="ask-count" title="${a.asks.length} waiting on you">${a.asks.length}</span> ` : "";
-/** The open agent's asks above the composer: each jumps to where it was asked and adds its reply line. */
-export const asksBar = (a?: Agent) => (a?.asks ?? []).map(ask =>
-  `<button type="button" class="ask" data-ask="${escape(ask.entry)}" data-title="${escape(ask.title)}" title="${escape(ask.text)}">${escape(ask.title)}${ask.text ? `: ${escape(ask.text)}` : ""}${ask.at ? ` <small>${escape(formatAgo(Date.now() - ask.at))}</small>` : ""}</button>`
-  + (ask.options?.length ? `<div class="ask-options">${ask.options.map(option =>
-    `<button type="button" data-ask="${escape(ask.entry)}" data-title="${escape(ask.title)}" data-option="${escape(option)}" title="${escape(option)}">${escape(option)}</button>`).join("")}</div>` : "")).join("");
+const countBadge = (n: number) => n ? `<span class="ask-count" title="${n} waiting on you">${n}</span> ` : "";
+export const askCount = (a: Agent) => countBadge(a.asks?.length ?? 0);
+/** Asks waiting on the human from every agent but the open one, whose asks are listed above its composer. */
+const othersWaiting = (agents: Agent[], open?: string) =>
+  agents.flatMap(a => [a, ...a.children]).reduce((sum, a) => sum + (a.id === open ? 0 : a.asks?.length ?? 0), 0);
+/** The ask a tap chose: a message can hold several, so its entry and title together. */
+export const askKey = (ask: { entry: string; title: string }) => `${ask.entry}\n${ask.title}`;
+/**
+ * The open agent's asks above the composer, folded to one line on a phone. Each jumps to where it was asked and adds
+ * its reply line; the options of the chosen ask (or the only one) stay below the fold, so it can be read and answered.
+ */
+export function asksBar(a?: Agent, { open = false, chosen = "" } = {}) {
+  const asks = a?.asks ?? [];
+  if (!asks.length) return "";
+  const picked = asks.length === 1 ? asks[0] : asks.find(ask => askKey(ask) === chosen);
+  return `<details class="asks-fold"${open ? " open" : ""}><summary>waiting on you · ${asks.length}</summary><div class="asks-list">${asks.map(ask =>
+    `<button type="button" class="ask" data-ask="${escape(ask.entry)}" data-title="${escape(ask.title)}" title="${escape(ask.text)}">${escape(ask.title)}${ask.text ? `: ${escape(ask.text)}` : ""}${ask.at ? ` <small>${escape(formatAgo(Date.now() - ask.at))}</small>` : ""}</button>`).join("")}</div></details>`
+    + (picked?.options?.length ? `<div class="ask-options"><small>${escape(picked.title)}</small>${picked.options.map(option =>
+      `<button type="button" data-ask="${escape(picked.entry)}" data-title="${escape(picked.title)}" data-option="${escape(option)}" title="${escape(option)}">${escape(option)}</button>`).join("")}</div>` : "");
+}
 export const info = (a: Agent) =>
   [
     a.model,
@@ -140,12 +154,13 @@ export function paneRails(agents: Agent[], stack: string[], showIdle = false) {
   const glance = teamGlance(team);
   const mainTeam = showIdle ? team.map(c => row(c, true)).join("")
     : (glance.shown as Agent[]).map(c => row(c, true)).join("") + (glance.summary ? `<button tabindex="-1" class="rail-summary" data-action="idle">${escape(glance.summary)}</button>` : "");
-  return { dashboard: `<button tabindex="-1" class="rail-header" data-depth="0">Pi Agents</button>${dashboard}`,
+  return { dashboard: `<button tabindex="-1" class="rail-header" data-depth="0">Pi Agents ${countBadge(othersWaiting(agents, stack.at(-1)))}</button>${dashboard}`,
     main: main ? `<button tabindex="-1" class="rail-header" data-depth="1">${escape(main.name)}</button><small class="rail-activity">${escape(statusWord(main))}</small>${mainTeam}` : "" };
 }
 export function panePath(agents: Agent[], stack: string[]) {
   const all = agents.flatMap(a => [a, ...a.children]);
-  return `<span class="ancestor dashboard"><a href="/" data-depth="0">Pi Agents</a><span aria-hidden="true"> › </span></span>`
+  // Other agents waiting on the human, counted after the way back to them; the open agent's asks are listed below.
+  return `<span class="ancestor dashboard"><a href="/" data-depth="0">Pi Agents ${countBadge(othersWaiting(agents, stack.at(-1)))}</a><span aria-hidden="true"> › </span></span>`
     + stack.slice(0, -1).map((id, i) => `<span class="ancestor main"><a href="/#agent=${encodeURIComponent(id)}" data-depth="${i + 1}">${escape(all.find(a => a.id === id)?.name ?? id)}</a><span aria-hidden="true"> › </span></span>`).join("")
     + `<span id="title">${escape(all.find(a => a.id === stack.at(-1))?.name ?? "Agent")}</span>`; // its asks are listed right below
 }

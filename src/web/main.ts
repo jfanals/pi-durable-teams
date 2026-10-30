@@ -2,7 +2,7 @@ import { attachAutocomplete } from "./autocomplete.ts";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
-import { escape as e, askCount, asksBar, info, footerInfo, olderDivider, transcript, paneRails, panePath } from "./render.ts";
+import { escape as e, askCount, askKey, asksBar, info, footerInfo, olderDivider, transcript, paneRails, panePath } from "./render.ts";
 import { archiveView, formatCost, formatDuration, mark, olderFrom, recentFolders, statusTone, statusWord, teamGlance } from "../status.ts";
 import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
 import { NEW, agentNameError, suggestedAgentName } from "../agent-name.ts";
@@ -24,6 +24,8 @@ let generation = 0;
 /** What the human just started and the host has not finished: shown at once in the working line. */
 let pending = "";
 let attachments: ImageContent[] = [];
+// The asks bar: open on a wide screen, one line on a phone until tapped; a tapped ask keeps its options in view.
+let asksOpen = matchMedia("(min-width: 700px)").matches, chosenAsk = "", lastAsks = "";
 const imageCache = new Map<string, Promise<ImageContent[]>>();
 const reconnecting = new Set<string>();
 const all = (): Agent[] => agents.flatMap((a) => [a, ...a.children]);
@@ -115,7 +117,10 @@ function status(clockOnly = false) {
     const info = footerInfo(a);
     document.querySelector("#info summary")!.textContent = info.summary;
     document.querySelector("#info small")!.textContent = info.details;
-    document.querySelector("#asks")!.innerHTML = asksBar(a);
+    const asks = asksBar(a, { open: asksOpen, chosen: chosenAsk });
+    if (asks !== lastAsks) document.querySelector("#asks")!.innerHTML = lastAsks = asks; // redrawn only on change: keeps its scroll
+    const fold = document.querySelector<HTMLDetailsElement>(".asks-fold");
+    if (fold) fold.open = asksOpen;
   }
   document.querySelector("#working")!.textContent = pending || (a.running
     ? `${a.activity ?? "working"} · ${a.since ? formatDuration(Date.now() - a.since) : ""}`
@@ -133,6 +138,7 @@ async function open(id: string, push = true) {
   if (!stack.length || stack[0] !== id && !agents.find(a => a.id === stack[0])?.children.some(c => c.id === id)) showIdle = false;
   attachments = [];
   imageCache.clear();
+  lastAsks = ""; chosenAsk = "";
   if (push) {
     direction = "forward";
     // A sub-agent opened from the list goes back to its main agent, not the list, as in the terminal.
@@ -162,7 +168,7 @@ async function open(id: string, push = true) {
 </div>
 <footer class="composer-footer">
 <button id="new-messages" hidden data-action="bottom">New messages ↓</button>
-<div id="asks" class="asks"></div>
+<div id="asks"></div>
 <div id="queued" class="queued"></div>
 <div id="working" role="status">
 </div>
@@ -250,9 +256,16 @@ async function older() {
 function saveDraft(id: string, text: string) {
   if (text.trim()) localStorage.setItem(`draft:${id}`, text); else localStorage.removeItem(`draft:${id}`);
 }
+root.addEventListener("toggle", event => {
+  const fold = event.target as HTMLElement;
+  if (fold.matches?.(".asks-fold")) asksOpen = (fold as HTMLDetailsElement).open;
+}, true);
 /** An ask: add its "Re:" line to the draft, with `option` when one was picked (replacing an earlier pick),
  * and centre the line it was asked on, usually at the end of its reply (loading older pages if needed). */
 async function answer(entry: string, title: string, option?: string) {
+  // On a phone the list folds away, so the question is read in full where it was asked.
+  chosenAsk = askKey({ entry, title });
+  if (!matchMedia("(min-width: 700px)").matches) asksOpen = false;
   const input = document.querySelector<HTMLTextAreaElement>("#message")!;
   if (option !== undefined) input.value = withReply(input.value, { title }, option);
   else if (!input.value.includes(`Re: ${title} — `)) input.value = withReply(input.value, { title }, "");
