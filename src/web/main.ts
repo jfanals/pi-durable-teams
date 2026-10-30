@@ -112,14 +112,19 @@ function status(clockOnly = false) {
     const rails = paneRails(drafted(), stack, showIdle);
     document.querySelector(".rail.dash")!.innerHTML = rails.dashboard;
     document.querySelector(".rail.main")!.innerHTML = rails.main;
-    document.querySelector("#info")!.textContent = footerInfo(a);
+    const info = footerInfo(a);
+    document.querySelector("#info summary")!.textContent = info.summary;
+    document.querySelector("#info small")!.textContent = info.details;
     document.querySelector("#asks")!.innerHTML = asksBar(a);
   }
   document.querySelector("#working")!.textContent = pending || (a.running
     ? `${a.activity ?? "working"} · ${a.since ? formatDuration(Date.now() - a.since) : ""}`
     : "");
   if (clockOnly) return;
+  // Running, Send becomes Steer (interrupt now, as Enter does in Pi) and Queue waits for the answer.
   (document.querySelector("#stop") as HTMLButtonElement).hidden = !a.running;
+  (document.querySelector("#queue") as HTMLButtonElement).hidden = !a.running;
+  document.querySelector("#send")!.textContent = a.running ? "Steer" : "Send";
   document.querySelector("#children")!.innerHTML = a.children.filter((c) => a.archived || !c.archived)
     .map((c) => `<button data-open="${e(c.id)}">${c.running ? "◌ " : ""}${e(c.name)}</button>`)
     .join("");
@@ -161,18 +166,14 @@ async function open(id: string, push = true) {
 <div id="queued" class="queued"></div>
 <div id="working" role="status">
 </div>
-<small id="info">
-</small>
+<details id="info"${matchMedia("(min-width: 700px)").matches ? " open" : ""}><summary></summary><small></small>${button("Model & thinking", "model", 'type="button"')}</details>
 <form id="composer">
+<div id="attachments"></div>
 <textarea id="message" rows="2" placeholder="Message agent…" aria-label="Message">
 </textarea>
-<div id="attachments"></div>
-<label class="attach">Attach image<input id="attach" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple></label>
 <div class="row">
-<label>
-<input id="steer" type="checkbox"> Steer</label>
-${button("Model & thinking", "model", 'type="button"')}
-<div>${button("Stop", "stop", 'id="stop" type="button" hidden')}<button type="submit">Send</button>
+<label class="attach" title="Attach image"><span aria-hidden="true">📎</span><input id="attach" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple aria-label="Attach image"></label>
+<div class="send">${button("Stop", "stop", 'id="stop" type="button" hidden')}<button type="submit" id="queue" data-mode="followUp" hidden title="Deliver after the current answer">Queue</button><button type="submit" id="send" data-mode="steer">Send</button>
 </div>
 </div>
 </form>
@@ -770,8 +771,10 @@ root.addEventListener("submit", async (event) => {
   const input = document.querySelector<HTMLTextAreaElement>("#message")!;
   const message = input.value.trim();
   if (!message && !attachments.length) return;
-  const submit = document.querySelector<HTMLButtonElement>('#composer button[type="submit"]')!;
-  submit.disabled = true;
+  const submits = [...document.querySelectorAll<HTMLButtonElement>('#composer button[type="submit"]')];
+  // The button pressed says how; a slash command's Enter, with no button, steers as in Pi.
+  const mode = (event as SubmitEvent).submitter?.dataset.mode === "followUp" ? "followUp" : "steer";
+  for (const submit of submits) submit.disabled = true;
   const target = stack.at(-1)!;
   // A forked agent opens with the chosen message waiting in its composer, as in Pi.
   const fork = async (before?: string, draft = "") => {
@@ -831,7 +834,7 @@ root.addEventListener("submit", async (event) => {
       target,
       message,
       images,
-      mode: (document.querySelector("#steer") as HTMLInputElement).checked ? "steer" : "followUp",
+      mode,
     });
     input.value = "";
     saveDraft(target, "");
@@ -845,7 +848,7 @@ root.addEventListener("submit", async (event) => {
   } catch (error) {
     fail(error);
   } finally {
-    submit.disabled = false;
+    for (const submit of submits) submit.disabled = false;
   }
 });
 document.addEventListener("visibilitychange", () => {

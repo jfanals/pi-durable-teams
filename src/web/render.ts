@@ -65,8 +65,9 @@ export const info = (a: Agent) =>
   ]
     .filter(Boolean)
     .join(" · ");
+/** Under the prompt: model, thinking and context on one line; usage and folder when opened. */
 export function footerInfo(a: Agent) {
-  return `${[a.model, a.thinking].filter(Boolean).join(" · ")}\n${formatUsage(a)}${a.cwd ? `\n${a.cwd}` : ""}`;
+  return { summary: [a.model, a.thinking, formatContext(a)].filter(Boolean).join(" · "), details: `${formatUsage(a)}${a.cwd ? `\n${a.cwd}` : ""}` };
 }
 export function transcript(items: ChatItem[]) {
   const results = new Map(items.flatMap((i) => (i.kind === "result" ? [[i.callId, i] as const] : [])));
