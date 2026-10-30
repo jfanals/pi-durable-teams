@@ -1,5 +1,5 @@
 import { piCompletionTool } from "./presentation.ts";
-import { archiveView, formatCost, recentFolders, statusWord, teamGlance } from "./status.ts";
+import { archiveView, formatCost, olderFrom, OLDER_LABEL, recentFolders, statusWord, teamGlance } from "./status.ts";
 import { execFile } from "node:child_process";
 import { basename } from "node:path";
 import { DirPicker } from "./dir-picker.ts";
@@ -233,7 +233,9 @@ export class AgentsApp implements Component, Focusable {
    */
   private dashboard() {
     const out: { agent?: AgentSummary; tree: string; summary?: string }[] = [];
-    for (const agent of this.agents) {
+    const older = this.showArchived ? -1 : olderFrom(this.agents);
+    for (const [index, agent] of this.agents.entries()) {
+      if (index === older) out.push({ tree: "", summary: `── ${OLDER_LABEL} ──` });
       out.push({ agent, tree: "" });
       if (!agent.children.length) continue;
       const { shown, summary } = teamGlance(agent.children);

@@ -19,6 +19,8 @@ export type WorkerStatus = {
   asks?: Ask[];
   /** A main agent that finished since the human last had it open (host-computed). */
   unread?: boolean;
+  /** Last creation, registration or publication (ms), from the host's registry. */
+  activeAt?: number;
 };
 
 /** Strip terminal escape sequences and unsafe controls, preserving text layout. */
@@ -31,8 +33,16 @@ export const clean = (value: unknown): string => String(value ?? "")
 export const firstLine = (text: unknown) => clean(text).split("\n").find(line => line.trim())?.trim() ?? "";
 /** An agent is running, idle or archived: the one vocabulary of every view. */
 export const statusWord = (w: WorkerStatus) => w.archived ? "archived" : w.running ? (w.activity ?? "running") : "idle";
-/** What colours an agent's mark and status, in every view: waiting on the human, running, or idle. */
-export const statusTone = (w: WorkerStatus) => w.asks?.length ? "ask" : w.running ? "running" : "idle";
+/** What colours an agent's mark and status, in every view: waiting on the human, running, a reply not yet opened, or idle. */
+export const statusTone = (w: WorkerStatus) => w.asks?.length ? "ask" : w.running ? "running" : w.unread ? "unread" : "idle";
+/** An agent's mark in every view, coloured by statusTone: ◌ running (the terminal animates it), ● a reply not yet opened, ○ seen. */
+export const mark = (w: WorkerStatus) => w.running ? "◌" : w.unread ? "●" : "○";
+/** When an agent last did anything; the roster is ordered by it, newest first. */
+export const lastActive = (w: WorkerStatus, now = Date.now()) => w.running ? now : Math.max(w.activeAt ?? 0, w.since ?? 0, w.finishedAt ?? 0);
+/** Where the roster's agents idle for over a day begin (its length when none are): views draw a divider there. */
+export const RECENT_MS = 86_400_000;
+export const olderFrom = (roster: WorkerStatus[], now = Date.now()) => { const i = roster.findIndex(w => lastActive(w, now) < now - RECENT_MS); return i < 0 ? roster.length : i; };
+export const OLDER_LABEL = "idle over 24h";
 
 const VERBS: Record<string, string> = { read: "reading", edit: "editing", write: "writing", bash: "bash:" };
 /** What a running worker is doing, from its committed live state. Never infers success. */

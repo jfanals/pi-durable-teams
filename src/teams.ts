@@ -15,7 +15,7 @@ import { cacheMissText, piCacheMisses, piCacheWarming } from "./presentation.ts"
 import { CACHE_WARM_KIND, cacheWarming, type CacheWarmData } from "./warming.ts";
 import { NEW, agentNameError, suggestedAgentName, uniqueAgentName } from "./agent-name.ts";
 import type { ModelChoice } from "./model-choices.ts";
-import { clean, firstLine, formatContext, formatCost, formatDuration, formatTokens, liveStatus, statusWord, teamGlance, textOf, type WorkerStatus } from "./status.ts";
+import { clean, firstLine, formatContext, formatCost, formatDuration, formatTokens, lastActive, liveStatus, statusWord, teamGlance, textOf, type WorkerStatus } from "./status.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { ActionSchema, TOOL_DESCRIPTION, TOOL_NAME, type Action, type Actor, type Delivery, type Mode } from "./protocol.ts";
 
@@ -730,10 +730,9 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
           statusRows.set(agent.id, { key, row: { hosted: true, ...liveStatus(details), ...(asks.length ? { asks } : {}), children: [] } });
         }));
         // Build new tree objects: push and stream consumers may still hold the previous roster.
-        const rows = agents.map(agent => ({ ...statusRows.get(agent.id)!.row, children: [] as AgentSummary[] }));
+        const rows = agents.map(agent => ({ ...statusRows.get(agent.id)!.row, ...(agent.activeAt ? { activeAt: agent.activeAt } : {}), children: [] as AgentSummary[] }));
         const now = Date.now();
-        const recency = (row: AgentSummary) => row.running ? now : Math.max(state.agents[row.id]!.activeAt ?? 0, row.since ?? 0, row.finishedAt ?? 0);
-        rows.sort((a, b) => recency(b) - recency(a));
+        rows.sort((a, b) => lastActive(b, now) - lastActive(a, now));
         const byId = new Map(rows.map(row => [row.id, row]));
         for (const row of rows) { const parent = state.agents[row.id]!.parent; if (parent) byId.get(parent)?.children.push(row); }
         // Unread: a main agent that finished after the human last had it open, and is not open now. Sub-agents report to their parent.

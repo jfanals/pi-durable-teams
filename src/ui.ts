@@ -16,7 +16,7 @@ import {
   Box, Editor, getKeybindings, Loader, ScrollView, VStack, Key, Markdown, matchesKey, MouseRegion, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi,
   type Component, type DefaultTextStyle, type Focusable, type TUI, type TuiMouseEvent,
 } from "@earendil-works/pi-tui";
-import { clean, firstLine, textOf, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, teamGlance, statusTone, type WorkerStatus } from "./status.ts";
+import { clean, firstLine, textOf, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, teamGlance, statusTone, mark, type WorkerStatus } from "./status.ts";
 import type { TreeResult } from "./source.ts";
 import { askReply, withReply, type Ask, type ChatItem, type Queued } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
@@ -35,7 +35,6 @@ const formatCwd = (cwd: string) => {
 const expandKey = () => { try { return keyText("app.tools.expand") || "ctrl+o"; } catch { return "ctrl+o"; } };
 
 
-export const glyph = (w: WorkerStatus) => w.running ? "●" : "○";
 /** Decisions waiting on the human: a yellow count before the agent's name ("" when none). */
 export const askCount = (w: WorkerStatus | undefined, theme: Theme) => w?.asks?.length ? `${theme.fg("warning", String(w.asks.length))} ` : "";
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
@@ -43,14 +42,14 @@ const VISIBLE_RUNNING = 5;
 const VISIBLE_FOCUSED = 8;
 const VISIBLE_ASKS = 5;
 
-/** Colour of an agent's mark and status line: yellow while it waits on the human, the theme accent (purple) while it works, grey when idle. Red is for errors only. */
-const TONE = { ask: "warning", running: "accent", idle: "muted" } as const;
-const markOf = (w: WorkerStatus, t: Theme, frame: number) => t.fg(TONE[statusTone(w)], w.running ? SPINNER[frame % SPINNER.length]! : "○");
+/** Colour of an agent's mark and status line: yellow while it waits on the human, the theme accent (purple) while it works, white with a reply not yet opened, grey when idle. Red is for errors only. */
+const TONE = { ask: "warning", running: "accent", unread: "text", idle: "muted" } as const;
+const markOf = (w: WorkerStatus, t: Theme, frame: number) => t.fg(TONE[statusTone(w)], w.running ? SPINNER[frame % SPINNER.length]! : mark(w));
 /** What an agent is doing, in its status colour: the running activity, waiting on you, or idle (with `idle` appended). */
 const statusText = (w: WorkerStatus, t: Theme, idle = "") => {
   const tone = statusTone(w);
   const text = w.archived ? "archived" : w.running ? w.activity ?? "running" : tone === "ask" ? "waiting on you" : "idle";
-  return `${t.fg(tone === "idle" ? "dim" : TONE[tone], text)}${idle && !w.running ? t.fg("dim", idle) : ""}`;
+  return `${t.fg(tone === "idle" || tone === "unread" ? "dim" : TONE[tone], text)}${idle && !w.running ? t.fg("dim", idle) : ""}`;
 };
 /** A tree prefix's continuation on the lines below its row. */
 const treeBelow = (tree: string) => tree.replace("├─ ", "│  ").replace("└─ ", "   ");

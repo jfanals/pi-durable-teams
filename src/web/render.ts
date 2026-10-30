@@ -2,6 +2,9 @@ import {
   archiveView,
   statusWord,
   statusTone,
+  mark,
+  olderFrom,
+  OLDER_LABEL,
   teamGlance,
   formatUsage,
   formatAgo,
@@ -117,15 +120,19 @@ ${turn ? `<small class="stamp">${stamp}</small>` : ""}</article>`;
     .join("");
 }
 
+/** Between the agents active in the last day and the rest, on the dashboard and its rail. */
+export const olderDivider = `<div class="divider" role="separator">${OLDER_LABEL}</div>`;
 /** Compact roster views only; status and team folding stay shared with the dashboard. */
 /** The side columns. Idle sub-agents fold into a summary line everywhere; only the open agent's column lists them, on a click (`showIdle`). */
 export function paneRails(agents: Agent[], stack: string[], showIdle = false) {
   const main = agents.find(a => a.id === stack[0]);
   const row = (a: Agent, child = false) => `<button tabindex="-1" class="rail-row ${child ? "child" : ""} ${stack.includes(a.id) ? "open" : ""}" data-open="${escape(a.id)}" title="${escape(a.name)} · ${escape(statusWord(a))}" ${stack.includes(a.id) ? 'aria-current="true"' : ""}>
-<span aria-hidden="true" class="tone-${statusTone(a)}">${a.running ? "◌" : "○"}</span><span class="${a.running || a.unread ? "busy" : ""}">${askCount(a)}${escape(a.name)}</span></button>`;
-  const dashboard = archiveView(agents, false).agents.map(a => {
+<span aria-hidden="true" class="tone-${statusTone(a)}">${mark(a)}</span><span class="${a.running || a.unread ? "busy" : ""}">${askCount(a)}${escape(a.name)}</span></button>`;
+  const active = archiveView(agents, false).agents;
+  const older = olderFrom(active);
+  const dashboard = active.map((a, index) => {
     const glance = teamGlance(a.children);
-    return row(a) + (glance.shown as Agent[]).map(c => row(c, true)).join("")
+    return (index === older ? olderDivider : "") + row(a) + (glance.shown as Agent[]).map(c => row(c, true)).join("")
       + (glance.summary ? `<small class="rail-summary">${escape(glance.summary)}</small>` : "");
   }).join("");
   const team = main?.children.filter(c => main.archived || !c.archived) ?? [];

@@ -480,7 +480,11 @@ a:focus-visible {
 .tone-ask { color: var(--ask); }
 .tone-running { color: var(--running); }
 .tone-running .spinner { border-top-color: var(--running); }
+.tone-unread { color: var(--fg); }
 .tone-idle { color: var(--muted); }
+/* Agents idle for over a day sit below this line. */
+.divider { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .75rem; padding: 10px 4px 4px; }
+.divider::before, .divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 .asks { display: flex; flex-direction: column; gap: 2px; }
 .asks .ask { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 4px; padding: 2px 4px; color: var(--ask); font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .asks .ask:hover { background: color-mix(in srgb, var(--ask) 12%, transparent); }

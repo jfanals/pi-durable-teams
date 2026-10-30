@@ -2,8 +2,8 @@ import { attachAutocomplete } from "./autocomplete.ts";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
-import { escape as e, askCount, asksBar, info, footerInfo, transcript, paneRails, panePath } from "./render.ts";
-import { archiveView, formatCost, formatDuration, recentFolders, statusTone, statusWord, teamGlance } from "../status.ts";
+import { escape as e, askCount, asksBar, info, footerInfo, olderDivider, transcript, paneRails, panePath } from "./render.ts";
+import { archiveView, formatCost, formatDuration, mark, olderFrom, recentFolders, statusTone, statusWord, teamGlance } from "../status.ts";
 import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
 import { NEW, agentNameError, suggestedAgentName } from "../agent-name.ts";
 import { withReply, type ChatItem } from "../chat.ts";
@@ -72,7 +72,7 @@ function list() {
   const row = (a: Agent, child = false): string =>
     `<button class="agent ${child ? "child" : ""}" data-open="${e(a.id)}">
 <div class="row">
-<strong class="${a.running || a.unread ? "" : "read"}">${askCount(a)}${e(a.name)}</strong>
+<strong class="${a.running || a.unread ? "" : "read"}"><span aria-hidden="true" class="tone-${statusTone(a)}">${mark(a)}</span> ${askCount(a)}${e(a.name)}</strong>
 <span class="tone-${statusTone(a)}">${a.running ? '<i class="spinner"></i>' : ""}${e(statusWord(a))}</span>
 </div>
 <small data-time="${e(a.id)}">${e(info(a))}</small>
@@ -81,6 +81,7 @@ function list() {
   if (!view.archivedCount) showArchived = false;
   const shown = showArchived ? view.agents : archiveView(agents, false).agents;
   const running = shown.filter((a) => a.running).length;
+  const older = showArchived ? -1 : olderFrom(shown);
   const totalCost = formatCost(all().reduce((n, a) => n + (a.cost ?? 0), 0)) || "$0.000";
   const subscription = all().some((a) => a.subscription) ? " (sub)" : "";
   base(
@@ -89,7 +90,7 @@ function list() {
 <section class="notification-setting">
 <label><input type="checkbox" id="notify" ${notifications.enabled ? "checked" : ""} ${notifications.busy || !notifications.supported ? "disabled" : ""}> Notify when agents finish</label>
 <small role="status">${e(notifications.note)}</small></section>
-<main class="list">${shown.map((a) => row(a)).join("") || '<p class="notice">No agents yet. Tap + to create one.</p>'}</main>
+<main class="list">${shown.map((a, index) => (index === older ? olderDivider : "") + row(a)).join("") || '<p class="notice">No agents yet. Tap + to create one.</p>'}</main>
 <footer>
 <small>${showArchived ? `${shown.length} archived` : `${running} running · ${shown.length - running} idle · total ${totalCost}${subscription}`}</small>
 ${view.archivedCount ? button(showArchived ? "Active agents" : `Archived (${view.archivedCount})`, "archived") : ""}

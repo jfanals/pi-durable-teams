@@ -1,4 +1,4 @@
-import { textOf, statusWord, type WorkerStatus } from "./status.ts";
+import { textOf, statusWord, mark, type WorkerStatus } from "./status.ts";
 import { selectableModels } from "./model-choices.ts";
 import { randomUUID } from "node:crypto";
 import { realpath, mkdir, writeFile } from "node:fs/promises";
@@ -13,7 +13,7 @@ import { ActionSchema, IDENTITY_TYPE, MESSAGE_TYPE, SENT_TYPE, TOOL_DESCRIPTION,
 import { agentDir, stateDir } from "./paths.ts";
 import { contextLimit, LIMIT_PRESETS, writeContextLimit } from "./limits.ts";
 import { readConfig, writeWorkerModels, type WorkerModel } from "./config.ts";
-import { glyph, renderDelivery, renderSent, renderTeamCall, renderTeamResult, TeamPanel, WorkerView, type ViewResult } from "./ui.ts";
+import { renderDelivery, renderSent, renderTeamCall, renderTeamResult, TeamPanel, WorkerView, type ViewResult } from "./ui.ts";
 
 export default function durableTeams(pi: ExtensionAPI, createClient = () => new Client()) {
   let active: { ctx: ExtensionContext; sessionId: string; secret: string; life: AbortController; client: Client; queued: Set<string> } | undefined;
@@ -254,7 +254,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
     let workers = await roster(current);
     for (;;) {
       if (!workers.length) { ctx.ui.notify("No workers in this session yet", "info"); return; }
-      const labels = workers.map(w => `${glyph(w)} ${w.name}  ${statusWord(w)}`);
+      const labels = workers.map(w => `${mark(w)} ${w.name}  ${statusWord(w)}`);
       const picked = await ctx.ui.select("Team · this session", labels);
       const worker = picked === undefined ? undefined : workers[labels.indexOf(picked)];
       if (!worker || await openWorker(current, ctx, worker) === "close") return;
@@ -348,7 +348,7 @@ export default function durableTeams(pi: ExtensionAPI, createClient = () => new 
       if (command && command !== "open") throw new Error("Use /team, /team open <worker>, /team models, /team stop or /team reconnect");
       if (ctx.mode !== "tui") {
         const workers = await roster(current);
-        ctx.ui.notify(workers.map(w => `${glyph(w)} ${w.name} · ${statusWord(w)}`).join("\n") || "No workers in this session", "info"); return;
+        ctx.ui.notify(workers.map(w => `${mark(w)} ${w.name} · ${statusWord(w)}`).join("\n") || "No workers in this session", "info"); return;
       }
       const named = rest.join(" ");
       if (!named) return pickWorker(current, ctx);

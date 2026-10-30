@@ -73,6 +73,12 @@ test("pane rails fold other teams, expose the open team and highlight the path s
   assert.match(path, /data-depth="1"/);
   assert.match(path, /id="title">busy/);
   assert.doesNotMatch(path + rails.dashboard + rails.main, /<tag>/);
+  // The mark: ◌ running, ● a reply not yet opened (white), ○ seen. Agents idle for over a day sit below a divider.
+  const day = 86_400_000, now = Date.now();
+  const recent = [{ ...agent("fresh"), unread: true, finishedAt: now - 1000 }, { ...agent("stale"), finishedAt: now - 2 * day }];
+  const dash = paneRails(recent, []).dashboard;
+  assert.match(dash, /class="tone-unread">●<\/span>[\s\S]*idle over 24h[\s\S]*class="tone-idle">○<\/span>/);
+  assert.equal((paneRails([recent[0]!], []).dashboard.match(/divider/g) ?? []).length, 0, "no divider when every agent is recent");
   // Waiting on you: an amber count before the name; each ask jumps to its reply and carries its "Re:" line.
   const { asksBar } = await import("../src/web/render.ts");
   const asking = { ...agent("lead"), asks: [{ title: "URLs <b>", text: "(a) or (b)?", entry: "42", at: Date.now() - 7_200_000 }] };
