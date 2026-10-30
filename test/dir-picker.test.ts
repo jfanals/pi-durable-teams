@@ -5,6 +5,23 @@ import { join, dirname } from "node:path";
 import { test } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { DirPicker } from "../src/dir-picker.ts";
+import { recentFolders } from "../src/status.ts";
+
+const theme = { fg: (_: unknown, text: string) => text, bg: (_: unknown, text: string) => text, bold: (text: string) => text };
+
+test("recent folders are main agents' folders used in the last week, archived or not, most used first", () => {
+  const now = 100 * 86_400_000, day = 86_400_000;
+  const agent = (cwd: string, at: number, extra = {}) => ({ id: cwd + at, name: "a", cwd, finishedAt: now - at, ...extra });
+  const folders = recentFolders([
+    agent("/one", day), agent("/two", 2 * day, { archived: true }), agent("/two", 6 * day), agent("/old", 8 * day),
+    { id: "r", name: "r", cwd: "/one", running: true, since: now - 30 * day }, { id: "n", name: "n", finishedAt: now },
+    ...Array.from({ length: 9 }, (_, i) => agent(`/x${i}`, i * 1000)),
+  ], now);
+  assert.deepEqual(folders.slice(0, 2), [{ path: "/one", agents: 2, at: now, running: true }, { path: "/two", agents: 2, at: now - 2 * day, running: false }]);
+  assert.equal(folders.length, 8);
+  assert.ok(!folders.some(folder => folder.path === "/old"));
+  assert.deepEqual(folders.slice(2).map(folder => folder.path), ["/x0", "/x1", "/x2", "/x3", "/x4", "/x5"]);
+});
 
 test("directory picker browses, filters, previews and chooses directories at every width", () => {
   const root = mkdtempSync(join(tmpdir(), "dir-picker-"));
@@ -14,10 +31,11 @@ test("directory picker browses, filters, previews and chooses directories at eve
     writeFileSync(join(root, "Alpha/skills/SKILL.md"), "skill");
     writeFileSync(join(root, "file.txt"), "not a directory");
     const chosen: string[] = []; let cancelled = false;
-    const picker = new DirPicker({ cwd: root, recent: [join(root, "beta"), root, root], onChoose: path => chosen.push(path), onCancel: () => { cancelled = true; } });
+    const picker = new DirPicker({ theme, cwd: root, recent: [{ path: join(root, "beta"), agents: 3, at: Date.now() - 7_200_000, running: false }, { path: root, agents: 1, at: Date.now(), running: true }], onChoose: path => chosen.push(path), onCancel: () => { cancelled = true; } });
     const screen = (width = 120) => picker.render(width).join("\n");
     let wide = screen();
-    assert.equal(wide.split("\n").filter(line => line.includes("Recent ·")).length, 2);
+    assert.match(wide, /Recent · last 7 days[\s\S]*● beta  3 agents · 2h ago · [\s\S]*● dir-picker-\w+  1 agent · now · [\s\S]*Browse ·/);
+    assert.equal(wide.split("\n").filter(line => line.includes("●")).length, 2, "the current folder is not repeated");
     assert.match(wide, /Parent.*Current.*Preview/);
     assert.match(wide, /Alpha\/.*git · AGENTS.md · skills/);
     assert.doesNotMatch(wide, /node_modules|file.txt|\.hidden/);
@@ -25,7 +43,7 @@ test("directory picker browses, filters, previews and chooses directories at eve
     picker.handleInput("\r"); assert.equal(chosen.pop(), join(root, "beta"));
     for (const char of "Alpha") picker.handleInput(char); // long enough not to match the random temp folder name
     assert.match(screen(), /Filter: Alpha/);
-    assert.doesNotMatch(screen(), /Recent ·/);
+    assert.doesNotMatch(screen(), /Recent ·|●/);
     assert.match(screen(), /Project instructions/);
     picker.handleInput("\x1b[C"); assert.ok(screen().startsWith(join(root, "Alpha")));
     assert.match(screen(), /Filter: \(type to filter\)/);
@@ -57,7 +75,7 @@ test("directory picker browses, filters, previews and chooses directories at eve
     assert.match(screen(), /Project instructions/);
     assert.doesNotMatch(screen(), /Changed instructions|new-folder/);
     picker.handleInput("\x1b"); assert.equal(cancelled, true);
-    const missing = new DirPicker({ cwd: join(root, "missing"), onChoose: () => assert.fail("must not choose missing directory"), onCancel() {} });
+    const missing = new DirPicker({ theme, cwd: join(root, "missing"), onChoose: () => assert.fail("must not choose missing directory"), onCancel() {} });
     assert.match(missing.render(120).join("\n"), /Cannot read/);
     missing.handleInput("\r"); assert.match(missing.render(120).join("\n"), /Cannot read/);
     assert.notEqual(dirname(root), root);

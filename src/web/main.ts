@@ -3,7 +3,7 @@ import type { ImageContent } from "@earendil-works/pi-ai";
 import { notifications, notificationState, toggleNotifications } from "./push.ts";
 import { api, mutate, stream, token, unpair, type Agent, type Page, type Model } from "./api.ts";
 import { escape as e, askCount, asksBar, info, footerInfo, transcript, paneRails, panePath } from "./render.ts";
-import { archiveView, formatCost, formatDuration, statusTone, statusWord, teamGlance } from "../status.ts";
+import { archiveView, formatCost, formatDuration, recentFolders, statusTone, statusWord, teamGlance } from "../status.ts";
 import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
 import { NEW, agentNameError, suggestedAgentName } from "../agent-name.ts";
 import { withReply, type ChatItem } from "../chat.ts";
@@ -442,8 +442,8 @@ async function newAgent() {
   const version = ++generation;
   watchLife.abort();
   stack = [];
-  const recent = [...new Set(agents.flatMap((a) => (a.cwd ? [a.cwd] : [])))]
-    .map((path) => `<option>${e(path)}</option>`)
+  const recent = recentFolders(agents)
+    .map((f) => `<option value="${e(f.path)}">${e(f.path.split("/").pop() || f.path)} — ${f.agents} agent${f.agents === 1 ? "" : "s"} · ${e(f.path)}</option>`)
     .join("");
   let nameEdited = false;
   let draftName = "";

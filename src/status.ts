@@ -88,7 +88,21 @@ export const formatDuration = (ms: number) => {
   if (s < 3600) return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
   return `${Math.floor(s / 3600)}h ${String(Math.floor(s / 60) % 60).padStart(2, "0")}m`;
 };
-export const formatAgo = (ms: number) => ms < 60_000 ? "just now" : ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m ago` : `${Math.floor(ms / 3_600_000)}h ago`;
+export const formatAgo = (ms: number) => ms < 60_000 ? "just now" : ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m ago`
+  : ms < 86_400_000 ? `${Math.floor(ms / 3_600_000)}h ago` : `${Math.floor(ms / 86_400_000)}d ago`;
+export type RecentFolder = { path: string; agents: number; at: number; running: boolean };
+/** Folders of main agents, archived or not, that ran in the last week: most agents first, then most recent; at most 8. */
+export function recentFolders(roster: WorkerStatus[], now = Date.now()): RecentFolder[] {
+  const folders = new Map<string, RecentFolder>();
+  for (const agent of roster) {
+    const at = agent.running ? now : Math.max(agent.since ?? 0, agent.finishedAt ?? 0);
+    if (!agent.cwd || now - at > 7 * 86_400_000) continue;
+    const folder = folders.get(agent.cwd) ?? { path: agent.cwd, agents: 0, at: 0, running: false };
+    folder.agents++; folder.at = Math.max(folder.at, at); folder.running ||= Boolean(agent.running);
+    folders.set(agent.cwd, folder);
+  }
+  return [...folders.values()].sort((a, b) => b.agents - a.agents || b.at - a.at).slice(0, 8);
+}
 // Pi footer formats: tokens "950", "4.2k", "188k", "1.0M"; context "18.8%/1M"; cost "$9.812".
 export const formatTokens = (n: number) => n < 1000 ? `${n}` : n < 10_000 ? `${(n / 1000).toFixed(1)}k` : n < 1_000_000 ? `${Math.round(n / 1000)}k`
   : n < 10_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1_000_000)}M`;

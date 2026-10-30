@@ -1,5 +1,5 @@
 import { piCompletionTool } from "./presentation.ts";
-import { archiveView, formatCost, statusWord, teamGlance } from "./status.ts";
+import { archiveView, formatCost, recentFolders, statusWord, teamGlance } from "./status.ts";
 import { execFile } from "node:child_process";
 import { basename } from "node:path";
 import { DirPicker } from "./dir-picker.ts";
@@ -315,7 +315,7 @@ export class AgentsApp implements Component, Focusable {
     form.step = step; form.error = undefined; this.picker = undefined; this.dirPicker = undefined;
     if (step === 1) this.dirPicker = new DirPicker({
       cwd: form.cwd || undefined,
-      recent: this.rows().flatMap(({ agent }) => agent.cwd ? [agent.cwd] : []),
+      theme: this.theme, recent: recentFolders(this.allAgents),
       height: () => Math.max(6, this.tui.terminal.rows - 4),
       onChoose: path => void this.advance(path), onCancel: () => this.formStep(4),
     });
