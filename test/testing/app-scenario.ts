@@ -36,7 +36,8 @@ export async function appScenario(width: number, height: number, print?: (name: 
   let exited = false;
   const app = new AgentsApp(source, tui, theme, { cwd: directory, exit: () => { exited = true; } });
   async function frame() { await terminal.waitForRender(); const lines = await terminal.flushAndGetViewport(); for (const columns of [40, width]) assert.ok(app.render(columns).every(line => visibleWidth(line) <= columns)); return lines.join("\n"); }
-  async function wait(text: string) { for (let i = 0; i < 300; i++) { const screen = await frame(); if (screen.includes(text) && (text === "Loading settings…" || !screen.includes("Loading settings…"))) return screen; await delay(10); } throw new Error(`Missing ${text}\n${await frame()}`); }
+  // A few seconds at most, so a missing text fails as "Missing …" well before the test's own timeout.
+  async function wait(text: string) { for (const end = Date.now() + 3000; Date.now() < end;) { const screen = await frame(); if (screen.includes(text) && (text === "Loading settings…" || !screen.includes("Loading settings…"))) return screen; await delay(10); } throw new Error(`Missing ${text}\n${await frame()}`); }
   async function until(predicate: () => Promise<boolean>) { for (let i = 0; i < 300; i++) { if (await predicate()) return; await delay(10); } assert.fail("Timed out waiting for host state"); }
   async function key(data: string) { terminal.sendInput(data); await delay(50); }
   try {

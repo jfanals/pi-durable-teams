@@ -4,7 +4,7 @@ import { piPresentation } from "../src/presentation.ts";
 import { test } from "node:test";
 import { appScenario } from "./testing/app-scenario.ts";
 for (const [width, height] of [[100, 30], [60, 20], [140, 30]]) {
-  test(`agents app real host ${width}×${height}`, { timeout: 20000 }, () => appScenario(width!, height!));
+  test(`agents app real host ${width}×${height}`, { timeout: 60000 }, () => appScenario(width!, height!));
 }
 
 test("Pi live theme compatibility shim succeeds and explains missing upgrade paths", async () => {

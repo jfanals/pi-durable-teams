@@ -43,12 +43,32 @@ Never push to a remote without separate, explicit authorization.
 - Host changes (`src/host.ts`, `src/teams.ts`, `src/chat.ts`, routes, push) need a release
   (authorized, above) and a host restart (above).
 
+## Where things are
+
+- Terminal views: `src/app.ts` (dashboard, rails, drafts per agent), `src/ui.ts` (`ChatView` with its
+  footer, `TeamPanel` with the asks under the prompt, `agentCard`, `Rail`).
+- Web views: `src/web/main.ts` (screens, composer, drafts in localStorage), `src/web/render.ts` (HTML).
+- Shared by both, never duplicated: `src/chat.ts` (asks, `Re:` lines, `waiting`/`withDraft`),
+  `src/status.ts` (status words, tones, marks, team glance).
+- Tests: `test/ui.test.ts` (panel, cards, transcript), `test/web-render.test.ts`, `test/app.test.ts`
+  (the terminal app end to end, script in `test/testing/app-scenario.ts`).
+
 ## Verify
 
+While working, run the test files for what you touched (seconds):
+
 ```bash
-npm run check
-(npm test > /tmp/test.log 2>&1 & p=$!; sleep 150; kill $p); grep -E "^ℹ (pass|fail)" /tmp/test.log
+npm run check && node --test --test-force-exit test/ui.test.ts test/web-render.test.ts
 ```
+
+Before committing, the whole suite once (about two minutes; it exits when done):
+
+```bash
+npm run check && npm test > /tmp/test.log 2>&1; grep -E "^ℹ (pass|fail|cancelled)|✖" /tmp/test.log
+```
+
+Small, easily undone screen changes: build the recommended option and show it, rather than asking
+first; ask first when the host, stored data or agent-facing behaviour changes.
 
 Need a host for a manual check? `node scripts/dev-host.ts 8796` starts a throwaway one with a fake
 model; stop only that process.
