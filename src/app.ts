@@ -10,6 +10,7 @@ import { getSelectListTheme, type Theme } from "@earendil-works/pi-coding-agent"
 import { type WorkerModel } from "./config.ts";
 import type { AgentSummary } from "./protocol.ts";
 import { workerSource, type HostSource } from "./source.ts";
+import { withDraft } from "./chat.ts";
 import { ChatView, RAIL_DASHBOARD_MIN, RAIL_MAIN_MIN, Rail, railWidth, agentCard, dimLine } from "./ui.ts";
 import { cmuxTab } from "./cmux.ts";
 import { markdownForSelection } from "./copy.ts";
@@ -57,6 +58,8 @@ export class AgentsApp implements Component, Focusable {
   private listRows: (AgentSummary | undefined)[] = [];
   /** Unsent prompts by agent, so opening another agent and coming back keeps what was typed. */
   private drafts = new Map<string, string>(); private viewAgent?: string;
+  /** `agent` as drawn: its asks less those its unsent prompt already answers (the open one's is in the editor). */
+  private drafted(agent: AgentSummary) { return withDraft(agent, (agent.id === this.viewAgent ? this.view?.draft() : this.drafts.get(agent.id)) ?? ""); }
   private closeView() {
     if (this.view && this.viewAgent) { const text = this.view.draft(); if (text.trim()) this.drafts.set(this.viewAgent, text); else this.drafts.delete(this.viewAgent); }
     this.view?.dispose(); this.view = undefined; this.viewAgent = undefined;
@@ -163,7 +166,7 @@ export class AgentsApp implements Component, Focusable {
       width: columns => railWidth(columns, 0.16, 18, 28), frame: () => this.frame,
       onHeader: () => this.collapseTo(0), onOpen: worker => this.openFromRail(worker.id),
       content: () => {
-        const lines = this.dashboard().map(({ agent, tree, summary }) => ({ worker: agent, tree, text: summary, open: !!agent && this.stack.includes(agent.id) }));
+        const lines = this.dashboard().map(({ agent, tree, summary }) => ({ worker: agent && this.drafted(agent), tree, text: summary, open: !!agent && this.stack.includes(agent.id) }));
         return { header: this.theme.fg("dim", " agents"), lines };
       },
     });
@@ -415,7 +418,7 @@ export class AgentsApp implements Component, Focusable {
     const hints = this.showKeys ? (width >= 75 ? [keys.join(" · ")] : keys) : [];
     // Cards and spacing as in the rails: two lines per agent, the selected one a tinted band.
     const blocks = rows.map(({ agent, tree, summary }, index) => agent
-      ? agentCard(agent, width, t, { selected: rows[index] === selectable[this.selected], frame: this.frame, tree })
+      ? agentCard(this.drafted(agent), width, t, { selected: rows[index] === selectable[this.selected], frame: this.frame, tree })
       : [dimLine(`${tree}${summary}`, width, t)]);
     const at = rows.indexOf(selectable[this.selected]!);
     const capacity = Math.max(2, height - 5 - hints.length);

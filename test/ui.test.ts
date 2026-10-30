@@ -147,6 +147,7 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   draft = "Re: Ask 1 — yes\nRe: ask 2 — no\n";
   const many = plain(panel.render(80)); const row = (title: string) => many.find(line => line.trim().startsWith(`${title} `) || line.trim() === title)!;
   assert.match(row("Ask 1"), /in draft/); assert.match(row("Ask 2"), /in draft/); assert.doesNotMatch(row("Ask 3"), /in draft/);
+  assert.match(many[0]!, /waiting on you · 7 ──/); // the heading counts what the draft leaves waiting
   assert.ok(!many.some(line => /Ask 6/.test(line))); assert.ok(many.some(line => /\+4 more/.test(line)));
   // The ask being answered (the Re: line at or above the cursor) shows its question in full, even beyond the first five.
   assert.ok(many.some(line => /Question 1/.test(line))); // cursor on line 0: answering Ask 1
@@ -180,6 +181,8 @@ test("cards, receipts and worker transcript are readable, bounded and truthful",
   panel.handleInput("\x1b[A"); panel.handleInput("\x1b[A"); panel.handleInput("2"); // Up lands on the last option above; a new pick replaces the old one
   assert.equal(draft, "Re: Scope — Both\nRe: Web — No"); assert.deepEqual(answered, ["Scope: Both", "Web: Yes", "Web: No"]);
   panel.handleInput("\r"); assert.deepEqual(answered.at(-1), "Free"); assert.equal(focus.at(-1), editor); // no options: Enter answers as before
+  draft = "Re: Scope — Both\nRe: Web — No\nRe: Free — later";
+  assert.match(plain(panel.render(80))[0]!, /^ ── waiting on you · all in draft ──$/);
   panel.focused = false;
   panel.setWorkers([]); asks = []; panel.dispose();
 

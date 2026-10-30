@@ -46,10 +46,14 @@ export function foldAsks(asks: readonly Ask[], items: readonly ChatItem[]): Ask[
 export const askReply = (ask: Pick<Ask, "title">) => `Re: ${ask.title} — `;
 const startsReply = (line: string, ask: Pick<Ask, "title">) => line.trim().toLowerCase().startsWith(askReply(ask).trimEnd().toLowerCase());
 /** The asks a message answers: those named by one of its lines starting with their `Re:` line. */
-export const answered = (asks: readonly Ask[], text: string) => {
+export const answered = <T extends Pick<Ask, "title">>(asks: readonly T[], text: string) => {
   const lines = text.split("\n");
   return asks.filter(ask => lines.some(line => startsReply(line, ask)));
 };
+/** The asks still waiting on the human: those the unsent `draft` does not answer yet. Every count and colour uses it. */
+export const waiting = (asks: readonly Ask[] = [], draft = "") => { const done = answered(asks, draft); return asks.filter(ask => !done.includes(ask)); };
+/** `agent` as the views show it: only the asks its draft leaves waiting (the same object when it has none). */
+export const withDraft = <T extends { asks?: Ask[] }>(agent: T, draft: string): T => agent.asks?.length ? { ...agent, asks: waiting(agent.asks, draft) } : agent;
 /** `draft` answering `ask` with `answer`: its `Re:` line replaced, or added at the end. */
 export function withReply(draft: string, ask: Pick<Ask, "title">, answer: string) {
   const reply = askReply(ask) + answer;

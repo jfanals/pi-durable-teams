@@ -18,7 +18,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { clean, firstLine, textOf, formatUsage, statusWord, formatDuration, formatAgo, formatTokens, formatContext, formatCost, teamGlance, statusTone, mark, type WorkerStatus } from "./status.ts";
 import type { TreeResult } from "./source.ts";
-import { askReply, withReply, type Ask, type ChatItem, type Queued } from "./chat.ts";
+import { answered, waiting, withReply, type Ask, type ChatItem, type Queued } from "./chat.ts";
 import type { ModelChoice } from "./model-choices.ts";
 import type { ImageContent, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { nextModel, modelThinking, modelNotice, thinkingSelection } from "./model-selection.ts";
@@ -137,12 +137,12 @@ export class TeamPanel implements Component, Focusable {
     this.tui.requestRender();
   }
   /** Asks whose "Re:" line is already in the draft: still open until the agent closes them, shown dimmed. */
-  private drafted(ask: Ask) { return (this.asksOf?.draft() ?? "").toLowerCase().includes(askReply(ask).trimEnd().toLowerCase()); }
+  private drafted(ask: Ask) { return answered([ask], this.asksOf?.draft() ?? "").length > 0; }
   /** The ask being answered: the nearest "Re:" line at or above the prompt's cursor names it. */
   private editing() {
     const lines = (this.asksOf?.draft() ?? "").split("\n").slice(0, this.asksOf!.cursorLine() + 1).reverse();
     const line = lines.find(line => /^re: /i.test(line))?.toLowerCase();
-    return line === undefined ? undefined : this.asks.find(ask => line.startsWith(askReply(ask).trimEnd().toLowerCase()));
+    return line === undefined ? undefined : answered(this.asks, line)[0];
   }
   /** Focus the panel: on `target`'s worker, else on the first ask not yet in the draft. */
   enter(editor: Component, target?: string) {
@@ -174,7 +174,9 @@ export class TeamPanel implements Component, Focusable {
     const push = (line: string, row?: (typeof this.rows)[number]) => { lines.push(line); this.rows.push(row); };
     const band = (line: string) => t.bg("selectedBg", line + " ".repeat(Math.max(0, width - visibleWidth(line))));
     // Section rules, as the dashboard's `── idle over 24h ──`: a yellow heading over the asks, a dim one over the team.
-    if (this.asks.length) push(truncateToWidth(t.fg("warning", ` ── waiting on you · ${this.asks.length} ──`), width, "…"));
+    // The count is what the draft leaves waiting (chat.ts `waiting`), as on the dashboard; dim once all are in it.
+    const left = waiting(this.asks, this.asksOf?.draft()).length;
+    if (this.asks.length) push(truncateToWidth(left ? t.fg("warning", ` ── waiting on you · ${left} ──`) : t.fg("dim", " ── waiting on you · all in draft ──"), width, "…"));
     const team = () => { if (this.asks.length && this.workers.length) push(dimLine("── team ──", width, t)); };
     const askLine = (ask: Ask, selected: boolean, highlighted = selected) => {
       const title = selected ? t.bold(ask.title) : ask.title;
@@ -862,7 +864,8 @@ export class ChatView implements Component, Focusable {
       const s = this.transcript.status;
       const cwd = s?.cwd ? formatCwd(s.cwd) : "";
       const time = s?.running ? `working${s.since ? ` ${formatDuration(Date.now() - s.since)}` : ""}` : s ? statusWord(s) : "idle";
-      const suffix = `${branch() ? ` (${branch()})` : ""} • ${s?.asks?.length ? `${s.asks.length} waiting on you · ` : ""}${s?.name ?? name} · ${time}`;
+      const left = waiting(s?.asks, this.editor.getText()).length;
+      const suffix = `${branch() ? ` (${branch()})` : ""} • ${left ? `${left} waiting on you · ` : ""}${s?.name ?? name} · ${time}`;
       const model = s?.modelId ?? s?.model;
       const right = model ? `${s?.provider ? `(${s.provider}) ` : ""}${model}${s?.thinking ? ` • ${s.thinking}` : ""}` : "";
       const hints = [`${path() || s?.name || name} · ${s?.id ?? "…"} · ← back · esc stop`, this.transcript.note, notice()].filter(Boolean).join(" · ");
@@ -887,8 +890,8 @@ export class ChatView implements Component, Focusable {
   }
   /** An ask chosen under the prompt: add its "Re:" line to the end of the draft and scroll to where it was asked. */
   private async answer(ask: Ask) {
-    const text = this.editor.getText(); const reply = askReply(ask);
-    if (!text.includes(reply)) this.editor.setText(text.trimEnd() + (text.trim() ? "\n" : "") + reply);
+    const text = this.editor.getText();
+    if (!answered([ask], text).length) this.editor.setText(withReply(text, ask, ""));
     await this.reveal(ask);
   }
   /** An option chosen under the prompt: the ask's "Re:" line in the draft says it, replacing an earlier pick. */

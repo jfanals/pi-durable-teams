@@ -6,7 +6,7 @@ import { escape as e, askCount, asksBar, info, footerInfo, olderDivider, transcr
 import { archiveView, formatCost, formatDuration, mark, olderFrom, recentFolders, statusTone, statusWord, teamGlance } from "../status.ts";
 import { modelThinking, modelNotice, thinkingSelection } from "../model-selection.ts";
 import { NEW, agentNameError, suggestedAgentName } from "../agent-name.ts";
-import { withReply, type ChatItem } from "../chat.ts";
+import { withDraft, withReply, type ChatItem } from "../chat.ts";
 import type { WorkerModel } from "../config.ts";
 
 const root = document.querySelector<HTMLElement>("#app")!;
@@ -28,6 +28,8 @@ const imageCache = new Map<string, Promise<ImageContent[]>>();
 const reconnecting = new Set<string>();
 const all = (): Agent[] => agents.flatMap((a) => [a, ...a.children]);
 const current = () => all().find((a) => a.id === stack.at(-1));
+/** The roster as drawn: each agent's asks less those its unsent draft already answers (chat.ts withDraft). */
+const drafted = (): Agent[] => agents.map((a) => withDraft(a, localStorage.getItem(`draft:${a.id}`) ?? ""));
 const button = (label: string, action: string, extra = "") =>
   `<button data-action="${action}" ${extra}>${label}</button>`;
 function banner(key: string, retrying: boolean) {
@@ -77,9 +79,9 @@ function list() {
 </div>
 <small data-time="${e(a.id)}">${e(info(a))}</small>
 </button>${child ? "" : team(a)}`;
-  const view = archiveView(agents, showArchived);
+  const view = archiveView(drafted(), showArchived);
   if (!view.archivedCount) showArchived = false;
-  const shown = showArchived ? view.agents : archiveView(agents, false).agents;
+  const shown = showArchived ? view.agents : archiveView(drafted(), false).agents;
   const running = shown.filter((a) => a.running).length;
   const older = showArchived ? -1 : olderFrom(shown);
   const totalCost = formatCost(all().reduce((n, a) => n + (a.cost ?? 0), 0)) || "$0.000";
@@ -106,8 +108,8 @@ function status(clockOnly = false) {
   const a = current();
   if (!a || screen !== "chat" || !document.querySelector("#path")) return;
   if (!clockOnly) {
-    document.querySelector("#path")!.innerHTML = panePath(agents, stack);
-    const rails = paneRails(agents, stack, showIdle);
+    document.querySelector("#path")!.innerHTML = panePath(drafted(), stack);
+    const rails = paneRails(drafted(), stack, showIdle);
     document.querySelector(".rail.dash")!.innerHTML = rails.dashboard;
     document.querySelector(".rail.main")!.innerHTML = rails.main;
     document.querySelector("#status")!.textContent = statusWord(a);
@@ -182,7 +184,7 @@ ${button("Model & thinking", "model", 'type="button"')}
   const message = document.querySelector<HTMLTextAreaElement>("#message")!;
   // Unsent prompts are kept per agent in this browser, across panes and closed tabs.
   message.value = localStorage.getItem(`draft:${id}`) ?? "";
-  message.addEventListener("input", () => saveDraft(id, message.value));
+  message.addEventListener("input", () => { saveDraft(id, message.value); status(); });
   attachAutocomplete(message, id);
   document.querySelector("#messages")!.addEventListener("scroll", () => {
     const view = document.querySelector("#messages");
@@ -256,7 +258,7 @@ async function answer(entry: string, title: string, option?: string) {
   const input = document.querySelector<HTMLTextAreaElement>("#message")!;
   if (option !== undefined) input.value = withReply(input.value, { title }, option);
   else if (!input.value.includes(`Re: ${title} — `)) input.value = withReply(input.value, { title }, "");
-  saveDraft(stack.at(-1)!, input.value);
+  saveDraft(stack.at(-1)!, input.value); status();
   input.focus(); input.setSelectionRange(input.value.length, input.value.length);
   const version = generation;
   while (!items.some(item => item.id === entry) && next && version === generation) await older();
