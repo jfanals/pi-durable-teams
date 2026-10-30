@@ -863,12 +863,11 @@ export class ChatView implements Component, Focusable {
     const footer = { render: (width: number) => {
       const s = this.transcript.status;
       const cwd = s?.cwd ? formatCwd(s.cwd) : "";
-      const time = s?.running ? `working${s.since ? ` ${formatDuration(Date.now() - s.since)}` : ""}` : s ? statusWord(s) : "idle";
-      const left = waiting(s?.asks, this.editor.getText()).length;
-      const suffix = `${branch() ? ` (${branch()})` : ""} • ${left ? `${left} waiting on you · ` : ""}${s?.name ?? name} · ${time}`;
+      // Said once on screen: the asks in the panel heading, running time and esc in the working line, the name here.
+      const suffix = `${branch() ? ` (${branch()})` : ""} • ${s?.name ?? name}`;
       const model = s?.modelId ?? s?.model;
       const right = model ? `${s?.provider ? `(${s.provider}) ` : ""}${model}${s?.thinking ? ` • ${s.thinking}` : ""}` : "";
-      const hints = [`${path() || s?.name || name} · ${s?.id ?? "…"} · ← back · esc stop`, this.transcript.note, notice()].filter(Boolean).join(" · ");
+      const hints = [path(), "← back", this.transcript.note, notice()].filter(Boolean).join(" · ");
       // Two quiet lines: where and who on the left, the model on the right; keys on the left, usage on the right.
       // Too narrow for both, the right side takes its own line.
       const pair = (left: string, right: string) => {

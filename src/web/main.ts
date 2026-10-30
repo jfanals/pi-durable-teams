@@ -112,7 +112,6 @@ function status(clockOnly = false) {
     const rails = paneRails(drafted(), stack, showIdle);
     document.querySelector(".rail.dash")!.innerHTML = rails.dashboard;
     document.querySelector(".rail.main")!.innerHTML = rails.main;
-    document.querySelector("#status")!.textContent = statusWord(a);
     document.querySelector("#info")!.textContent = footerInfo(a);
     document.querySelector("#asks")!.innerHTML = asksBar(a);
   }
@@ -149,8 +148,6 @@ async function open(id: string, push = true) {
     `<div class="panes depth-${stack.length}"><nav class="rail dash" aria-label="Dashboard"></nav><nav class="rail main" aria-label="Main agent"></nav><section class="pane">
 <header>${button("‹", "back", 'aria-label="Back"')}<div class="heading">
 <h1 id="path"></h1>
-<small id="status">
-</small>
 </div>${button("⋮", "menu", 'aria-label="Agent menu"')}</header>
 <section id="messages" aria-label="Transcript">
 <div id="history">

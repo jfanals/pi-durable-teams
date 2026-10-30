@@ -83,7 +83,7 @@ test("pane rails fold other teams, expose the open team and highlight the path s
   const { asksBar } = await import("../src/web/render.ts");
   const asking = { ...agent("lead"), asks: [{ title: "URLs <b>", text: "(a) or (b)?", entry: "42", at: Date.now() - 7_200_000 }] };
   assert.match(paneRails([asking], ["lead"]).dashboard, /class="ask-count"[^>]*>1<\/span> lead/);
-  assert.match(panePath([asking], ["lead"]), /id="title"><span class="ask-count"/);
+  assert.match(panePath([asking], ["lead"]), /id="title">lead</); // the open agent's asks are listed under the title, not counted in it
   // Answered in the unsent draft (chat.ts withDraft, as every view draws the roster): no count, no longer yellow.
   const { withDraft } = await import("../src/chat.ts");
   const drafted = paneRails([withDraft(asking, "Re: URLs <b> — (a)")], ["lead"]).dashboard;

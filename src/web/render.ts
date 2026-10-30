@@ -146,5 +146,5 @@ export function panePath(agents: Agent[], stack: string[]) {
   const all = agents.flatMap(a => [a, ...a.children]);
   return `<span class="ancestor dashboard"><a href="/" data-depth="0">Pi Agents</a><span aria-hidden="true"> › </span></span>`
     + stack.slice(0, -1).map((id, i) => `<span class="ancestor main"><a href="/#agent=${encodeURIComponent(id)}" data-depth="${i + 1}">${escape(all.find(a => a.id === id)?.name ?? id)}</a><span aria-hidden="true"> › </span></span>`).join("")
-    + `<span id="title">${(a => a ? askCount(a) + escape(a.name) : "Agent")(all.find(a => a.id === stack.at(-1)))}</span>`;
+    + `<span id="title">${escape(all.find(a => a.id === stack.at(-1))?.name ?? "Agent")}</span>`; // its asks are listed right below
 }
