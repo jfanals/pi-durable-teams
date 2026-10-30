@@ -30,7 +30,7 @@ export type Agent = {
   archived?: boolean;
   /** Last creation, registration or publication (ms); the list orders by recency with run times. */
   activeAt?: number;
-  /** When the human last had it open (ms); a reply after this is unread. Unset for agents created before this existed: read. */
+  /** When the human last had it open (ms); a reply after this is unread. Unset (agents from before this existed): since the host started. */
   seenAt?: number;
   /** Retained conversation branches, newest first; identity is independent of the current conversation. */
   branches?: ConversationId[];
@@ -675,7 +675,14 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
   let roster: AgentSummary[] = [];
   /** Agents the human has open now, with how many views; they are read while open and marked seen on leaving. */
   const viewing = new Map<string, number>();
-  const markSeen = (id: string) => harness.commit(async tx => { const agent = (await tx.doc(Teams)).agents[id]; if (agent) agent.seenAt = Date.now(); }, context);
+  const startedAt = Date.now();
+  /** Seen now; or, leaving while it still runs, seen only up to that run's start: its replies are stamped when they start streaming, so the last one may predate the leaving. */
+  const markSeen = async (id: string, leaving = false) => {
+    const agent = (await read()).agents[id];
+    const run = leaving && agent?.where.kind === "hosted" ? await inspectHosted(agent) : undefined;
+    const seenAt = run?.live?.run && typeof run.since === "number" ? Math.min(Date.now(), run.since) : Date.now();
+    await harness.commit(async tx => { const stored = (await tx.doc(Teams)).agents[id]; if (stored) stored.seenAt = seenAt; }, context);
+  };
   let refreshing: Promise<AgentSummary[]> | undefined;
   // Asks are folded from replies once: each refresh reads only entries after the last one seen.
   const askScans = new Map<string, { conversationId: ConversationId; after: number; asks: Ask[] }>();
@@ -731,8 +738,8 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         for (const row of rows) { const parent = state.agents[row.id]!.parent; if (parent) byId.get(parent)?.children.push(row); }
         // Unread: a main agent that finished after the human last had it open, and is not open now. Sub-agents report to their parent.
         for (const row of rows) {
-          const { seenAt, parent } = state.agents[row.id]!;
-          if (!parent && !row.running && !row.archived && !viewing.has(row.id) && seenAt !== undefined && (row.finishedAt ?? 0) > seenAt) row.unread = true;
+          const { seenAt = startedAt, parent } = state.agents[row.id]!;
+          if (!parent && !row.running && !row.archived && !viewing.has(row.id) && (row.finishedAt ?? 0) > seenAt) row.unread = true;
         }
         roster = rows.filter(row => !state.agents[row.id]!.parent);
       } catch (error) {
@@ -1018,7 +1025,7 @@ export async function openTeams(storage: Storage, options: TeamsOptions) {
         if (!byHuman) return;
         const left = (viewing.get(agent.id) ?? 1) - 1;
         if (left) viewing.set(agent.id, left); else viewing.delete(agent.id);
-        await markSeen(agent.id).catch(() => {});
+        await markSeen(agent.id, true).catch(() => {});
       };
       await listener({ changed: true });
       return unsubscribe;

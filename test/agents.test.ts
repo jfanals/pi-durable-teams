@@ -462,12 +462,14 @@ test("registry v2 migrates to v3: stopped hosted agents become archived; enabled
   } finally { await service.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
-test("unread: a main agent's reply after the human last had it open stays unread until opened; open agents and old agents are read", async () => {
+test("unread: a main agent's reply after the human last had it open stays unread until opened; for agents never opened, after the host started", async () => {
   const service = await openTeams(new MemoryStorage(), { models: fixture().models, agentModel: async () => model });
   try {
     const { id } = await service.action(human, { action: "newAgent", name: "unread", cwd: process.cwd() }, "unread") as { id: string };
     const cid = Number(id) as ConversationId;
-    const reply = (text: string) => service.harness.commit(async tx => { await tx.appendEntry(cid, { kind: "pi.assistant", model: [{ ...fauxAssistantMessage(text), timestamp: Date.now() + 1 }] }); }, ctx);
+    // Each step a few ms apart, so a reply and a "seen" mark never share a millisecond.
+    const tick = () => new Promise(resolve => setTimeout(resolve, 3));
+    const reply = async (text: string) => { await tick(); await service.harness.commit(async tx => { await tx.appendEntry(cid, { kind: "pi.assistant", model: [{ ...fauxAssistantMessage(text), timestamp: Date.now() }] }); }, ctx); await tick(); };
     const unread = async () => (await service.agents()).find(agent => agent.id === id)!.unread === true;
     assert.equal(await unread(), false, "new agents start read");
     await reply("done");
@@ -481,9 +483,23 @@ test("unread: a main agent's reply after the human last had it open stays unread
     assert.equal(await unread(), false);
     await reply("after leaving");
     assert.equal(await unread(), true);
-    // Agents from before this existed have no seenAt: read.
+    // Leaving while it runs: the run's final reply is stamped when it starts streaming, possibly before leaving; it is still unread.
+    const asked = Date.now();
+    await service.harness.commit(async tx => {
+      await tx.appendEntry(cid, { kind: "pi.user", model: [{ role: "user", content: "short task", timestamp: asked }] });
+      (await tx.doc(LiveDoc, cid)).run = {} as any;
+    }, ctx);
+    const closeRunning = await service.watch(human, id, () => {});
+    await tick();
+    await closeRunning();
+    await service.harness.commit(async tx => {
+      await tx.appendEntry(cid, { kind: "pi.assistant", model: [{ ...fauxAssistantMessage("short answer"), timestamp: asked + 1 }] });
+      delete (await tx.doc(LiveDoc, cid)).run;
+    }, ctx);
+    assert.equal(await unread(), true, "a reply that began streaming before the human left is unread");
+    // Agents from before this existed have no seenAt: replies since the host started are unread.
     await service.harness.commit(async tx => { delete (await tx.doc(Teams)).agents[id]!.seenAt; }, ctx);
-    assert.equal(await unread(), false);
+    assert.equal(await unread(), true);
   } finally { await service.close(); }
 });
 
