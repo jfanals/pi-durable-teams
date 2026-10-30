@@ -282,6 +282,14 @@ export async function appScenario(width: number, height: number, print?: (name: 
     // A sub-agent opened from the dashboard goes back to its main agent, then to the dashboard.
     await key("\x1b[B"); await key("\r"); await wait("• reader");
     await key("\x1b[D"); await wait("• renamed");
+    // A reopened agent's prompt still has its history (loaded from the host): Up steps back through what was sent,
+    // Down forward again to the empty draft, and only then a further Down goes on to the team under the prompt.
+    const sent = (await source.inputs(alphaId)).map(input => input.text);
+    const prompt = (screen: string) => { const lines = screen.split("\n"); return lines[lines.findIndex(line => /─{20}/.test(line)) + 1]!.split("│").at(-1)!.trim(); };
+    for (let i = 0; i < 100 && prompt(await frame()) !== sent.at(-1); i++) await key("\x1b[A");
+    await key("\x1b[A"); assert.equal(prompt(await frame()), sent.at(-2));
+    await key("\x1b[B"); assert.equal(prompt(await frame()), sent.at(-1));
+    await key("\x1b[B"); assert.equal(prompt(await frame()), ""); assert.doesNotMatch(await frame(), /enter\/→ open/);
     await key("\x1b[D"); await wait("n new"); await key("\x1b[A");
     await key("\r"); await wait("reader");
     await source.stop(readerId); await wait("1 idle");

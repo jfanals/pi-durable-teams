@@ -269,8 +269,8 @@ export class AgentsApp implements Component, Focusable {
       tree: entryId => this.source.tree(agent.id, entryId),
       dequeue: () => this.source.dequeue(agent.id),
       doubleEscapeAction: this.doubleEscapeAction,
+      inputs: () => this.source.inputs(agent.id),
       ...(this.stack.length === 1 ? {
-        inputs: () => this.source.inputs(agent.id),
         // Pi jumps into the fork; the chosen message waits in its editor.
         fork: async (before?: string, draft?: string) => {
           const { id } = await this.source.fork(agent.id, before);

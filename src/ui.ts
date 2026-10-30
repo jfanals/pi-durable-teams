@@ -537,8 +537,9 @@ export type ChatActions = {
   models?(): Promise<ModelChoice[]>;
   setModel?(model: ModelChoice, thinking: ModelThinkingLevel): Promise<unknown>;
   compact?(instructions: string): Promise<{ outcome: "compacted" | "nothing" | "running" | "failed"; error?: string }>;
-  /** `/fork`, `/clone` and `/new`, top-level agents only: the human's messages, and a fork before one of them, of everything or (NEW) of nothing. */
+  /** The human's messages, oldest first: the prompt's Up/Down history, and what `/fork` offers. */
   inputs?(): Promise<{ id: string; text: string }[]>;
+  /** `/fork`, `/clone` and `/new`, top-level agents only: a fork before one of the human's messages, of everything or (NEW) of nothing. */
   fork?(before?: string, draft?: string): Promise<unknown>;
   tree?(entryId?: string): Promise<TreeResult>;
   /** Pi's alt+up: queued messages taken back for editing. */
@@ -886,6 +887,8 @@ export class ChatView implements Component, Focusable {
     const input = new ScrollView({ render: (width: number) => (this.picker?.component ?? this.editor).render(width), invalidate: () => this.editor.invalidate() });
     this.scroll = scroll;
     this.layout = new VStack([{ component: scroll, grow: 1, basis: 0 }, working, input, ...(this.panel ? [this.panel] : []), footer]);
+    // Up/Down in an empty prompt browse what was sent to this agent before, as Pi's history does across a session.
+    void actions.inputs?.().then(inputs => { for (const { text } of inputs) this.editor.addToHistory(text); this.tui.requestRender(); }, () => {});
   }
   /** An ask chosen under the prompt: add its "Re:" line to the end of the draft and scroll to where it was asked. */
   private async answer(ask: Ask) {
