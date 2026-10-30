@@ -100,7 +100,6 @@ export function transcript(items: ChatItem[]) {
       if (item.kind === "input")
         return `<article class="input">
 <small>${escape(item.from)}${item.report ? " · report" : ""}</small>
-${!item.report && item.from === "Human" ? `<button data-rewind="${escape(item.id)}">Rewind here</button>` : ""}
 <div class="markdown">${markdown(item.text, true)}</div>
 ${item.images?.length ? `<span data-images="${escape(item.id)}">[image]</span>` : ""}
 </article>`;
@@ -132,7 +131,7 @@ ${result?.content?.some(part => part.type === "image") ? `<span data-images="${e
             .join(" · ")
         : "";
       const error = item.error ? `<p class="error">${escape(item.error)}</p>` : "";
-      return `<article class="reply" data-entry="${escape(item.id)}"><button data-rewind="${escape(item.id)}">Rewind here</button>${parts}${error}
+      return `<article class="reply" data-entry="${escape(item.id)}">${parts}${error}
 ${turn ? `<small class="stamp">${stamp}</small>` : ""}</article>`;
     })
     .join("");

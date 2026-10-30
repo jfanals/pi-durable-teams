@@ -316,10 +316,15 @@ summary {
   overflow-wrap: anywhere;
 }
 #working {
+  display: flex;
   font-size: 0.9rem;
   color: var(--accent);
   padding-bottom: 6px;
+  cursor: pointer;
 }
+#working span { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#working small { flex: none; font-size: inherit; }
+#working.full span { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 33dvh; overflow: auto; }
 #working:empty {
   display: none;
 }

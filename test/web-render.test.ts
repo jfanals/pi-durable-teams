@@ -13,13 +13,11 @@ test("web markdown escapes HTML, drops unsafe URLs and images, and keeps HTTP li
   assert.match(transcript([{ id: "image", kind: "input", from: "Human", text: "", images: [
     { mimeType: "image/png" },
   ] }]), /\[image\]/);
-  assert.doesNotMatch(html, /data-rewind/);
-  assert.match(transcript([{ id: "human", kind: "input", from: "Human", text: "hello" }]), /data-rewind="human"/);
-  assert.doesNotMatch(transcript([{ id: "report", kind: "input", from: "Human", report: true, text: "report" }]), /data-rewind/);
   const thoughts = transcript([{ id: "2", kind: "reply", parts: [
     { type: "thinking", text: "one" }, { type: "thinking", text: "two" },
   ] }]);
-  assert.match(thoughts, /data-rewind="2"/);
+  // Rewind lives in the agent menu (and /tree), not on every message.
+  assert.doesNotMatch(transcript([{ id: "human", kind: "input", from: "Human", text: "hello" }]) + thoughts, /rewind/i);
   assert.match(thoughts, /<div class="thinking markdown"><p>one<\/p>\n<\/div><div class="thinking markdown"><p>two<\/p>/);
 });
 

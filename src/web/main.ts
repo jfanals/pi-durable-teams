@@ -122,9 +122,11 @@ function status(clockOnly = false) {
     const fold = document.querySelector<HTMLDetailsElement>(".asks-fold");
     if (fold) fold.open = asksOpen;
   }
-  document.querySelector("#working")!.textContent = pending || (a.running
-    ? `${a.activity ?? "working"} · ${a.since ? formatDuration(Date.now() - a.since) : ""}`
-    : "");
+  // One line: a long command is cut short, its clock stays in view; a tap shows all of it.
+  const working = document.querySelector<HTMLElement>("#working")!;
+  working.innerHTML = pending ? `<span>${e(pending)}</span>` : a.running
+    ? `<span>${e(a.activity ?? "working")}</span>${a.since ? `<small> · ${formatDuration(Date.now() - a.since)}</small>` : ""}` : "";
+  working.title = working.textContent ?? "";
   if (clockOnly) return;
   // Running, Send becomes Steer (interrupt now, as Enter does in Pi) and Queue waits for the answer.
   (document.querySelector("#stop") as HTMLButtonElement).hidden = !a.running;
@@ -256,6 +258,7 @@ async function older() {
 function saveDraft(id: string, text: string) {
   if (text.trim()) localStorage.setItem(`draft:${id}`, text); else localStorage.removeItem(`draft:${id}`);
 }
+root.addEventListener("click", event => { (event.target as HTMLElement).closest("#working")?.classList.toggle("full"); });
 root.addEventListener("toggle", event => {
   const fold = event.target as HTMLElement;
   if (fold.matches?.(".asks-fold")) asksOpen = (fold as HTMLDetailsElement).open;
@@ -620,7 +623,6 @@ root.addEventListener("click", async (event) => {
   if (!el) return;
   try {
     if (el.dataset.depth !== undefined) { event.preventDefault(); collapseTo(Number(el.dataset.depth)); return; }
-    if (el.dataset.rewind) { await rewind(el.dataset.rewind); return; }
     if (el.dataset.ask) { await answer(el.dataset.ask, el.dataset.title!, el.dataset.option); return; }
     if (el.dataset.open) {
       if (el.closest(".rail")) openFromRail(el.dataset.open);
@@ -685,6 +687,7 @@ root.addEventListener("click", async (event) => {
           a.name,
           `<button type="button" data-menu="rename">Rename</button>
 <button type="button" data-menu="model">Model & thinking</button>
+<button type="button" data-menu="rewind">Rewind…</button>
 ${a.archived ? `<button type="button" data-menu="unarchive">Unarchive</button>
 <button type="button" data-menu="remove">Delete</button>` : '<button type="button" data-menu="archive">Archive</button>'}`,
         );
@@ -705,6 +708,7 @@ ${a.archived ? `<button type="button" data-menu="unarchive">Unarchive</button>
                     },
                   );
                 if (item.dataset.menu === "model") await pickModel(a);
+                if (item.dataset.menu === "rewind") await treePicker(); // as /tree: the session's messages, pick where to go back to
                 if (item.dataset.menu === "unarchive") await mutate("/unarchive", { target: a.id });
                 // Archive is undoable, so it needs no confirmation; delete is only offered for archived agents.
                 if (item.dataset.menu === "archive" || item.dataset.menu === "remove" && confirm(`Delete ${a.name}${a.children.length ? ` and ${a.children.length} sub-agent${a.children.length === 1 ? "" : "s"}` : ""}? This can't be undone.`)) {
