@@ -5,9 +5,10 @@
   --fg: #eef0f7;
   --muted: #acb4c9;
   --line: #343c50;
-  --accent: #a8c6ff;
-  --ask: #ff9b8a;
-  --running: #ffd28a;
+  /* Pi's dark theme: accent (violet) for links, focus and running agents; warning (yellow) for asks; error (red) for errors only. */
+  --accent: #a798d7;
+  --ask: #cd9a22;
+  --running: var(--accent);
   font:
     16px/1.5 system-ui,
     sans-serif;
@@ -228,7 +229,7 @@ article {
 }
 .markdown code {
   font-family: ui-monospace, monospace;
-  color: #bdd5ff;
+  color: var(--accent);
 }
 .markdown table {
   display: block;
@@ -287,7 +288,7 @@ summary {
   text-align: center;
 }
 .notice.warning {
-  color: #ffd38a;
+  color: var(--ask);
 }
 .queued p {
   margin: 0 0 4px;
@@ -299,7 +300,7 @@ summary {
 }
 .error,
 .dialog-error {
-  color: #ffb7b7;
+  color: #ea7f81;
 }
 #error:empty {
   display: none;
@@ -402,18 +403,14 @@ a:focus-visible {
     --fg: #172034;
     --muted: #536079;
     --line: #ccd3e1;
-    --accent: #174d9d;
-    --ask: #b3261e;
-    --running: #8a5a00;
+    --accent: #7459b4;
+    --ask: #8f6802;
   }
   .input {
     background: #dce8fc;
   }
   .markdown pre {
     background: #e6ebf4;
-  }
-  .markdown code {
-    color: #214c87;
   }
 }
 
@@ -474,7 +471,7 @@ a:focus-visible {
 @keyframes pane-forward { from { transform: translateX(20%); opacity: .4; } }
 @keyframes pane-backward { from { transform: translateX(-20%); opacity: .4; } }
 
-/* Waiting on you: amber counts before names, the open agent's asks above the composer. */
+/* Waiting on you: yellow counts before names, the open agent's asks above the composer. */
 .ask-count { color: var(--ask); font-weight: 600; }
 /* One colour per state, as in the terminal: waiting on you, running, idle. */
 .tone-ask { color: var(--ask); }

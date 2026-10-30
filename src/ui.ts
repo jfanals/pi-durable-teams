@@ -36,15 +36,15 @@ const expandKey = () => { try { return keyText("app.tools.expand") || "ctrl+o"; 
 
 
 export const glyph = (w: WorkerStatus) => w.running ? "●" : "○";
-/** Decisions waiting on the human: a red count before the agent's name ("" when none). */
-export const askCount = (w: WorkerStatus | undefined, theme: Theme) => w?.asks?.length ? `${theme.fg("error", String(w.asks.length))} ` : "";
+/** Decisions waiting on the human: a yellow count before the agent's name ("" when none). */
+export const askCount = (w: WorkerStatus | undefined, theme: Theme) => w?.asks?.length ? `${theme.fg("warning", String(w.asks.length))} ` : "";
 const SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
 const VISIBLE_RUNNING = 5;
 const VISIBLE_FOCUSED = 8;
 const VISIBLE_ASKS = 5;
 
-/** Colour of an agent's mark and status line: red while it waits on the human, yellow while it works, grey when idle. */
-const TONE = { ask: "error", running: "warning", idle: "muted" } as const;
+/** Colour of an agent's mark and status line: yellow while it waits on the human, the theme accent (purple) while it works, grey when idle. Red is for errors only. */
+const TONE = { ask: "warning", running: "accent", idle: "muted" } as const;
 const markOf = (w: WorkerStatus, t: Theme, frame: number) => t.fg(TONE[statusTone(w)], w.running ? SPINNER[frame % SPINNER.length]! : "○");
 /** What an agent is doing, in its status colour: the running activity, waiting on you, or idle (with `idle` appended). */
 const statusText = (w: WorkerStatus, t: Theme, idle = "") => {
@@ -171,7 +171,7 @@ export class TeamPanel implements Component, Focusable {
     const askLine = (ask: Ask, selected: boolean, highlighted = selected) => {
       const title = selected ? t.bold(ask.title) : ask.title;
       const drafted = this.drafted(ask);
-      const line = truncateToWidth(` ${drafted ? t.fg("dim", title) : t.fg("error", title)}${t.fg("dim", `${drafted ? " · in draft" : ""}${ask.at ? ` · ${formatAgo(now - ask.at)}` : ""}`)}`, width);
+      const line = truncateToWidth(` ${drafted ? t.fg("dim", title) : t.fg("warning", title)}${t.fg("dim", `${drafted ? " · in draft" : ""}${ask.at ? ` · ${formatAgo(now - ask.at)}` : ""}`)}`, width);
       return highlighted ? band(line) : line;
     };
     // The question in full, then its options numbered as the keys that pick them.
@@ -752,7 +752,7 @@ export class WorkerView implements Component {
     const visible = lines.slice(Math.max(0, end - height), end);
     const status = this.transcript.status;
     const word = status ? statusWord(status) : "…";
-    const color = !status ? "muted" : status.archived ? "warning" : status.running ? "accent" : "muted";
+    const color = !status ? "muted" : status.archived ? "dim" : status.running ? "accent" : "muted";
     const connection = this.transcript.connection === "live" ? t.fg("success", "live") : this.transcript.connection === "stale" ? t.fg("warning", "stale · r to refresh") : t.fg("muted", "loading");
     const top = this.transcript.next ? t.fg("dim", " · older pages: o") : "";
     const header = `${t.fg("accent", t.bold(this.transcript.name))}${t.fg("dim", " · ")}${t.fg(color, word)}${t.fg("dim", " · ")}${connection}${top}`;
